@@ -142,7 +142,7 @@ def search_rakuten_onsen(latitude, longitude):
 
 ```
 OPENAI_API_KEY=...          # embeddings (text-embedding-3-small)
-ANTHROPIC_API_KEY=...       # chat (Claude Sonnet claude-sonnet-4-6)
+ANTHROPIC_API_KEY=...       # reserved for future Claude Sonnet migration (currently using GPT-4o)
 GOOGLE_MAPS_API_KEY=...     # geocoding
 RAKUTEN_APP_ID=...          # Rakuten Travel API
 RAKUTEN_ACCESS_KEY=...      # Rakuten Travel API
@@ -169,7 +169,7 @@ Refer to API doc under /backend/api/api_doc
 - 2 tools: geocoding + rakuten
 - 1 agent, 1 FastAPI backend, 1 React frontend
 - Direct function calls between tools
-- LLM: OpenAI `text-embedding-3-small` (embeddings) + Claude Sonnet (chat)
+- LLM: OpenAI `text-embedding-3-small` (embeddings) + GPT-4o (chat, currently) → will migrate to Claude Sonnet (`claude-sonnet-4-6`) in a future iteration
 - Vectorstore: ChromaDB
 
 ### V2 — Intermediate
