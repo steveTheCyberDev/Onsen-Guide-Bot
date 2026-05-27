@@ -161,7 +161,9 @@ Refer to API doc under /backend/api/api_doc
 2. backend-developer
 3. ai-engineer
 4. test-automation
-5. 
+5. project-progress-tracker — summarises what has been completed and what comes next. Output format:
+   - **Done:** numbered list of completed items
+   - **Next:** open question to the user — e.g. "Do we build the frontend now, or is there backend work to finish first?" Keeps the session focused and ensures we always know where we are.
 
 ## Version Roadmap
 
