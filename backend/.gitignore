@@ -6,3 +6,4 @@ chroma_db/
 venv/
 .DS_Store
 result*.json
+.claude/
