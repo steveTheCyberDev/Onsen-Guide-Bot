@@ -1,0 +1,788 @@
+openapi: 3.0.0
+info:
+  title: Rakuten Travel API
+  description: >
+    Rakuten Travel API for hotel search and area classification.
+    Provides endpoints to search hotels by hotel number, geographic coordinates,
+    or area class codes, and to retrieve the area classification hierarchy.
+  version: "2017-04-26"
+
+servers:
+  - url: https://openapi.rakuten.co.jp/engine/api
+
+components:
+  securitySchemes:
+    ApiKeyHeader:
+      type: apiKey
+      in: header
+      name: accessKey
+      description: Access key provided as an HTTP header. Required together with applicationId.
+
+  parameters:
+    applicationId:
+      name: applicationId
+      in: query
+      required: true
+      description: Your Rakuten application ID. Required along with access key.
+      schema:
+        type: string
+        example: "802398e8-19ce-4978-b21b-e192630c6138"
+
+    accessKey:
+      name: accessKey
+      in: query
+      required: false
+      description: >
+        Access key. Can be provided either as a query parameter or in the request header (accessKey).
+        Required along with applicationId.
+      schema:
+        type: string
+        example: "pk_Z8IsN8c9U4nl7Rl4DHlfbMygfQli8szEzhcRyVXHCQh"
+
+    affiliateId:
+      name: affiliateId
+      in: query
+      required: false
+      description: Rakuten affiliate ID. When provided, affiliate URLs are included in the response.
+      schema:
+        type: string
+
+    format:
+      name: format
+      in: query
+      required: false
+      description: Response format. Either `json` or `xml`. When JSON is specified, the `callback` parameter can also be set for JSONP.
+      schema:
+        type: string
+        enum: [json, xml]
+        default: json
+
+    callback:
+      name: callback
+      in: query
+      required: false
+      description: >
+        Function name for JSONP output. UTF-8 URL encoded string.
+        Alphanumeric characters, periods, or underscores only.
+      schema:
+        type: string
+
+    elements:
+      name: elements
+      in: query
+      required: false
+      description: >
+        Comma-separated list of response fields to return.
+        By default all fields are returned.
+        Example: `elements=hotelName,hotelNo,latitude`
+      schema:
+        type: string
+
+    formatVersion:
+      name: formatVersion
+      in: query
+      required: false
+      description: >
+        Response format version.
+        - `1` (default): Items wrapped in an extra object layer — access via `items[0].item.fieldName`.
+        - `2`: Flattened array — access via `items[0].fieldName`.
+      schema:
+        type: integer
+        enum: [1, 2]
+        default: 1
+
+  schemas:
+    ErrorResponse:
+      type: object
+      properties:
+        error:
+          type: string
+          example: "wrong_parameter"
+        error_description:
+          type: string
+          example: "specify valid applicationId"
+
+    PagingInfo:
+      type: object
+      properties:
+        recordCount:
+          type: integer
+          description: Total number of search result records.
+        pageCount:
+          type: integer
+          description: Total number of pages. Maximum 100.
+        page:
+          type: integer
+          description: Current page number.
+        first:
+          type: integer
+          description: Index of the first result on this page.
+        last:
+          type: integer
+          description: Index of the last result on this page.
+
+    HotelBasicInfo:
+      type: object
+      description: Basic hotel information (returned for `small`, `middle`, and `large` responseType).
+      properties:
+        hotelNo:
+          type: integer
+          description: Unique hotel number in Rakuten Travel.
+        hotelName:
+          type: string
+          description: Hotel name.
+        hotelInformationUrl:
+          type: string
+          description: Hotel information page URL. If affiliateId is set, returns an affiliate URL.
+        planListUrl:
+          type: string
+          description: Plan list page URL.
+        dpPlanListUrl:
+          type: string
+          description: Dynamic package plan list page URL.
+        reviewUrl:
+          type: string
+          description: Customer review page URL.
+        hotelKanaName:
+          type: string
+          description: Hotel name in kana (Japanese phonetic script).
+        hotelSpecial:
+          type: string
+          description: Hotel special features / description.
+        hotelMinCharge:
+          type: integer
+          description: Lowest per-room-per-night price (tax and service charge included).
+        latitude:
+          type: number
+          description: >
+            Latitude. Unit and datum depend on `datumType` input parameter:
+            datumType=1 → WGS84 (degrees); datumType=2 → Tokyo Datum (seconds).
+        longitude:
+          type: number
+          description: >
+            Longitude. Unit and datum depend on `datumType` input parameter:
+            datumType=1 → WGS84 (degrees); datumType=2 → Tokyo Datum (seconds).
+        postalCode:
+          type: string
+          description: Postal code.
+        address1:
+          type: string
+          description: Address line 1.
+        address2:
+          type: string
+          description: Address line 2.
+        telephoneNo:
+          type: string
+          description: Hotel telephone number.
+        faxNo:
+          type: string
+          description: Fax number.
+        access:
+          type: string
+          description: Access directions to the hotel.
+        parkingInformation:
+          type: string
+          description: Parking information.
+        nearestStation:
+          type: string
+          description: Nearest station name.
+        hotelImageUrl:
+          type: string
+          description: Hotel image URL (HTTPS).
+        hotelThumbnailUrl:
+          type: string
+          description: Hotel image thumbnail URL (HTTPS).
+        roomImageUrl:
+          type: string
+          description: Room image URL (HTTPS).
+        roomThumbnailUrl:
+          type: string
+          description: Room image thumbnail URL (HTTPS).
+        hotelMapImageUrl:
+          type: string
+          description: Hotel-provided map image URL (HTTPS).
+        reviewCount:
+          type: integer
+          description: Number of customer reviews.
+        reviewAverage:
+          type: number
+          description: Overall review star rating.
+        userReview:
+          type: string
+          description: Most recent customer review (1 entry).
+
+    HotelRatingInfo:
+      type: object
+      description: Detailed rating breakdown (returned for `middle` and `large` responseType).
+      properties:
+        serviceAverage:
+          type: number
+          description: Service star rating.
+        locationAverage:
+          type: number
+          description: Location star rating.
+        roomAverage:
+          type: number
+          description: Room star rating.
+        equipmentAverage:
+          type: number
+          description: Equipment/amenity star rating.
+        bathAverage:
+          type: number
+          description: Bath star rating.
+        mealAverage:
+          type: number
+          description: Meal star rating.
+
+    HotelDetailInfo:
+      type: object
+      description: Hotel detail information (returned for `large` responseType only).
+      properties:
+        reserveTelephoneNo:
+          type: string
+          description: Reservation center phone number for booking by phone at Rakuten price.
+        middleClassCode:
+          type: string
+          description: Prefecture-level area code.
+        smallClassCode:
+          type: string
+          description: City-level area code.
+        areaName:
+          type: string
+          description: Area name.
+        hotelClassCode:
+          type: string
+          description: Hotel type code.
+        checkinTime:
+          type: string
+          description: Check-in time (HH:MM).
+        checkoutTime:
+          type: string
+          description: Check-out time (HH:MM).
+        lastCheckinTime:
+          type: string
+          description: Last check-in time (HH:MM).
+
+    HotelFacilitiesInfo:
+      type: object
+      description: Hotel facilities information (returned for `large` responseType only).
+      properties:
+        hotelRoomNum:
+          type: integer
+          description: Number of rooms.
+        roomFacilities:
+          type: array
+          items:
+            type: object
+            properties:
+              item:
+                type: string
+          description: List of room facilities/amenities.
+        hotelFacilities:
+          type: array
+          items:
+            type: object
+            properties:
+              item:
+                type: string
+          description: List of in-hotel facilities.
+        aboutMealPlace:
+          type: string
+          description: Meal place information.
+        breakfastPlace:
+          type: string
+          description: Breakfast location.
+        dinnerPlace:
+          type: string
+          description: Dinner location.
+        aboutBath:
+          type: string
+          description: Bath information.
+        bathType:
+          type: string
+          description: Bath type.
+        bathQuality:
+          type: string
+          description: Hot spring water quality.
+        bathBenefits:
+          type: string
+          description: Hot spring benefits.
+        aboutLeisure:
+          type: string
+          description: Nearby leisure facilities.
+        handicappedFacilities:
+          type: array
+          items:
+            type: object
+            properties:
+              item:
+                type: string
+          description: Facilities for guests with disabilities.
+        linguisticLevel:
+          type: string
+          description: Staff language capabilities.
+
+    HotelPolicyInfo:
+      type: object
+      description: Booking conditions and payment information (returned for `large` responseType only).
+      properties:
+        note:
+          type: string
+          description: Conditions, notes, and remarks.
+        cancelPolicy:
+          type: string
+          description: Cancellation policy.
+        availableCreditCard:
+          type: array
+          items:
+            type: object
+            properties:
+              card:
+                type: string
+          description: Accepted credit cards.
+        aboutCreditCardNote:
+          type: string
+          description: Notes on credit card usage.
+        aboutPointAdd:
+          type: string
+          description: Information on point accumulation (non-Rakuten Super Points services).
+        aboutMileageAdd:
+          type: string
+          description: Mileage accumulation information.
+
+    HotelOtherInfo:
+      type: object
+      description: Privileges and other information (returned for `large` responseType only).
+      properties:
+        privilege:
+          type: string
+          description: Special privileges.
+        otherInformation:
+          type: string
+          description: Other hotel information.
+
+    Hotel:
+      type: object
+      properties:
+        hotelBasicInfo:
+          $ref: "#/components/schemas/HotelBasicInfo"
+        hotelRatingInfo:
+          $ref: "#/components/schemas/HotelRatingInfo"
+        hotelDetailInfo:
+          $ref: "#/components/schemas/HotelDetailInfo"
+        hotelFacilitiesInfo:
+          $ref: "#/components/schemas/HotelFacilitiesInfo"
+        hotelPolicyInfo:
+          $ref: "#/components/schemas/HotelPolicyInfo"
+        hotelOtherInfo:
+          $ref: "#/components/schemas/HotelOtherInfo"
+
+    AreaClassResponse:
+      type: object
+      properties:
+        areaClasses:
+          type: object
+          properties:
+            areaClass:
+              type: array
+              items:
+                type: object
+                properties:
+                  largeClassCode:
+                    type: string
+                    description: Large area code (e.g. `japan`).
+                  largeClassName:
+                    type: string
+                    description: Large area name (e.g. 日本).
+                  middleClasses:
+                    type: object
+                    properties:
+                      middleClass:
+                        type: array
+                        items:
+                          type: object
+                          properties:
+                            middleClassCode:
+                              type: string
+                              description: Middle area code (e.g. `tokyo`).
+                            middleClassName:
+                              type: string
+                              description: Middle area name (e.g. 東京).
+                            smallClasses:
+                              type: object
+                              properties:
+                                smallClass:
+                                  type: array
+                                  items:
+                                    type: object
+                                    properties:
+                                      smallClassCode:
+                                        type: string
+                                        description: Small area code (e.g. `tokyo`).
+                                      smallClassName:
+                                        type: string
+                                        description: Small area name (e.g. 東京２３区).
+                                      detailClasses:
+                                        type: object
+                                        properties:
+                                          detailClass:
+                                            type: array
+                                            items:
+                                              type: object
+                                              properties:
+                                                detailClassCode:
+                                                  type: string
+                                                  description: Detail area code (e.g. `A`).
+                                                detailClassName:
+                                                  type: string
+                                                  description: Detail area name (e.g. 東京駅・銀座・日本橋).
+
+paths:
+  /Travel/SimpleHotelSearch/20170426:
+    get:
+      summary: Simple Hotel Search
+      description: >
+        Search for hotels by hotel number, geographic coordinates (latitude/longitude),
+        or area class codes (largeClassCode / middleClassCode / smallClassCode / detailClassCode).
+
+
+        **At least one of the following search keys must be provided:**
+        area class codes, `hotelNo`, or `latitude` + `longitude`.
+
+
+        If a child area class exists in the hierarchy, the child code must also be specified
+        (e.g. if middleClassCode is provided, smallClassCode must be provided too if it has children).
+      operationId: simpleHotelSearch
+      tags:
+        - Hotel
+      security:
+        - ApiKeyHeader: []
+      parameters:
+        - $ref: "#/components/parameters/applicationId"
+        - $ref: "#/components/parameters/accessKey"
+        - $ref: "#/components/parameters/affiliateId"
+        - $ref: "#/components/parameters/format"
+        - $ref: "#/components/parameters/callback"
+        - $ref: "#/components/parameters/elements"
+        - $ref: "#/components/parameters/formatVersion"
+        - name: largeClassCode
+          in: query
+          required: false
+          description: >
+            Large area code (e.g. `japan`). Indicates country-level area.
+            Obtain codes from the GetAreaClass API.
+            One of area codes, hotelNo, or lat/lng must be specified.
+          schema:
+            type: string
+            example: japan
+        - name: middleClassCode
+          in: query
+          required: false
+          description: >
+            Middle area code (e.g. `tokyo`). Indicates prefecture-level area.
+            Obtain codes from the GetAreaClass API.
+          schema:
+            type: string
+            example: tokyo
+        - name: smallClassCode
+          in: query
+          required: false
+          description: >
+            Small area code (e.g. `tokyo`). Indicates city-level area.
+            Obtain codes from the GetAreaClass API.
+          schema:
+            type: string
+            example: tokyo
+        - name: detailClassCode
+          in: query
+          required: false
+          description: >
+            Detail area code (e.g. `A`). Indicates station or sub-area level.
+            Obtain codes from the GetAreaClass API.
+          schema:
+            type: string
+            example: A
+        - name: hotelNo
+          in: query
+          required: false
+          description: >
+            Hotel number(s) in Rakuten Travel. Comma-separated, up to 15 values.
+            Example: `&hotelNo=123456,654321`
+          schema:
+            type: string
+            example: "178447"
+        - name: latitude
+          in: query
+          required: false
+          description: >
+            Latitude for location-based search.
+            - datumType=2 (default): Tokyo Datum, unit in seconds (up to 2 decimal places for milliseconds). Example: `128216.17`
+            - datumType=1: WGS84 (GPS), unit in degrees. Example: `35.6065914`
+          schema:
+            type: number
+            example: 26.4354174
+        - name: longitude
+          in: query
+          required: false
+          description: >
+            Longitude for location-based search.
+            - datumType=2 (default): Tokyo Datum, unit in seconds. Example: `503259.29`
+            - datumType=1: WGS84 (GPS), unit in degrees. Example: `139.7513225`
+          schema:
+            type: number
+            example: 127.7854372
+        - name: searchRadius
+          in: query
+          required: false
+          description: >
+            Search radius in km for lat/lng search. Must be between 0.1 and 3.0, with up to 1 decimal place.
+          schema:
+            type: number
+            default: 1
+            minimum: 0.1
+            maximum: 3.0
+            example: 1
+        - name: squeezeCondition
+          in: query
+          required: false
+          description: >
+            Filter conditions. Comma-separated. Available values:
+            - `kinen` — Non-smoking rooms
+            - `internet` — Internet-accessible rooms
+            - `daiyoku` — Large communal bath
+            - `onsen` — Hot spring
+
+            Example: `&squeezeCondition=kinen,onsen`
+          schema:
+            type: string
+            example: "kinen,onsen"
+        - name: carrier
+          in: query
+          required: false
+          description: >
+            Device type for returned information.
+            - `0` (default): PC/Smartphone
+            - `1`: Feature phone
+          schema:
+            type: integer
+            enum: [0, 1]
+            default: 0
+        - name: datumType
+          in: query
+          required: false
+          description: >
+            Coordinate system for input and output lat/lng values.
+            - `1`: WGS84 (World Geodetic System), unit is degrees.
+            - `2` (default): Tokyo Datum, unit is seconds.
+          schema:
+            type: integer
+            enum: [1, 2]
+            default: 2
+        - name: page
+          in: query
+          required: false
+          description: Page number to retrieve. Integer between 1 and 100.
+          schema:
+            type: integer
+            default: 1
+            minimum: 1
+            maximum: 100
+        - name: hits
+          in: query
+          required: false
+          description: Number of results per page. Integer between 1 and 30.
+          schema:
+            type: integer
+            default: 30
+            minimum: 1
+            maximum: 30
+        - name: hotelThumbnailSize
+          in: query
+          required: false
+          description: >
+            Image thumbnail size for `hotelThumbnailUrl` in output.
+            - `1`: Small
+            - `2` (default): Medium
+            - `3`: Large
+          schema:
+            type: integer
+            enum: [1, 2, 3]
+            default: 2
+        - name: responseType
+          in: query
+          required: false
+          description: >
+            Amount of information returned per hotel.
+            - `small`: Minimum fields only
+            - `middle` (default): Moderate detail
+            - `large`: All fields
+          schema:
+            type: string
+            enum: [small, middle, large]
+            default: middle
+        - name: sort
+          in: query
+          required: false
+          description: >
+            Sort order for results.
+            - `standard` (default): Recommended order — by hotel number for area/hotel searches; by distance for lat/lng searches.
+            - `+roomCharge`: Lowest price ascending.
+            - `-roomCharge`: Lowest price descending.
+          schema:
+            type: string
+            enum: [standard, "+roomCharge", "-roomCharge"]
+            default: standard
+
+      responses:
+        "200":
+          description: Successful hotel search response.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  pagingInfo:
+                    $ref: "#/components/schemas/PagingInfo"
+                  hotels:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        hotel:
+                          type: array
+                          items:
+                            $ref: "#/components/schemas/Hotel"
+        "400":
+          description: Parameter error or required parameters insufficient.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                error: "wrong_parameter"
+                error_description: "specify valid applicationId"
+        "404":
+          description: Data not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                error: "not_found"
+                error_description: "not found"
+        "429":
+          description: Too many requests — number of allowed requests exceeded.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                error: "too_many_requests"
+                error_description: "number of allowed requests has been exceeded for this API. please try again soon."
+        "500":
+          description: Internal Rakuten Web Service error.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                error: "system_error"
+                error_description: "api logic error"
+        "503":
+          description: Service unavailable due to maintenance or overload.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                error: "service_unavailable"
+                error_description: "Travel/SimpleHotelSearch is under maintenance"
+
+  /Travel/GetAreaClass/20140210:
+    get:
+      summary: Get Area Classification
+      description: >
+        Retrieves the full hierarchy of travel area codes used by Rakuten Travel.
+        The hierarchy is: Large area (largeClass) → Middle area (middleClass) →
+        Small area (smallClass) → Detail area (detailClass).
+
+
+        Use the returned codes as input to the SimpleHotelSearch API.
+
+
+        Note: Avoid making a large number of requests to the same URL in a short period
+        of time, as access may be temporarily suspended.
+      operationId: getAreaClass
+      tags:
+        - Area
+      security:
+        - ApiKeyHeader: []
+      parameters:
+        - $ref: "#/components/parameters/applicationId"
+        - $ref: "#/components/parameters/accessKey"
+        - $ref: "#/components/parameters/affiliateId"
+        - $ref: "#/components/parameters/format"
+        - $ref: "#/components/parameters/callback"
+        - $ref: "#/components/parameters/elements"
+        - $ref: "#/components/parameters/formatVersion"
+
+      responses:
+        "200":
+          description: Successful area classification response.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AreaClassResponse"
+              example:
+                areaClasses:
+                  areaClass:
+                    - largeClassCode: "japan"
+                      largeClassName: "日本"
+                      middleClasses:
+                        middleClass:
+                          - middleClassCode: "tokyo"
+                            middleClassName: "東京"
+                            smallClasses:
+                              smallClass:
+                                - smallClassCode: "tokyo"
+                                  smallClassName: "東京２３区"
+                                  detailClasses:
+                                    detailClass:
+                                      - detailClassCode: "A"
+                                        detailClassName: "東京駅・銀座・日本橋"
+        "400":
+          description: Parameter error or required parameters insufficient.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: Data not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "429":
+          description: Too many requests.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "500":
+          description: Internal Rakuten Web Service error.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "503":
+          description: Service unavailable due to maintenance or overload.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+tags:
+  - name: Hotel
+    description: Search and retrieve hotel information from Rakuten Travel.
+  - name: Area
+    description: Retrieve area classification hierarchy used by Rakuten Travel.

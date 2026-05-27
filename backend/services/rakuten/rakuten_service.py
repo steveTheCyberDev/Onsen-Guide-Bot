@@ -1,0 +1,71 @@
+import logging
+
+import requests
+
+from core.config import settings
+from core.exceptions import RakutenError
+
+logger = logging.getLogger(__name__)
+
+# Number of hotel results to return per page.
+# Rakuten SimpleHotelSearch `hits` accepts an integer 1–30 (default 30); we request 10.
+RAKUTEN_HITS_PER_PAGE = 10
+
+# Response format for the Rakuten API. `format` accepts "json" or "xml" (default "json").
+RAKUTEN_RESPONSE_FORMAT = "json"
+
+# Coordinate system for input/output lat-lng values (`datumType`).
+# 1 = WGS84 (GPS), unit is degrees; 2 = Tokyo Datum, unit is seconds (API default).
+# We send WGS84 because our coordinates come from Google Geocoding (degrees).
+RAKUTEN_DATUM_TYPE_WGS84 = 1
+
+def search_hotels(latitude: float, longitude: float, radius: int = 3) -> list:
+    url = settings.rakuten_hotel_url
+    params = {
+        "applicationId": settings.rakuten_app_id,
+        "latitude": latitude,
+        "longitude": longitude,
+        "searchRadius": radius,
+        "hits": RAKUTEN_HITS_PER_PAGE,
+        "format": RAKUTEN_RESPONSE_FORMAT,
+        "datumType": RAKUTEN_DATUM_TYPE_WGS84,
+    }
+    headers = {
+        "accessKey": settings.rakuten_access_key,
+    }
+
+    logger.info(
+        "Rakuten request | url=%s | params=%s",
+        url,
+        {k: v for k, v in params.items() if k not in ("applicationId", "accessKey")},
+    )
+
+    response = requests.get(url, headers=headers, params=params, timeout=10)
+    logger.info("Rakuten actual request URL | %s", response.request.url)
+
+    data = response.json()
+
+    logger.info("Rakuten response | status=%s | body=%s", response.status_code, data)
+
+    if "error" in data:
+        raise RakutenError(data.get("error_description", "Rakuten API error"))
+
+    hotels = data.get("hotels", [])
+    hotel_list = [
+        {
+            "name": h["hotel"][0]["hotelBasicInfo"]["hotelName"],
+            "address": h["hotel"][0]["hotelBasicInfo"]["address1"],
+            "price": h["hotel"][0]["hotelBasicInfo"].get("hotelMinCharge"),
+            "hotelSpecial": h["hotel"][0]["hotelBasicInfo"]["hotelSpecial"],
+            "access": h["hotel"][0]["hotelBasicInfo"]["access"],
+            "parkingInformation": h["hotel"][0]["hotelBasicInfo"]["parkingInformation"],
+            "nearestStation": h["hotel"][0]["hotelBasicInfo"]["nearestStation"],
+            "hotelImageUrl": h["hotel"][0]["hotelBasicInfo"]["hotelImageUrl"],
+            "url": h["hotel"][0]["hotelBasicInfo"]["hotelInformationUrl"],
+        }
+        for h in hotels
+    ]
+
+    logger.info("Final response | hotels=%s", hotel_list)
+
+    return hotel_list
