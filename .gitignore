@@ -5,3 +5,6 @@
 # Dependencies and local env files
 **/*/node_modules
 **/*/.env
+
+# Build output
+**/dist/
