@@ -1,3 +1,4 @@
+import asyncio
 import logging
 
 from langchain_openai import ChatOpenAI
@@ -9,7 +10,9 @@ from agent.tools.retrieval_tool import search_onsen
 from agent.tools.geocoding_tool import geocode_location
 from agent.tools.rakuten_tool import search_rakuten_onsen
 from services.chat.chat_service import get_history, save_message
+from services.geocoding.geocoding_service import geocode
 from core.config import settings
+from core.exceptions import GeocodingError
 
 logger = logging.getLogger(__name__)
 
@@ -27,6 +30,8 @@ class OnsenResult(BaseModel):
     spring_type: str
     spa_quality: str
     sales_point: str | None = Field(default=None, description="Hot spring sales point")
+    lat: float | None = Field(default=None, description="Latitude of the onsen")
+    lng: float | None = Field(default=None, description="Longitude of the onsen")
 
 class HotelResult(BaseModel):
     name: str = Field(description="Name in English")
@@ -71,9 +76,21 @@ tools = [search_onsen, geocode_location, search_rakuten_onsen]
 
 graph = create_react_agent(llm, tools, prompt=_SYSTEM_PROMPT, response_format=AgentResponse)
 
+async def _enrich_coordinates(onsen: OnsenResult) -> None:
+    query = f"{onsen.name}, {onsen.location}, Japan" if onsen.location else f"{onsen.name}, Japan"
+    try:
+        coords = await asyncio.to_thread(geocode, query)
+        onsen.lat = coords["latitude"]
+        onsen.lng = coords["longitude"]
+    except GeocodingError:
+        pass
+
+
 async def run_agent(message: str, session_id: str) -> dict:
     history = get_history(session_id)
     result = await graph.ainvoke({"messages": history + [HumanMessage(content=message)]})
     structured: AgentResponse = result["structured_response"]
+    if structured.onsens:
+        await asyncio.gather(*[_enrich_coordinates(o) for o in structured.onsens])
     save_message(session_id, message, structured.reply)
     return structured.model_dump()
