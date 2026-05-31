@@ -11,21 +11,25 @@ export const initialState = {
 
 export function appReducer(state, action) {
   switch (action.type) {
-    case 'CHAT_RESULTS':
-      // payload: { onsens, assistantMessage }
+    case 'CHAT_RESULTS': {
+      // payload: { onsens, hotels, assistantMessage }
       // Appends the assistant reply to existing messages — no stale closure risk.
+      // If the chat response includes hotels (e.g. "show me X onsen and nearby
+      // hotels"), show hotel markers too; otherwise just onsen markers.
+      const hotels = action.payload.hotels ?? [];
       return {
         ...state,
         onsens: action.payload.onsens ?? [],
+        hotels,
         messages: action.payload.assistantMessage
           ? [...state.messages, action.payload.assistantMessage]
           : state.messages,
-        hotels: [],
         selectedOnsen: null,
         selectedHotel: null,
-        activeMarkers: 'onsens',
+        activeMarkers: hotels.length > 0 ? 'both' : 'onsens',
         status: 'idle',
       };
+    }
 
     case 'ADD_MESSAGE':
       return {

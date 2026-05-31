@@ -30,13 +30,16 @@ export default function ChatPanel({ state, dispatch }) {
 
       const data = await res.json();
       const onsens = data.onsens ?? [];
+      const hotels = data.hotels ?? [];
 
-      // 2. One atomic dispatch — appends assistant reply, sets onsens, resets hotels/selection.
+      // 2. One atomic dispatch — appends assistant reply, sets onsens + hotels, resets selection.
       //    Reducer appends assistantMessage to current state.messages (no stale closure).
+      //    When the reply includes hotels, the reducer also flips markers to 'both'.
       dispatch({
         type: 'CHAT_RESULTS',
         payload: {
           onsens,
+          hotels,
           assistantMessage: { role: 'assistant', content: data.reply, onsens },
         },
       });

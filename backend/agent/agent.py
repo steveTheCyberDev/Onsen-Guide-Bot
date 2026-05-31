@@ -35,12 +35,14 @@ class OnsenResult(BaseModel):
 
 class HotelResult(BaseModel):
     name: str = Field(description="Name in English")
-    orinialName: str = Field(description="Name in Original Language")
+    originalName: str = Field(description="Name in Original Language")
     location: str | None = Field(default=None, description="City and prefecture in English")
     hotelSpecial: str | None = Field(default=None, description="Display in English")
     price: str | None = Field(default=None, description="Minimum price per night in yen, numbers only e.g. '4200' — hotel results only")
     image: str | None = Field(default=None, description="Image URL — hotel results only")
     url: str | None = Field(default=None, description="Link to more information")
+    lat: float | None = Field(default=None, description="Latitude of hotel")
+    lng: float | None = Field(default=None, description="Longitude of hotel")
 
 
 class AgentResponse(BaseModel):
@@ -59,10 +61,10 @@ class AgentResponse(BaseModel):
     hotels: list[HotelResult] = Field(
         default=[],
         description=(
-            "Every result goes here — both onsen results from the retrieval tool AND hotel results from Rakuten. "
-            "Onsens: populate name, location, spring_type, description, url. "
-            "Hotels: populate name, location, price, image, url. "
-            "Translate all Japanese names, hotel special and locations to English."
+            "Hotel results from the Rakuten Travel tool only. "
+            "Populate name, originalName, location, hotelSpecial, price, image, url. "
+            "Copy lat and lng verbatim from the tool output for each hotel — do not invent or round them. "
+            "Translate hotel names, hotelSpecial and locations to English; keep the Japanese name in originalName."
         )
     )
 
