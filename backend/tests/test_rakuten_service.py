@@ -19,6 +19,8 @@ def _basic_info(**overrides):
         "hotelMinCharge": 12000,
         "hotelSpecial": "Rooftop onsen with ocean view",
         "access": "10 min from Naha Airport",
+        "latitude": 26.2124,
+        "longitude": 127.6809,
         "parkingInformation": "Free parking",
         "nearestStation": "Asahibashi",
         "hotelImageUrl": "https://img.example.com/naha.jpg",
@@ -58,6 +60,16 @@ def test_search_hotels_maps_hotel_name():
         result = rakuten_service.search_hotels(26.2, 127.6)
     # Assert
     assert result[0]["name"] == "Ryukyu Inn"
+
+
+def test_search_hotels_maps_coordinates():
+    # Arrange
+    payload = {"hotels": [_hotel_entry(latitude=34.05, longitude=135.0)]}
+    # Act
+    with patch.object(rakuten_service.requests, "get", return_value=_mock_response(payload)):
+        result = rakuten_service.search_hotels(26.2, 127.6)
+    # Assert
+    assert result[0]["lat"] == 34.05 and result[0]["lng"] == 135.0
 
 
 def test_search_hotels_maps_url_from_hotel_information_url():

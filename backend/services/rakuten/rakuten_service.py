@@ -58,6 +58,8 @@ def search_hotels(latitude: float, longitude: float, radius: int = 3) -> list:
             "price": h["hotel"][0]["hotelBasicInfo"].get("hotelMinCharge"),
             "hotelSpecial": h["hotel"][0]["hotelBasicInfo"]["hotelSpecial"],
             "access": h["hotel"][0]["hotelBasicInfo"]["access"],
+            "lat": h["hotel"][0]["hotelBasicInfo"]["latitude"],
+            "lng": h["hotel"][0]["hotelBasicInfo"]["longitude"],
             "parkingInformation": h["hotel"][0]["hotelBasicInfo"]["parkingInformation"],
             "nearestStation": h["hotel"][0]["hotelBasicInfo"]["nearestStation"],
             "hotelImageUrl": h["hotel"][0]["hotelBasicInfo"]["hotelImageUrl"],
