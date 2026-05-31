@@ -1,15 +1,29 @@
-import Chat from "./components/Chat";
+import { useReducer } from 'react';
+import { appReducer, initialState } from './reducer/appReducer';
+import Header from './components/layout/Header';
+import MainLayout from './components/layout/MainLayout';
+import ChatPanel from './components/chat/ChatPanel';
+import MapPanel from './components/map/MapPanel';
+import HotelPanel from './components/hotels/HotelPanel';
 
 export default function App() {
+  const [state, dispatch] = useReducer(appReducer, initialState);
+
+  function handleSelectPrefecture(prefecture) {
+    dispatch({ type: 'SELECT_PREFECTURE', payload: prefecture });
+  }
+
   return (
-    <div className="min-h-screen bg-[#FAF7F2] font-sans">
-      <header className="text-center py-6">
-        <h1 className="text-2xl font-semibold text-[#C45C3A]">温泉 Onsen Guide</h1>
-        <p className="text-sm text-gray-500 mt-1">Find your perfect Japanese hot spring — in English</p>
-      </header>
-      <main className="max-w-2xl mx-auto">
-        <Chat />
-      </main>
+    <div className="flex flex-col h-screen overflow-hidden bg-[#FAF7F2]">
+      <Header
+        selectedPrefecture={state.selectedPrefecture}
+        onSelectPrefecture={handleSelectPrefecture}
+      />
+      <MainLayout
+        chatPanel={<ChatPanel state={state} dispatch={dispatch} />}
+        mapPanel={<MapPanel state={state} dispatch={dispatch} />}
+        hotelPanel={<HotelPanel state={state} dispatch={dispatch} />}
+      />
     </div>
   );
 }
