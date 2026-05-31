@@ -1,0 +1,3 @@
+# Local-only Claude Code artifacts
+.claude/agent-memory/
+.claude/settings.local.json
