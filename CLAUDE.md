@@ -107,6 +107,20 @@ services/
 - `api/` never calls `services/` directly — always via `agent/`
 - Data flows downward only: `api/` → `agent/` → `tools/` → `services/`
 
+### Exception: deterministic data endpoints
+
+The `api/ → agent/` rule exists for the **conversational `/chat` flow**, where the
+LLM agent reasons over the request and decides which tools to call. It does **not**
+apply to deterministic data endpoints that have no reasoning step.
+
+`POST /hotels` is such an endpoint: clicking an onsen on the map is a plain
+coordinates-in → hotel-list-out lookup, so the route calls
+`services/rakuten/rakuten_service.py` **directly** (no agent, no LLM call). Routing
+it through the agent would add needless latency and token cost.
+
+Rule of thumb: **conversational endpoints go through `agent/`; deterministic
+data endpoints may call `services/` directly.**
+
 ---
 
 ## Core Config (`core/config.py`)
