@@ -8,6 +8,7 @@ class Settings(BaseSettings):
     rakuten_app_id: str
     rakuten_access_key: str
     rakuten_hotel_url: str
+    cors_origins: list[str] = ["http://localhost:5173"]
 
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
 
