@@ -151,6 +151,32 @@ RAKUTEN_ACCESS_KEY=...      # Rakuten Travel API
 create a env.example in the project 
 ---
 
+## Running Locally
+
+Two servers run side by side. Start each in its own terminal from its own directory.
+
+**Backend** — FastAPI on port 8000:
+```bash
+cd backend
+.venv/bin/uvicorn api.main:app --reload --port 8000   # http://localhost:8000
+```
+- Requires `backend/.env` with all keys (see Environment Variables above).
+- Health check: `GET http://localhost:8000/health`.
+
+**Frontend** — Vite + React on port 5173:
+```bash
+cd frontend
+nvm use            # reads .nvmrc → Node 20.16.0 (Vite 5 needs Node 18+)
+npm install        # first run only
+npm run dev        # http://localhost:5173
+```
+- Requires `frontend/.env` with `VITE_API_URL=http://localhost:8000` and `VITE_GOOGLE_MAPS_API_KEY`.
+- **Node version matters:** the system default Node (v10) crashes Vite. Always `nvm use` first.
+
+> Shortcut: run the `/run-servers` skill to launch both at once.
+
+---
+
 ## Rokuten Travel API
 Refer to API doc under /backend/api/api_doc/rakuten_swagger.yaml
 
