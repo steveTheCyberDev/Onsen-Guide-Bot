@@ -152,9 +152,10 @@ create a env.example in the project
 ---
 
 ## Rokuten Travel API
-Refer to API doc under /backend/api/api_doc
+Refer to API doc under /backend/api/api_doc/rakuten_swagger.yaml
 
 ## Google Geolocating API
+Refer to API doc under /backend/api/api_doc/geocoding_v4.md
 
 ## Sub agents
 1. frontend-developer 
