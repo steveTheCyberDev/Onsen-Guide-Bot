@@ -11,3 +11,10 @@
 
 # Test coverage output
 **/coverage/
+
+# macOS
+**/.DS_Store
+
+# Local full-dataset archive — not used by the build (code reads backend/data/).
+# Copy region files from here into backend/data/ when expanding coverage.
+/data/

@@ -7,4 +7,3 @@ venv/
 .DS_Store
 result*.json
 .claude/
-data
