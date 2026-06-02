@@ -8,3 +8,6 @@
 
 # Build output
 **/dist/
+
+# Test coverage output
+**/coverage/
