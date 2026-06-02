@@ -122,6 +122,32 @@ def test_search_hotels_raises_with_default_message_when_no_description():
             rakuten_service.search_hotels(0.0, 0.0)
 
 
+def test_search_hotels_warns_when_empty_with_no_error(caplog):
+    # Arrange — valid response, no error, but zero hotels (e.g. egress IP not
+    # allowlisted). The service should still return [] but log a WARNING so the
+    # misconfig is visible instead of silently looking like "no hotels nearby".
+    payload = {"hotels": []}
+    # Act
+    with patch.object(rakuten_service.requests, "get", return_value=_mock_response(payload)):
+        with caplog.at_level("WARNING"):
+            result = rakuten_service.search_hotels(26.2, 127.6)
+    # Assert
+    assert result == []
+    assert "0 hotels" in caplog.text
+    assert any(r.levelname == "WARNING" for r in caplog.records)
+
+
+def test_search_hotels_no_warning_when_results_present(caplog):
+    # Arrange
+    payload = {"hotels": [_hotel_entry()]}
+    # Act
+    with patch.object(rakuten_service.requests, "get", return_value=_mock_response(payload)):
+        with caplog.at_level("WARNING"):
+            rakuten_service.search_hotels(26.2, 127.6)
+    # Assert — no empty-result warning when hotels came back
+    assert "0 hotels" not in caplog.text
+
+
 def test_search_hotels_passes_radius_param():
     # Arrange
     payload = {"hotels": []}
