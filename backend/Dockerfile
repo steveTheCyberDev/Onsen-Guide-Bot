@@ -54,6 +54,8 @@ COPY data/         data/
 EXPOSE 8000
 
 # Bind to 0.0.0.0 so Railway's load balancer can reach the container.
+# Respect $PORT (Railway injects it); fall back to 8000 for local runs.
+# Shell form is required so ${PORT} is expanded at runtime.
 # --workers 1 keeps the embedded ChromaDB PersistentClient single-process safe.
 # Increase workers only after migrating ChromaDB to HTTP-server mode (V3).
-CMD ["uvicorn", "api.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "1"]
+CMD uvicorn api.main:app --host 0.0.0.0 --port ${PORT:-8000} --workers 1
