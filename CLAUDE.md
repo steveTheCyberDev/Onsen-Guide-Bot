@@ -234,6 +234,34 @@ glue, and trivial one-step edits where spawning a cold agent costs more than it
 saves. Agents never talk to the user directly — relay what matters from each
 agent's result.
 
+## Autonomous Backend Test/Fix Loop
+
+When running the backend test+fix flow (e.g. via `/loop`), operate without
+per-step instruction, following these rules:
+
+**Done =** (1) full backend `pytest` suite green, AND (2) a real `/chat` smoke
+passes — start the backend locally (the loop fixes local code, so smoke the
+local server, not the deployed one), POST `/chat`, assert HTTP 200 + a
+non-empty `reply` and no 5xx.
+
+**On a failure / defect:**
+- Branch off `develop`. Branch name = a short kebab "defect name"
+  (e.g. `fix-chat-timeout`).
+- Fix tests and/or source freely. **Small** defects: fix inline for speed.
+  **Larger** ones: delegate (`bobo-backend-tester` for tests,
+  `strong-backend-dev` for fixes).
+- Commit logically, push the branch, open a PR **into `develop`**
+  (`gh pr create --base develop`). Do NOT merge; do NOT touch `main`.
+
+**STOP and ask the user before:**
+- deleting files, or any large modernization/refactor,
+- a change needing a product/behavior decision, touching secrets/infra, or
+  altering an API contract,
+- churn (≈3 failed attempts on the same failure).
+
+Note: each `/chat` smoke makes real OpenAI (and tool) API calls — money per run.
+Run the smoke only when the suite is green and code changed, not on every tick.
+
 ## Version Roadmap
 
 ### V1 — Simple (current)
