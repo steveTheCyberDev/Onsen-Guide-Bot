@@ -1,0 +1,42 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# .dockerignore — controls what is sent to the Docker build context.
+# Keeping this tight makes builds faster and prevents secrets leaking into
+# the image layer cache.
+# ─────────────────────────────────────────────────────────────────────────────
+
+# ── Secrets — NEVER in the image ─────────────────────────────────────────────
+.env
+
+# ── ChromaDB persistent store ─────────────────────────────────────────────────
+# The Railway volume is mounted at /app/chroma_db at runtime.
+# Baking a local (potentially partial) DB into the image would shadow the
+# volume and cause confusing "data not there" bugs.
+chroma_db/
+
+# ── Virtual environment ───────────────────────────────────────────────────────
+# pip install inside the image handles deps; the local venv is irrelevant.
+.venv/
+venv/
+
+# ── Python bytecode & caches ──────────────────────────────────────────────────
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+
+# ── Test suite ────────────────────────────────────────────────────────────────
+# Tests and fixtures are not needed at runtime.
+tests/
+pytest.ini
+
+# ── Ephemeral build/test artefacts ───────────────────────────────────────────
+result*.json
+
+# ── macOS metadata ────────────────────────────────────────────────────────────
+.DS_Store
+
+# ── Project-level tooling (not needed in container) ──────────────────────────
+.claude/
+.git/
+.gitignore

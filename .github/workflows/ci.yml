@@ -1,0 +1,82 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Onsen Guide Bot — Continuous Integration
+#
+# Jobs defined here:
+#   backend-tests   — lint-free pytest run (Python 3.12). Runs on backend/**
+#                     changes, PRs, and pushes to any branch.
+#
+# Jobs planned for a later phase (frontend deployment):
+#   frontend-tests  — Vitest 2.x + Node 20.16.0. Added when the frontend
+#                     deployment phase begins. See DEPLOYMENT.md §Frontend.
+#
+# Branch-protection note: once both jobs exist, require BOTH as status checks
+# before any merge to main.
+# ─────────────────────────────────────────────────────────────────────────────
+
+name: CI
+
+on:
+  push:
+    paths:
+      # Run whenever backend source or its dependencies change.
+      # workflow_dispatch (below) always runs regardless of paths.
+      - "backend/**"
+      - ".github/workflows/ci.yml"
+  pull_request:
+    paths:
+      - "backend/**"
+      - ".github/workflows/ci.yml"
+  # Allow a manual trigger from the Actions tab — useful for verifying the
+  # pipeline after Railway provisioning without needing a code change.
+  workflow_dispatch:
+
+jobs:
+  # ── Backend test gate ───────────────────────────────────────────────────────
+  backend-tests:
+    name: Backend — pytest (Python 3.12)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          # Cache pip's download cache keyed on the exact requirements file.
+          # A requirements.txt change busts the cache automatically.
+          cache: "pip"
+          cache-dependency-path: backend/requirements.txt
+
+      - name: Install backend dependencies
+        run: pip install -r backend/requirements.txt
+
+      - name: Run pytest
+        # pytest.ini sets testpaths = tests, so just running `pytest` from the
+        # backend/ directory is enough — no extra flags needed.
+        # conftest.py injects dummy env vars (no real secrets required here).
+        working-directory: backend
+        run: pytest
+
+  # ── Frontend test gate (placeholder — added in frontend deployment phase) ───
+  # frontend-tests:
+  #   name: Frontend — Vitest (Node 20.16.0)
+  #   runs-on: ubuntu-latest
+  #   steps:
+  #     - uses: actions/checkout@v4
+  #     - name: Set up Node
+  #       uses: actions/setup-node@v4
+  #       with:
+  #         node-version-file: frontend/.nvmrc   # pins to 20.16.0 via .nvmrc
+  #         cache: npm
+  #         cache-dependency-path: frontend/package-lock.json
+  #     - name: Install frontend dependencies
+  #       working-directory: frontend
+  #       run: npm ci
+  #     - name: Run Vitest
+  #       working-directory: frontend
+  #       run: npm test -- --run
+  #       env:
+  #         VITE_API_URL: http://localhost:8000          # not used in unit tests
+  #         VITE_GOOGLE_MAPS_API_KEY: test-maps-key     # not used in unit tests
