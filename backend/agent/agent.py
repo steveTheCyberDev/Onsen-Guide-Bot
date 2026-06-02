@@ -25,7 +25,16 @@ _SYSTEM_PROMPT = (
     "and pass it to the search_onsen tool's `prefecture` argument as the English prefecture name "
     "(e.g. 'Okinawa', 'Mie', 'Tokyo'); this restricts results to that prefecture. If the user does "
     "not specify a location, omit the prefecture argument. "
-    "List out onsens along with name, location and sale point in the reply"
+    "List out onsens along with name, location and sale point in the reply. "
+    "CRITICAL — hotels: every hotel you return MUST come verbatim from the "
+    "search_rakuten_onsen tool's output. If you did not call search_rakuten_onsen, "
+    "or it returned no results, the hotels list MUST be empty. NEVER invent, guess, "
+    "or recall hotel names, URLs, images, prices, or coordinates from your own "
+    "knowledge, and NEVER use placeholder or example URLs (e.g. anything containing "
+    "'example.com'). Map each hotel field directly from the tool output: set `image` "
+    "from the tool's `hotelImageUrl` field, set `url` from the tool's `url` field (the "
+    "Rakuten hotelInformationUrl), and copy the tool's `lat`/`lng` verbatim. If a real "
+    "field is missing from the tool output, leave it null rather than fabricating a value."
 )
 
 class OnsenResult(BaseModel):
@@ -65,10 +74,16 @@ class AgentResponse(BaseModel):
     hotels: list[HotelResult] = Field(
         default=[],
         description=(
-            "Hotel results from the Rakuten Travel tool only. "
-            "Populate name, originalName, location, hotelSpecial, price, image, url. "
-            "Copy lat and lng verbatim from the tool output for each hotel — do not invent or round them. "
-            "Translate hotel names, hotelSpecial and locations to English; keep the Japanese name in originalName."
+            "Hotels MUST come verbatim from the search_rakuten_onsen tool output ONLY. "
+            "If search_rakuten_onsen was not called or returned no results, this MUST be an "
+            "empty list. NEVER invent or recall hotel names, URLs, images, prices, or "
+            "coordinates, and never use placeholder/example URLs (e.g. anything containing "
+            "'example.com'). For each hotel from the tool: set `image` from the tool's "
+            "`hotelImageUrl` field, set `url` from the tool's `url` field (the Rakuten "
+            "hotelInformationUrl), and copy the tool's `lat` and `lng` verbatim — do not "
+            "invent or round them. "
+            "Translate name, hotelSpecial and location to English; keep the Japanese name in "
+            "originalName. Leave any field null if the tool output does not provide it."
         )
     )
 
