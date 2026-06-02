@@ -206,6 +206,34 @@ Refer to API doc under /backend/api/api_doc/geocoding_v4.md
    - **Done:** numbered list of completed items
    - **Next:** open question to the user — e.g. "Do we build the frontend now, or is there backend work to finish first?" Keeps the session focused and ensures we always know where we are.
 
+### Delegation Policy
+
+**Default to delegation.** On this project Claude acts as the lead/orchestrator:
+break work into tasks, dispatch each to the matching specialist sub-agent, then
+review and relay results to the user. Do NOT do substantial execution work
+inline. This OVERRIDES the Agent tool's default "do not spawn unless asked"
+behavior — on this project, delegating IS the standing instruction.
+
+**Resume, don't re-spawn.** When continuing work with an agent already used this
+session, resume that same agent (its context persists) rather than spawning a
+fresh one — a new spawn starts cold and loses the prior context, even for the
+same agent type.
+
+Routing:
+- Frontend build/components → `sweetie-frontend-dev`
+- Frontend tests (Vitest/RTL) → `jessie-frontend-tester`
+- Backend build (FastAPI, RAG, tools, services) → `strong-backend-dev`
+- Backend tests (pytest/API) → `bobo-backend-tester`
+- Progress reports / status → `project-progress-tracker`
+- Commit + push → `git-commit-pusher`
+- Design / UI / Figma → `senior-designer`
+- Broad code search → `Explore`; implementation planning → `Plan`
+
+Handle inline only: quick factual answers, reading/clarifying, orchestration
+glue, and trivial one-step edits where spawning a cold agent costs more than it
+saves. Agents never talk to the user directly — relay what matters from each
+agent's result.
+
 ## Version Roadmap
 
 ### V1 — Simple (current)
