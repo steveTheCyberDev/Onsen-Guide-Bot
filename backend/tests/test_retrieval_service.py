@@ -90,3 +90,36 @@ def test_query_onsen_passes_n_results_to_collection():
     # Assert
     _, kwargs = collection.query.call_args
     assert kwargs["n_results"] == 3
+
+
+def test_query_onsen_builds_where_filter_when_prefecture_given():
+    # Arrange
+    collection = _fake_collection([], [])
+    # Act
+    with patch.object(retrieval_service, "get_collection", return_value=collection):
+        retrieval_service.query_onsen("spring", prefecture="Okinawa")
+    # Assert
+    _, kwargs = collection.query.call_args
+    assert kwargs["where"] == {"prefecture_en": "Okinawa"}
+
+
+def test_query_onsen_omits_where_filter_when_prefecture_absent():
+    # Arrange
+    collection = _fake_collection([], [])
+    # Act
+    with patch.object(retrieval_service, "get_collection", return_value=collection):
+        retrieval_service.query_onsen("spring")
+    # Assert — no metadata filter applied, preserving original semantic behaviour
+    _, kwargs = collection.query.call_args
+    assert "where" not in kwargs
+
+
+def test_query_onsen_omits_where_filter_when_prefecture_empty_string():
+    # Arrange — an empty prefecture string must not produce an impossible filter
+    collection = _fake_collection([], [])
+    # Act
+    with patch.object(retrieval_service, "get_collection", return_value=collection):
+        retrieval_service.query_onsen("spring", prefecture="")
+    # Assert
+    _, kwargs = collection.query.call_args
+    assert "where" not in kwargs
