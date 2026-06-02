@@ -51,6 +51,16 @@ def search_hotels(latitude: float, longitude: float, radius: int = 3) -> list:
         raise RakutenError(data.get("error_description", "Rakuten API error"))
 
     hotels = data.get("hotels", [])
+    if not hotels:
+        # No error key but zero hotels — often a silent config problem rather than a
+        # genuinely empty area (e.g. this server's egress IP is not in Rakuten's
+        # Allowed IP list, or bad credentials). Surface it loudly with the raw body.
+        logger.warning(
+            "Rakuten returned 0 hotels with no error field — verify the Allowed IP "
+            "list (this server's outbound IP must be allowlisted) and credentials. "
+            "lat=%s lng=%s radius=%s | raw_response=%s",
+            latitude, longitude, radius, data,
+        )
     hotel_list = [
         {
             "name": h["hotel"][0]["hotelBasicInfo"]["hotelName"],
