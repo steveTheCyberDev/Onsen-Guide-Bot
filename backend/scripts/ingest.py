@@ -14,16 +14,14 @@ import sys
 from pathlib import Path
 
 BACKEND_DIR = Path(__file__).parent.parent
-PROJECT_ROOT = BACKEND_DIR.parent
 sys.path.insert(0, str(BACKEND_DIR))
 
 from dotenv import load_dotenv
 load_dotenv(BACKEND_DIR / ".env")
 
 import openai
-import chromadb
-from chromadb.utils.embedding_functions import OpenAIEmbeddingFunction
 from core.config import settings
+from vectorstore.store import get_collection
 
 # ── Static lookups ──────────────────────────────────────────────────────────
 
@@ -91,15 +89,10 @@ def translate_batch(items: list[dict]) -> list[dict]:
 
 
 # ── ChromaDB ─────────────────────────────────────────────────────────────────
-
-def get_collection():
-    chroma_path = str(PROJECT_ROOT / "backend" / "chroma_db")
-    db = chromadb.PersistentClient(path=chroma_path)
-    embedding_fn = OpenAIEmbeddingFunction(
-        api_key=settings.openai_api_key,
-        model_name="text-embedding-3-small",
-    )
-    return db.get_or_create_collection("onsen_springs", embedding_function=embedding_fn)
+# The collection (path, name "onsen_springs", and text-embedding-3-small embedding
+# function) is owned by vectorstore.store.get_collection — imported above. Reusing
+# it guarantees the ingest job writes to the SAME ChromaDB path the app reads from
+# (settings.chroma_path), instead of a separately computed path.
 
 
 # ── Main ─────────────────────────────────────────────────────────────────────

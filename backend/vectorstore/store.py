@@ -7,13 +7,12 @@ _client = None
 _collection = None
 
 COLLECTION_NAME = "onsen_springs"
-CHROMA_PATH = "chroma_db"
 
 
 def get_client():
     global _client
     if _client is None:
-        _client = chromadb.PersistentClient(path=CHROMA_PATH)
+        _client = chromadb.PersistentClient(path=settings.chroma_path)
     return _client
 
 

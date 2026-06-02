@@ -28,6 +28,11 @@ FROM python:3.12-slim
 # Keeps Python output unbuffered so Railway / Docker logs are immediate.
 ENV PYTHONUNBUFFERED=1
 
+# In a container, persist ChromaDB to the volume mounted at /app/chroma_db.
+# Locally (no override) the app uses the relative default and reads backend/chroma_db.
+# Both the app and the ingest job read settings.chroma_path, so they always agree.
+ENV CHROMA_PATH=/app/chroma_db
+
 WORKDIR /app
 
 # ── 1. Install dependencies ──────────────────────────────────────────────────
