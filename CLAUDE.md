@@ -107,6 +107,20 @@ services/
 - `api/` never calls `services/` directly — always via `agent/`
 - Data flows downward only: `api/` → `agent/` → `tools/` → `services/`
 
+### Exception: deterministic data endpoints
+
+The `api/ → agent/` rule exists for the **conversational `/chat` flow**, where the
+LLM agent reasons over the request and decides which tools to call. It does **not**
+apply to deterministic data endpoints that have no reasoning step.
+
+`POST /hotels` is such an endpoint: clicking an onsen on the map is a plain
+coordinates-in → hotel-list-out lookup, so the route calls
+`services/rakuten/rakuten_service.py` **directly** (no agent, no LLM call). Routing
+it through the agent would add needless latency and token cost.
+
+Rule of thumb: **conversational endpoints go through `agent/`; deterministic
+data endpoints may call `services/` directly.**
+
 ---
 
 ## Core Config (`core/config.py`)
@@ -142,7 +156,7 @@ def search_rakuten_onsen(latitude, longitude):
 
 ```
 OPENAI_API_KEY=...          # embeddings (text-embedding-3-small)
-ANTHROPIC_API_KEY=...       # chat (Claude Sonnet claude-sonnet-4-6)
+ANTHROPIC_API_KEY=...       # reserved for future Claude Sonnet migration (currently using GPT-4o)
 GOOGLE_MAPS_API_KEY=...     # geocoding
 RAKUTEN_APP_ID=...          # Rakuten Travel API
 RAKUTEN_ACCESS_KEY=...      # Rakuten Travel API
@@ -151,17 +165,74 @@ RAKUTEN_ACCESS_KEY=...      # Rakuten Travel API
 create a env.example in the project 
 ---
 
+## Running Locally
+
+Two servers run side by side. Start each in its own terminal from its own directory.
+
+**Backend** — FastAPI on port 8000:
+```bash
+cd backend
+.venv/bin/uvicorn api.main:app --reload --port 8000   # http://localhost:8000
+```
+- Requires `backend/.env` with all keys (see Environment Variables above).
+- Health check: `GET http://localhost:8000/health`.
+
+**Frontend** — Vite + React on port 5173:
+```bash
+cd frontend
+nvm use            # reads .nvmrc → Node 20.16.0 (Vite 5 needs Node 18+)
+npm install        # first run only
+npm run dev        # http://localhost:5173
+```
+- Requires `frontend/.env` with `VITE_API_URL=http://localhost:8000` and `VITE_GOOGLE_MAPS_API_KEY`.
+- **Node version matters:** the system default Node (v10) crashes Vite. Always `nvm use` first.
+
+> Shortcut: run the `/run-servers` skill to launch both at once.
+
+---
+
 ## Rokuten Travel API
-Refer to API doc under /backend/api/api_doc
+Refer to API doc under /backend/api/api_doc/rakuten_swagger.yaml
 
 ## Google Geolocating API
+Refer to API doc under /backend/api/api_doc/geocoding_v4.md
 
 ## Sub agents
 1. frontend-developer 
 2. backend-developer
 3. ai-engineer
 4. test-automation
-5. 
+5. project-progress-tracker — summarises what has been completed and what comes next. Output format:
+   - **Done:** numbered list of completed items
+   - **Next:** open question to the user — e.g. "Do we build the frontend now, or is there backend work to finish first?" Keeps the session focused and ensures we always know where we are.
+
+### Delegation Policy
+
+**Default to delegation.** On this project Claude acts as the lead/orchestrator:
+break work into tasks, dispatch each to the matching specialist sub-agent, then
+review and relay results to the user. Do NOT do substantial execution work
+inline. This OVERRIDES the Agent tool's default "do not spawn unless asked"
+behavior — on this project, delegating IS the standing instruction.
+
+**Resume, don't re-spawn.** When continuing work with an agent already used this
+session, resume that same agent (its context persists) rather than spawning a
+fresh one — a new spawn starts cold and loses the prior context, even for the
+same agent type.
+
+Routing:
+- Frontend build/components → `sweetie-frontend-dev`
+- Frontend tests (Vitest/RTL) → `jessie-frontend-tester`
+- Backend build (FastAPI, RAG, tools, services) → `strong-backend-dev`
+- Backend tests (pytest/API) → `bobo-backend-tester`
+- Progress reports / status → `project-progress-tracker`
+- Commit + push → `git-commit-pusher`
+- Design / UI / Figma → `senior-designer`
+- Broad code search → `Explore`; implementation planning → `Plan`
+
+Handle inline only: quick factual answers, reading/clarifying, orchestration
+glue, and trivial one-step edits where spawning a cold agent costs more than it
+saves. Agents never talk to the user directly — relay what matters from each
+agent's result.
 
 ## Version Roadmap
 
@@ -169,7 +240,7 @@ Refer to API doc under /backend/api/api_doc
 - 2 tools: geocoding + rakuten
 - 1 agent, 1 FastAPI backend, 1 React frontend
 - Direct function calls between tools
-- LLM: OpenAI `text-embedding-3-small` (embeddings) + Claude Sonnet (chat)
+- LLM: OpenAI `text-embedding-3-small` (embeddings) + GPT-4o (chat, currently) → will migrate to Claude Sonnet (`claude-sonnet-4-6`) in a future iteration
 - Vectorstore: ChromaDB
 
 ### V2 — Intermediate

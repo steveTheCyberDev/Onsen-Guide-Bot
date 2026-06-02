@@ -1,3 +1,4 @@
+import asyncio
 import logging
 
 from langchain_openai import ChatOpenAI
@@ -9,7 +10,9 @@ from agent.tools.retrieval_tool import search_onsen
 from agent.tools.geocoding_tool import geocode_location
 from agent.tools.rakuten_tool import search_rakuten_onsen
 from services.chat.chat_service import get_history, save_message
+from services.geocoding.geocoding_service import geocode
 from core.config import settings
+from core.exceptions import GeocodingError
 
 logger = logging.getLogger(__name__)
 
@@ -27,15 +30,19 @@ class OnsenResult(BaseModel):
     spring_type: str
     spa_quality: str
     sales_point: str | None = Field(default=None, description="Hot spring sales point")
+    lat: float | None = Field(default=None, description="Latitude of the onsen")
+    lng: float | None = Field(default=None, description="Longitude of the onsen")
 
 class HotelResult(BaseModel):
     name: str = Field(description="Name in English")
-    orinialName: str = Field(description="Name in Original Language")
+    originalName: str = Field(description="Name in Original Language")
     location: str | None = Field(default=None, description="City and prefecture in English")
     hotelSpecial: str | None = Field(default=None, description="Display in English")
     price: str | None = Field(default=None, description="Minimum price per night in yen, numbers only e.g. '4200' — hotel results only")
     image: str | None = Field(default=None, description="Image URL — hotel results only")
     url: str | None = Field(default=None, description="Link to more information")
+    lat: float | None = Field(default=None, description="Latitude of hotel")
+    lng: float | None = Field(default=None, description="Longitude of hotel")
 
 
 class AgentResponse(BaseModel):
@@ -54,10 +61,10 @@ class AgentResponse(BaseModel):
     hotels: list[HotelResult] = Field(
         default=[],
         description=(
-            "Every result goes here — both onsen results from the retrieval tool AND hotel results from Rakuten. "
-            "Onsens: populate name, location, spring_type, description, url. "
-            "Hotels: populate name, location, price, image, url. "
-            "Translate all Japanese names, hotel special and locations to English."
+            "Hotel results from the Rakuten Travel tool only. "
+            "Populate name, originalName, location, hotelSpecial, price, image, url. "
+            "Copy lat and lng verbatim from the tool output for each hotel — do not invent or round them. "
+            "Translate hotel names, hotelSpecial and locations to English; keep the Japanese name in originalName."
         )
     )
 
@@ -71,9 +78,21 @@ tools = [search_onsen, geocode_location, search_rakuten_onsen]
 
 graph = create_react_agent(llm, tools, prompt=_SYSTEM_PROMPT, response_format=AgentResponse)
 
+async def _enrich_coordinates(onsen: OnsenResult) -> None:
+    query = f"{onsen.name}, {onsen.location}, Japan" if onsen.location else f"{onsen.name}, Japan"
+    try:
+        coords = await asyncio.to_thread(geocode, query)
+        onsen.lat = coords["latitude"]
+        onsen.lng = coords["longitude"]
+    except GeocodingError:
+        pass
+
+
 async def run_agent(message: str, session_id: str) -> dict:
     history = get_history(session_id)
     result = await graph.ainvoke({"messages": history + [HumanMessage(content=message)]})
     structured: AgentResponse = result["structured_response"]
+    if structured.onsens:
+        await asyncio.gather(*[_enrich_coordinates(o) for o in structured.onsens])
     save_message(session_id, message, structured.reply)
     return structured.model_dump()

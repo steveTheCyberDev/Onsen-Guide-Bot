@@ -1,0 +1,13 @@
+# Local-only Claude Code artifacts
+.claude/agent-memory/
+.claude/settings.local.json
+
+# Dependencies and local env files
+**/*/node_modules
+**/*/.env
+
+# Build output
+**/dist/
+
+# Test coverage output
+**/coverage/
