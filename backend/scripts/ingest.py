@@ -113,6 +113,24 @@ def translate_spa_quality(quality_ja: str | None) -> str:
     return ", ".join(translated)
 
 
+def build_document(record: dict, translation: dict) -> str:
+    """The text embedded for retrieval.
+
+    Prefer the translated sales pitch, then the original Japanese one. Some
+    records have an empty sales_point — embedding "" gives a meaningless vector
+    (and can error at the embeddings API), so fall back to name + prefecture and,
+    in the worst case, a constant, guaranteeing a non-empty document.
+    """
+    name = translation.get("name_en") or record.get("name", "")
+    fallback = ". ".join(p for p in (name, record.get("prefecture_en", "")) if p)
+    return (
+        translation.get("sales_point_en")
+        or record.get("sales_point")
+        or fallback
+        or "onsen"
+    )
+
+
 def ingest(jsonl_path: Path, batch_size: int = 20) -> None:
     records = [json.loads(line) for line in jsonl_path.read_text(encoding="utf-8").splitlines() if line.strip()]
     print(f"Loaded {len(records)} records from {jsonl_path.name}")
@@ -137,7 +155,7 @@ def ingest(jsonl_path: Path, batch_size: int = 20) -> None:
         ids, documents, metadatas = [], [], []
         for j, record in enumerate(batch):
             t = trans_map.get(j, {})
-            doc = t.get("sales_point_en") or record["sales_point"]
+            doc = build_document(record, t)
             meta = {
                 "name": record["name"],
                 "name_en": t.get("name_en", ""),
