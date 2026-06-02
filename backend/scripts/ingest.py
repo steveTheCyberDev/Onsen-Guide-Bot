@@ -97,14 +97,17 @@ def translate_batch(items: list[dict]) -> list[dict]:
 
 # ── Main ─────────────────────────────────────────────────────────────────────
 
-def parse_location(location: str) -> tuple[str, str]:
-    parts = location.strip().split(" ", 1)
+def parse_location(location: str | None) -> tuple[str, str]:
+    parts = (location or "").strip().split(" ", 1)
     prefecture_ja = parts[0] if parts else ""
     city_ja = parts[1] if len(parts) > 1 else ""
     return prefecture_ja, city_ja
 
 
-def translate_spa_quality(quality_ja: str) -> str:
+def translate_spa_quality(quality_ja: str | None) -> str:
+    # Some records have a null/empty spa_quality; treat that as "no info".
+    if not quality_ja:
+        return ""
     parts = [p.strip() for p in quality_ja.split("、")]
     translated = [SPA_QUALITY_MAP.get(p, p) for p in parts]
     return ", ".join(translated)
