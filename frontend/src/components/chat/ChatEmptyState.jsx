@@ -20,7 +20,7 @@ export default function ChatEmptyState({ onSuggestionClick }) {
           <li key={s}>
             <button
               onClick={() => onSuggestionClick(s)}
-              className="w-full text-left px-3 py-2 rounded-lg bg-white border border-[#D9D0C5] text-xs text-[#2C2C2C] hover:border-[#C9533A] hover:bg-[#FAF7F2] transition-colors duration-150 focus:outline-none focus:ring-2 focus:ring-[#C9533A] focus:ring-offset-1"
+              className="w-full text-left px-3 py-2 rounded-lg bg-white border border-[#D9D0C5] text-xs text-[#2C2C2C] hover:border-[#C9533A] hover:bg-[#FAF7F2] transition-colors duration-150 focus-ring"
             >
               {s}
             </button>

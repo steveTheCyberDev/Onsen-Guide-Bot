@@ -100,7 +100,7 @@ export default function HotelCard({ hotel, isSelected, onSelect }) {
             target="_blank"
             rel="noopener noreferrer"
             onClick={(e) => e.stopPropagation()}
-            className="mt-2 flex items-center justify-center w-full px-3 py-1.5 rounded-lg bg-[#C9533A] text-white text-xs font-medium hover:bg-[#b04730] transition-colors duration-150 focus:outline-none focus:ring-2 focus:ring-[#C9533A] focus:ring-offset-1"
+            className="mt-2 flex items-center justify-center w-full px-3 py-1.5 rounded-lg bg-[#C9533A] text-white text-xs font-medium hover:bg-[#b04730] transition-colors duration-150 focus-ring"
             aria-label={`Book ${hotel.name} on Rakuten Travel`}
           >
             Book on Rakuten Travel
@@ -108,7 +108,7 @@ export default function HotelCard({ hotel, isSelected, onSelect }) {
         ) : (
           <button
             onClick={() => onSelect(hotel)}
-            className="mt-2 flex items-center justify-center w-full px-3 py-1.5 rounded-lg border border-[#C9533A] text-[#C9533A] text-xs font-medium hover:bg-[#C9533A] hover:text-white transition-colors duration-150 focus:outline-none focus:ring-2 focus:ring-[#C9533A] focus:ring-offset-1"
+            className="mt-2 flex items-center justify-center w-full px-3 py-1.5 rounded-lg border border-[#C9533A] text-[#C9533A] text-xs font-medium hover:bg-[#C9533A] hover:text-white transition-colors duration-150 focus-ring"
             aria-label={`Select ${hotel.name} on map`}
           >
             Show on map

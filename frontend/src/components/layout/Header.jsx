@@ -45,7 +45,7 @@ export default function Header({ selectedPrefecture, onSelectPrefecture }) {
           aria-haspopup="listbox"
           aria-expanded={isOpen}
           aria-label="Select prefecture"
-          className="flex items-center gap-2 px-4 py-2 rounded-lg border border-[#D9D0C5] bg-white text-sm text-[#2C2C2C] hover:border-[#C9533A] transition-colors duration-150 focus:outline-none focus:ring-2 focus:ring-[#C9533A] focus:ring-offset-1"
+          className="flex items-center gap-2 px-4 py-2 rounded-lg border border-[#D9D0C5] bg-white text-sm text-[#2C2C2C] hover:border-[#C9533A] transition-colors duration-150 focus-ring"
         >
           <span>{current ? current.label : 'All Japan 日本'}</span>
           <svg

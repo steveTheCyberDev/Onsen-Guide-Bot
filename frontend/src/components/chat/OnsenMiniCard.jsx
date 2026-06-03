@@ -72,7 +72,7 @@ export default function OnsenMiniCard({ onsen, onSelect }) {
         type="button"
         onClick={handleSelect}
         aria-label={`Show ${onsen.name} on map`}
-        className="w-full text-left mt-2 rounded-lg border border-[#D9D0C5] bg-[#FAF7F2] px-3 py-2 text-xs text-[#2C2C2C] space-y-1 transition-colors duration-150 hover:border-[#C9533A] hover:bg-[#FDF5F3] focus:outline-none focus:ring-2 focus:ring-[#C9533A] focus:ring-offset-1 cursor-pointer"
+        className="onsen-mini-card focus-ring w-full text-left transition-colors duration-150 hover:border-[#C9533A] hover:bg-[#FDF5F3] cursor-pointer"
       >
         {innerContent}
       </button>
@@ -80,7 +80,7 @@ export default function OnsenMiniCard({ onsen, onSelect }) {
   }
 
   return (
-    <div className="mt-2 rounded-lg border border-[#D9D0C5] bg-[#FAF7F2] px-3 py-2 text-xs text-[#2C2C2C] space-y-1">
+    <div className="onsen-mini-card">
       {innerContent}
     </div>
   );
