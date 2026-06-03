@@ -5,8 +5,9 @@ import OnsenMiniCard from './OnsenMiniCard';
  * role: 'user' | 'assistant'
  * content: string
  * onsens: optional array of onsen objects attached to this assistant message
+ * onSelectOnsen: optional callback(onsen) fired when user clicks an OnsenMiniCard
  */
-export default function Message({ role, content, onsens }) {
+export default function Message({ role, content, onsens, onSelectOnsen }) {
   const isUser = role === 'user';
 
   return (
@@ -23,7 +24,7 @@ export default function Message({ role, content, onsens }) {
           <ul className="mt-2 space-y-2" aria-label={`${onsens.length} onsen results`}>
             {onsens.map((onsen, i) => (
               <li key={onsen.name ?? i}>
-                <OnsenMiniCard onsen={onsen} />
+                <OnsenMiniCard onsen={onsen} onSelect={onSelectOnsen} />
               </li>
             ))}
           </ul>

@@ -19,7 +19,7 @@ export default function HotelCard({ hotel, isSelected, onSelect }) {
     <article
       className={`rounded-xl border bg-white overflow-hidden cursor-pointer transition-all duration-200 hover:shadow-md focus-within:ring-2 focus-within:ring-[#C9533A] ${
         isSelected
-          ? 'border-[#C9533A] shadow-md ring-2 ring-[#C9533A] ring-offset-1'
+          ? 'border-[#D9D0C5] shadow-md ring-2 ring-[#1F6F6B] ring-offset-1 ring-offset-white'
           : 'border-[#E8E0D5]'
       }`}
       onClick={() => onSelect(hotel)}
@@ -100,7 +100,7 @@ export default function HotelCard({ hotel, isSelected, onSelect }) {
             target="_blank"
             rel="noopener noreferrer"
             onClick={(e) => e.stopPropagation()}
-            className="mt-2 flex items-center justify-center w-full px-3 py-1.5 rounded-lg bg-[#C9533A] text-white text-xs font-medium hover:bg-[#b04730] transition-colors duration-150 focus:outline-none focus:ring-2 focus:ring-[#C9533A] focus:ring-offset-1"
+            className="mt-2 flex items-center justify-center w-full px-3 py-1.5 rounded-lg bg-[#C9533A] text-white text-xs font-medium hover:bg-[#b04730] transition-colors duration-150 focus-ring"
             aria-label={`Book ${hotel.name} on Rakuten Travel`}
           >
             Book on Rakuten Travel
@@ -108,7 +108,7 @@ export default function HotelCard({ hotel, isSelected, onSelect }) {
         ) : (
           <button
             onClick={() => onSelect(hotel)}
-            className="mt-2 flex items-center justify-center w-full px-3 py-1.5 rounded-lg border border-[#C9533A] text-[#C9533A] text-xs font-medium hover:bg-[#C9533A] hover:text-white transition-colors duration-150 focus:outline-none focus:ring-2 focus:ring-[#C9533A] focus:ring-offset-1"
+            className="mt-2 flex items-center justify-center w-full px-3 py-1.5 rounded-lg border border-[#C9533A] text-[#C9533A] text-xs font-medium hover:bg-[#C9533A] hover:text-white transition-colors duration-150 focus-ring"
             aria-label={`Select ${hotel.name} on map`}
           >
             Show on map

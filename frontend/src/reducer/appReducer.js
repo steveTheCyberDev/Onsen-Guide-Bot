@@ -7,6 +7,10 @@ export const initialState = {
   activeMarkers: 'onsens', // 'onsens' | 'both'
   selectedPrefecture: null,
   status: 'idle', // 'idle' | 'loading' | 'error'
+  // focusCounter increments each time the user explicitly focuses an onsen from
+  // the chat (via FOCUS_ONSEN). MapPanel watches this nonce — not selectedOnsen —
+  // to trigger panTo+zoom, so hovering a marker never yanks the map.
+  focusCounter: 0,
 };
 
 export function appReducer(state, action) {
@@ -68,6 +72,16 @@ export function appReducer(state, action) {
         activeMarkers: 'onsens',
         messages: [],
         status: 'idle',
+      };
+
+    case 'FOCUS_ONSEN':
+      // Explicit user focus from the chat (e.g. clicking an OnsenMiniCard).
+      // Sets selectedOnsen (highlights marker + shows OnsenInfoStrip) AND bumps
+      // focusCounter so MapPanel can panTo+zoom without reacting to hover events.
+      return {
+        ...state,
+        selectedOnsen: action.payload,
+        focusCounter: state.focusCounter + 1,
       };
 
     case 'SET_STATUS':

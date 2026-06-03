@@ -25,11 +25,11 @@ export default function OnsenMarker({ onsen, isSelected, onHover, onHoverEnd }) 
         title={onsen.name}
         className="flex items-center justify-center rounded-full border-2 text-white font-bold cursor-pointer transition-transform duration-150 hover:scale-110 focus:outline-none focus:ring-2 focus:ring-white focus:ring-offset-1"
         style={{
-          width: '36px',
-          height: '36px',
+          width: '44px',
+          height: '44px',
           backgroundColor: isSelected ? '#b04730' : '#C9533A',
           borderColor: isSelected ? '#FAF7F2' : 'rgba(255,255,255,0.8)',
-          fontSize: '14px',
+          fontSize: '16px',
           fontFamily: "'Noto Sans JP', sans-serif",
           boxShadow: isSelected
             ? '0 0 0 3px rgba(201,83,58,0.4), 0 2px 8px rgba(0,0,0,0.25)'

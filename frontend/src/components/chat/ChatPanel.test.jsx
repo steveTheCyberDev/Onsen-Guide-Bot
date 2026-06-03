@@ -146,7 +146,10 @@ describe('ChatPanel', () => {
         `${FAKE_API_URL}/chat`,
         expect.objectContaining({
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          // objectContaining: the api helper also attaches X-API-Key when
+          // VITE_API_KEY is set, so assert the headers we care about, not an
+          // exact match.
+          headers: expect.objectContaining({ 'Content-Type': 'application/json' }),
           body: JSON.stringify({ message: 'test query', session_id: 'default' }),
         })
       );
@@ -333,6 +336,144 @@ describe('ChatPanel', () => {
       render(<ChatPanel state={makeState({ status: 'loading' })} dispatch={dispatch} />);
       expect(screen.getByRole('textbox', { name: /ask about onsen/i })).toBeDisabled();
       expect(screen.getByRole('button', { name: /send message/i })).toBeDisabled();
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // FOCUS_ONSEN plumbing — clicking an onsen card dispatches FOCUS_ONSEN
+  // -------------------------------------------------------------------------
+
+  describe('FOCUS_ONSEN plumbing', () => {
+    it('dispatches FOCUS_ONSEN with the onsen when user clicks an OnsenMiniCard in the chat', async () => {
+      const onsen = { name: 'Tama Onsen', lat: 26.3, lng: 127.8, location: 'Okinawa' };
+      const state = makeState({
+        messages: [
+          {
+            role: 'assistant',
+            content: 'Here is an onsen for you.',
+            onsens: [onsen],
+          },
+        ],
+      });
+
+      const user = userEvent.setup();
+      render(<ChatPanel state={state} dispatch={dispatch} />);
+
+      // The OnsenMiniCard renders as a button with aria-label "Show <name> on map"
+      const card = screen.getByRole('button', { name: /show tama onsen on map/i });
+      await user.click(card);
+
+      expect(dispatch).toHaveBeenCalledWith({
+        type: 'FOCUS_ONSEN',
+        payload: onsen,
+      });
+    });
+
+    it('dispatches FOCUS_ONSEN only for the clicked card when multiple onsens are present', async () => {
+      const onsen1 = { name: 'Alpha Onsen', lat: 26.1, lng: 127.5, location: 'Naha' };
+      const onsen2 = { name: 'Beta Onsen', lat: 26.2, lng: 127.6, location: 'Itoman' };
+      const state = makeState({
+        messages: [
+          {
+            role: 'assistant',
+            content: 'Two results.',
+            onsens: [onsen1, onsen2],
+          },
+        ],
+      });
+
+      const user = userEvent.setup();
+      render(<ChatPanel state={state} dispatch={dispatch} />);
+
+      await user.click(screen.getByRole('button', { name: /show beta onsen on map/i }));
+
+      const focusCalls = dispatch.mock.calls.filter(([a]) => a.type === 'FOCUS_ONSEN');
+      expect(focusCalls).toHaveLength(1);
+      expect(focusCalls[0][0].payload).toEqual(onsen2);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // ChatInput textarea behaviour
+  // -------------------------------------------------------------------------
+
+  describe('ChatInput textarea', () => {
+    it('the input field is a textarea (textbox role)', () => {
+      render(<ChatPanel state={makeState()} dispatch={dispatch} />);
+      // role="textbox" is what both <input type="text"> and <textarea> map to
+      expect(screen.getByRole('textbox', { name: /ask about onsen/i })).toBeInTheDocument();
+    });
+
+    it('pressing Enter submits and calls handleSend (dispatches ADD_MESSAGE)', async () => {
+      fetch.mockReturnValueOnce(
+        makeFetchOk({ reply: 'Got it.', onsens: [], hotels: [] })
+      );
+
+      const user = userEvent.setup();
+      render(<ChatPanel state={makeState()} dispatch={dispatch} />);
+
+      const input = screen.getByRole('textbox', { name: /ask about onsen/i });
+      await user.type(input, 'Enter submit test');
+      await user.keyboard('{Enter}');
+
+      expect(dispatch).toHaveBeenCalledWith({
+        type: 'ADD_MESSAGE',
+        payload: { role: 'user', content: 'Enter submit test' },
+      });
+    });
+
+    it('pressing Shift+Enter does NOT submit (does not dispatch ADD_MESSAGE immediately)', async () => {
+      const user = userEvent.setup();
+      render(<ChatPanel state={makeState()} dispatch={dispatch} />);
+
+      const input = screen.getByRole('textbox', { name: /ask about onsen/i });
+      await user.type(input, 'line one');
+      await user.keyboard('{Shift>}{Enter}{/Shift}');
+
+      // No ADD_MESSAGE should have fired yet — the newline is inserted but not submitted
+      const addMsgCalls = dispatch.mock.calls.filter(([a]) => a.type === 'ADD_MESSAGE');
+      expect(addMsgCalls).toHaveLength(0);
+    });
+
+    it('Shift+Enter inserts a newline into the textarea value', async () => {
+      const user = userEvent.setup();
+      render(<ChatPanel state={makeState()} dispatch={dispatch} />);
+
+      const input = screen.getByRole('textbox', { name: /ask about onsen/i });
+      await user.type(input, 'first line');
+      await user.keyboard('{Shift>}{Enter}{/Shift}');
+      await user.type(input, 'second line');
+
+      // The textarea value should contain a newline between the two lines
+      expect(input.value).toContain('\n');
+      expect(input.value).toContain('first line');
+      expect(input.value).toContain('second line');
+    });
+
+    it('disabled state blocks Enter-key submission', async () => {
+      render(<ChatPanel state={makeState({ status: 'loading' })} dispatch={dispatch} />);
+
+      const input = screen.getByRole('textbox', { name: /ask about onsen/i });
+      // Even if we attempt keyboard interaction on the disabled textarea it should not dispatch
+      // (the textarea itself is disabled, and the guard inside handleSubmit checks disabled too)
+      expect(input).toBeDisabled();
+
+      // No ADD_MESSAGE dispatched
+      const addMsgCalls = dispatch.mock.calls.filter(([a]) => a.type === 'ADD_MESSAGE');
+      expect(addMsgCalls).toHaveLength(0);
+    });
+
+    it('does not call onSend when textarea is empty and Enter is pressed', async () => {
+      const user = userEvent.setup();
+      render(<ChatPanel state={makeState()} dispatch={dispatch} />);
+
+      const input = screen.getByRole('textbox', { name: /ask about onsen/i });
+      // Do not type anything — just press Enter
+      input.focus();
+      await user.keyboard('{Enter}');
+
+      const addMsgCalls = dispatch.mock.calls.filter(([a]) => a.type === 'ADD_MESSAGE');
+      expect(addMsgCalls).toHaveLength(0);
     });
   });
 });

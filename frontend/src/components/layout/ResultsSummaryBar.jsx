@@ -17,7 +17,7 @@ export default function ResultsSummaryBar({ onsens, selectedPrefecture, onReset 
       </span>
       <button
         onClick={onReset}
-        className="ml-4 px-3 py-1 rounded-full border border-[#C9533A] text-[#C9533A] text-xs font-medium hover:bg-[#C9533A] hover:text-white transition-colors duration-150 focus:outline-none focus:ring-2 focus:ring-[#C9533A] focus:ring-offset-1"
+        className="ml-4 px-3 py-1 rounded-full border border-[#C9533A] text-[#C9533A] text-xs font-medium hover:bg-[#C9533A] hover:text-white transition-colors duration-150 focus-ring"
         aria-label="Reset search results"
       >
         Reset

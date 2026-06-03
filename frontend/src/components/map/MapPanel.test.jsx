@@ -37,8 +37,8 @@ vi.mock('@react-google-maps/api', () => {
   return { useJsApiLoader, GoogleMap, OverlayView };
 });
 
-// Import the mock so tests can override its return value per-test.
-import { useJsApiLoader } from '@react-google-maps/api';
+// Import the mocks so tests can override their return values per-test.
+import { useJsApiLoader, GoogleMap } from '@react-google-maps/api';
 
 // ---------------------------------------------------------------------------
 // Stub window.google.maps
@@ -259,7 +259,10 @@ describe('MapPanel', () => {
         `${FAKE_API_URL}/hotels`,
         expect.objectContaining({
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          // objectContaining: the api helper also attaches X-API-Key when
+          // VITE_API_KEY is set, so assert the headers we care about, not an
+          // exact match.
+          headers: expect.objectContaining({ 'Content-Type': 'application/json' }),
           body: JSON.stringify({
             latitude: ONSEN_WITH_COORDS.lat,
             longitude: ONSEN_WITH_COORDS.lng,
@@ -502,6 +505,114 @@ describe('MapPanel', () => {
 
       await user.click(screen.getByRole('button', { name: /reset search results/i }));
       expect(dispatch).toHaveBeenCalledWith({ type: 'RESET' });
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // focusCounter useEffect — panTo + setZoom on FOCUS_ONSEN
+  //
+  // Strategy: override GoogleMap for these tests so onLoad receives a fresh map
+  // object whose panTo/setZoom spies we control. GoogleMap is imported at the
+  // top of this file (as a vi.fn()) so mockImplementationOnce works directly.
+  // -------------------------------------------------------------------------
+
+  describe('focusCounter pan behaviour', () => {
+    it('calls panTo and setZoom(13) when focusCounter is bumped with an onsen that has coords', () => {
+      let capturedMap = null;
+      GoogleMap.mockImplementationOnce(({ children, onLoad }) => {
+        const map = { panTo: vi.fn(), setZoom: vi.fn(), fitBounds: vi.fn() };
+        capturedMap = map;
+        if (onLoad) onLoad(map);
+        return <div data-testid="google-map">{children}</div>;
+      });
+
+      render(
+        <MapPanel
+          state={makeState({
+            selectedOnsen: ONSEN_WITH_COORDS,
+            focusCounter: 1,
+          })}
+          dispatch={dispatch}
+        />
+      );
+
+      expect(capturedMap.panTo).toHaveBeenCalledWith({
+        lat: ONSEN_WITH_COORDS.lat,
+        lng: ONSEN_WITH_COORDS.lng,
+      });
+      expect(capturedMap.setZoom).toHaveBeenCalledWith(13);
+    });
+
+    it('does NOT call panTo/setZoom when focusCounter is 0 (initial render, no focus yet)', () => {
+      let capturedMap = null;
+      GoogleMap.mockImplementationOnce(({ children, onLoad }) => {
+        const map = { panTo: vi.fn(), setZoom: vi.fn(), fitBounds: vi.fn() };
+        capturedMap = map;
+        if (onLoad) onLoad(map);
+        return <div data-testid="google-map">{children}</div>;
+      });
+
+      render(
+        <MapPanel
+          state={makeState({
+            selectedOnsen: ONSEN_WITH_COORDS,
+            focusCounter: 0,
+          })}
+          dispatch={dispatch}
+        />
+      );
+
+      expect(capturedMap.panTo).not.toHaveBeenCalled();
+      expect(capturedMap.setZoom).not.toHaveBeenCalled();
+    });
+
+    it('does NOT call panTo/setZoom when selectedOnsen has no coords, even if focusCounter > 0', () => {
+      let capturedMap = null;
+      GoogleMap.mockImplementationOnce(({ children, onLoad }) => {
+        const map = { panTo: vi.fn(), setZoom: vi.fn(), fitBounds: vi.fn() };
+        capturedMap = map;
+        if (onLoad) onLoad(map);
+        return <div data-testid="google-map">{children}</div>;
+      });
+
+      // Should not throw — the guard inside the useEffect bails out cleanly
+      render(
+        <MapPanel
+          state={makeState({
+            selectedOnsen: ONSEN_NO_COORDS,
+            focusCounter: 2,
+          })}
+          dispatch={dispatch}
+        />
+      );
+
+      expect(capturedMap.panTo).not.toHaveBeenCalled();
+      expect(capturedMap.setZoom).not.toHaveBeenCalled();
+    });
+
+    it('does NOT pan when HOVER_ONSEN updates selectedOnsen (focusCounter stays 0)', () => {
+      // HOVER_ONSEN does not bump focusCounter, so the focusCounter effect must NOT fire.
+      let capturedMap = null;
+      GoogleMap.mockImplementationOnce(({ children, onLoad }) => {
+        const map = { panTo: vi.fn(), setZoom: vi.fn(), fitBounds: vi.fn() };
+        capturedMap = map;
+        if (onLoad) onLoad(map);
+        return <div data-testid="google-map">{children}</div>;
+      });
+
+      // focusCounter remains 0 — simulates a pure hover (HOVER_ONSEN action)
+      render(
+        <MapPanel
+          state={makeState({
+            selectedOnsen: ONSEN_WITH_COORDS,
+            focusCounter: 0,
+          })}
+          dispatch={dispatch}
+        />
+      );
+
+      expect(capturedMap.panTo).not.toHaveBeenCalled();
+      expect(capturedMap.setZoom).not.toHaveBeenCalled();
     });
   });
 });
