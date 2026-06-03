@@ -42,7 +42,7 @@ export default function OnsenInfoStrip({ onsen, onSeeHotels, onClose }) {
       <div className="flex items-center gap-2 shrink-0">
         <button
           onClick={() => onSeeHotels(onsen)}
-          className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[#C9533A] text-white text-xs font-medium hover:bg-[#b04730] transition-colors duration-150 focus:outline-none focus:ring-2 focus:ring-[#C9533A] focus:ring-offset-1"
+          className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[#C9533A] text-white text-xs font-medium hover:bg-[#b04730] transition-colors duration-150 focus-ring"
           aria-label={`See nearby hotels for ${onsen.name}`}
         >
           <span aria-hidden="true">🏨</span>

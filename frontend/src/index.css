@@ -2,6 +2,32 @@
 @tailwind components;
 @tailwind utilities;
 
+/* ---------------------------------------------------------------------------
+ * Reusable component classes — extract repeated Tailwind strings so the warm
+ * palette and interaction styles live in one place (see PR #9 review).
+ * ------------------------------------------------------------------------- */
+@layer components {
+  /* Focus ring shared by every interactive control (buttons, cards, links). */
+  .focus-ring {
+    @apply focus:outline-none focus:ring-2 focus:ring-[#C9533A] focus:ring-offset-1;
+  }
+
+  /* Primary action button (warm orange). Pair with .focus-ring. */
+  .btn-primary {
+    @apply rounded-full bg-[#C9533A] px-4 py-2 text-sm font-medium text-white transition-colors duration-150 hover:bg-[#b04730] disabled:cursor-not-allowed disabled:opacity-50;
+  }
+
+  /* Text input / textarea field. */
+  .input-field {
+    @apply rounded-2xl border border-[#D9D0C5] bg-white px-4 py-2 text-sm text-[#2C2C2C] placeholder-[#A09A92] outline-none transition-colors duration-150 focus:border-[#C9533A] focus:ring-1 focus:ring-[#C9533A] disabled:opacity-50;
+  }
+
+  /* Compact onsen card surface (used static and as an interactive button). */
+  .onsen-mini-card {
+    @apply mt-2 rounded-lg border border-[#D9D0C5] bg-[#FAF7F2] px-3 py-2 text-xs text-[#2C2C2C] space-y-1;
+  }
+}
+
 /* Ensure the app fills the viewport with no scroll */
 html,
 body,

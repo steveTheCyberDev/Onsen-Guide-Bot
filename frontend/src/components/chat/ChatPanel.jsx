@@ -44,6 +44,12 @@ export default function ChatPanel({ state, dispatch }) {
     }
   }
 
+  // Dispatches FOCUS_ONSEN so the map pans to the onsen AND the marker/strip
+  // become active — without triggering on every hover event.
+  function handleFocusOnsen(onsen) {
+    dispatch({ type: 'FOCUS_ONSEN', payload: onsen });
+  }
+
   const hasMessages = messages.length > 0;
 
   return (
@@ -58,7 +64,7 @@ export default function ChatPanel({ state, dispatch }) {
       {/* Message area or empty state */}
       {hasMessages ? (
         <>
-          <MessageList messages={messages} />
+          <MessageList messages={messages} onSelectOnsen={handleFocusOnsen} />
           {isLoading && (
             <div className="px-3 pb-2">
               <TypingIndicator />

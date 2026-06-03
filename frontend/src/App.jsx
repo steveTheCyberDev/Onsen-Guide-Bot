@@ -1,5 +1,6 @@
 import { useReducer } from 'react';
 import { appReducer, initialState } from './reducer/appReducer';
+import { Analytics } from "@vercel/analytics/react"
 import Header from './components/layout/Header';
 import MainLayout from './components/layout/MainLayout';
 import ChatPanel from './components/chat/ChatPanel';
@@ -15,6 +16,7 @@ export default function App() {
 
   return (
     <div className="flex flex-col h-screen overflow-hidden bg-[#FAF7F2]">
+      <Analytics />
       <Header
         selectedPrefecture={state.selectedPrefecture}
         onSelectPrefecture={handleSelectPrefecture}
