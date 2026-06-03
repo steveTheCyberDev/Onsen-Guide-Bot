@@ -5,11 +5,15 @@ import HotelMarker from './HotelMarker';
 import OnsenInfoStrip from './OnsenInfoStrip';
 import ResultsSummaryBar from '../layout/ResultsSummaryBar';
 import { apiPost } from '../../services/api';
-
-const MAPS_API_KEY = import.meta.env.VITE_GOOGLE_MAPS_API_KEY ?? '';
+import { GOOGLE_MAPS_API_KEY as MAPS_API_KEY } from '../../config';
 
 const DEFAULT_CENTER = { lat: 26.2124, lng: 127.6809 }; // Naha, Okinawa
 const DEFAULT_ZOOM = 11;
+
+// Radius (km) for the nearby-hotels search around a selected onsen. 3km keeps
+// results within easy walking / short-drive distance of the onsen and matches
+// the backend's default (HotelsRequest.radius). Bump only if results are sparse.
+const HOTEL_SEARCH_RADIUS_KM = 3;
 
 const MAP_OPTIONS = {
   disableDefaultUI: false,
@@ -120,7 +124,7 @@ export default function MapPanel({ state, dispatch }) {
       const data = await apiPost('/hotels', {
         latitude: onsen.lat,
         longitude: onsen.lng,
-        radius: 3,
+        radius: HOTEL_SEARCH_RADIUS_KM,
       });
       dispatch({ type: 'SHOW_HOTELS', payload: data.hotels ?? [] });
     } catch (err) {
