@@ -81,6 +81,18 @@ def test_query_onsen_returns_no_match_message_when_empty():
     assert result == "No onsen found matching your query."
 
 
+def test_query_onsen_defaults_to_20_results():
+    # Arrange — broad requests ("all onsen in X") should surface more than a
+    # handful, so the default top-k is 20 (bounded by downstream geocoding cost).
+    collection = _fake_collection([], [])
+    # Act
+    with patch.object(retrieval_service, "get_collection", return_value=collection):
+        retrieval_service.query_onsen("spring")
+    # Assert
+    _, kwargs = collection.query.call_args
+    assert kwargs["n_results"] == 20
+
+
 def test_query_onsen_passes_n_results_to_collection():
     # Arrange
     collection = _fake_collection([], [])

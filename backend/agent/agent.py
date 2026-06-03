@@ -26,6 +26,13 @@ _SYSTEM_PROMPT = (
     "(e.g. 'Okinawa', 'Mie', 'Tokyo'); this restricts results to that prefecture. If the user does "
     "not specify a location, omit the prefecture argument. "
     "List out onsens along with name, location and sale point in the reply. "
+    "CRITICAL — onsen: every onsen you return MUST come verbatim from the "
+    "search_onsen tool's output. If search_onsen returned no matches (e.g. it "
+    "responded 'No onsen found matching your query') or you did not call it, the "
+    "onsens list MUST be empty and the reply must say none were found. NEVER "
+    "invent, guess, or recall onsen names, locations, spring types, spa quality, "
+    "or descriptions from your own knowledge — only report onsen present in the "
+    "tool output. "
     "CRITICAL — hotels: every hotel you return MUST come verbatim from the "
     "search_rakuten_onsen tool's output. If you did not call search_rakuten_onsen, "
     "or it returned no results, the hotels list MUST be empty. NEVER invent, guess, "
@@ -68,7 +75,11 @@ class AgentResponse(BaseModel):
     onsens: list[OnsenResult] = Field(
         default=[],
         description=(
-            "Each Onsen in the search result has name, location, sprint type, spa quality and sales point"
+            "Onsen MUST come verbatim from the search_onsen tool output ONLY. "
+            "If search_onsen was not called or returned no matches, this MUST be an "
+            "empty list. NEVER invent or recall onsen names, locations, spring types, "
+            "spa quality, or descriptions from your own knowledge. "
+            "Each onsen from the tool has name, location, spring type, spa quality and sales point."
         )
     )
     hotels: list[HotelResult] = Field(
