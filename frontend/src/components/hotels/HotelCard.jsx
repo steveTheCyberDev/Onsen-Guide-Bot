@@ -19,7 +19,7 @@ export default function HotelCard({ hotel, isSelected, onSelect }) {
     <article
       className={`rounded-xl border bg-white overflow-hidden cursor-pointer transition-all duration-200 hover:shadow-md focus-within:ring-2 focus-within:ring-[#C9533A] ${
         isSelected
-          ? 'border-[#C9533A] shadow-md ring-2 ring-[#C9533A] ring-offset-1'
+          ? 'border-[#D9D0C5] shadow-md ring-2 ring-[#1F6F6B] ring-offset-1 ring-offset-white'
           : 'border-[#E8E0D5]'
       }`}
       onClick={() => onSelect(hotel)}

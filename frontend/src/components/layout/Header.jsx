@@ -1,16 +1,11 @@
 import { useState } from 'react';
 
 const PREFECTURES = [
-  { label: 'Okinawa 沖縄', value: 'Okinawa', lat: 26.2124, lng: 127.6809 },
-  { label: 'Hokkaido 北海道', value: 'Hokkaido', lat: 43.0642, lng: 141.3469 },
-  { label: 'Tokyo 東京', value: 'Tokyo', lat: 35.6762, lng: 139.6503 },
-  { label: 'Kyoto 京都', value: 'Kyoto', lat: 35.0116, lng: 135.7681 },
-  { label: 'Hakone 箱根', value: 'Hakone', lat: 35.2327, lng: 139.1069 },
-  { label: 'Beppu 別府', value: 'Beppu', lat: 33.2846, lng: 131.4908 },
-  { label: 'Kusatsu 草津', value: 'Kusatsu', lat: 36.6196, lng: 138.5963 },
-  { label: 'Nikko 日光', value: 'Nikko', lat: 36.7199, lng: 139.6983 },
-  { label: 'Nagano 長野', value: 'Nagano', lat: 36.6485, lng: 138.1948 },
-  { label: 'Kagoshima 鹿児島', value: 'Kagoshima', lat: 31.5966, lng: 130.5571 },
+  { label: 'Okinawa 沖縄',   value: 'Okinawa',   lat: 26.2124, lng: 127.6809 },
+  { label: 'Aichi 愛知',     value: 'Aichi',     lat: 35.1815, lng: 136.9066 },
+  { label: 'Gifu 岐阜',      value: 'Gifu',      lat: 35.3912, lng: 136.7223 },
+  { label: 'Mie 三重',       value: 'Mie',       lat: 34.7303, lng: 136.5086 },
+  { label: 'Shizuoka 静岡',  value: 'Shizuoka',  lat: 34.9756, lng: 138.3828 },
 ];
 
 export default function Header({ selectedPrefecture, onSelectPrefecture }) {

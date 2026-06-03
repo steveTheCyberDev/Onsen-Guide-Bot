@@ -76,10 +76,10 @@ describe('Header', () => {
     render(<Header onSelectPrefecture={onSelectPrefecture} />);
 
     await user.click(screen.getByRole('button', { name: 'Select prefecture' }));
-    await user.click(screen.getByRole('option', { name: 'Hakone 箱根' }));
+    await user.click(screen.getByRole('option', { name: 'Shizuoka 静岡' }));
 
     expect(onSelectPrefecture).toHaveBeenCalledWith(
-      expect.objectContaining({ value: 'Hakone' })
+      expect.objectContaining({ value: 'Shizuoka' })
     );
     // List closes after selection.
     expect(screen.queryByRole('listbox')).not.toBeInTheDocument();
@@ -101,13 +101,13 @@ describe('Header', () => {
 
   it('marks the selected prefecture option as aria-selected', async () => {
     const user = userEvent.setup();
-    const kyoto = PREFECTURES.find((p) => p.value === 'Kyoto');
+    const gifu = PREFECTURES.find((p) => p.value === 'Gifu');
     render(
-      <Header selectedPrefecture={kyoto} onSelectPrefecture={onSelectPrefecture} />
+      <Header selectedPrefecture={gifu} onSelectPrefecture={onSelectPrefecture} />
     );
 
     await user.click(screen.getByRole('button', { name: 'Select prefecture' }));
-    expect(screen.getByRole('option', { name: 'Kyoto 京都' })).toHaveAttribute(
+    expect(screen.getByRole('option', { name: 'Gifu 岐阜' })).toHaveAttribute(
       'aria-selected',
       'true'
     );

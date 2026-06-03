@@ -141,6 +141,35 @@ describe('appReducer', () => {
     });
   });
 
+  describe('FOCUS_ONSEN', () => {
+    it('sets selectedOnsen', () => {
+      const next = appReducer(initialState, { type: 'FOCUS_ONSEN', payload: onsen });
+      expect(next.selectedOnsen).toEqual(onsen);
+    });
+
+    it('increments focusCounter by 1 each dispatch', () => {
+      const first = appReducer(initialState, { type: 'FOCUS_ONSEN', payload: onsen });
+      expect(first.focusCounter).toBe(1);
+      const second = appReducer(first, { type: 'FOCUS_ONSEN', payload: onsen });
+      expect(second.focusCounter).toBe(2);
+    });
+
+    it('does not touch any other state fields', () => {
+      const start = { ...initialState, hotels: [hotel], status: 'idle' };
+      const next = appReducer(start, { type: 'FOCUS_ONSEN', payload: onsen });
+      expect(next.hotels).toEqual([hotel]);
+      expect(next.status).toBe('idle');
+      expect(next.selectedHotel).toBeNull();
+    });
+
+    it('clears selectedOnsen when payload is null and still increments focusCounter', () => {
+      const start = { ...initialState, selectedOnsen: onsen, focusCounter: 3 };
+      const next = appReducer(start, { type: 'FOCUS_ONSEN', payload: null });
+      expect(next.selectedOnsen).toBeNull();
+      expect(next.focusCounter).toBe(4);
+    });
+  });
+
   describe('SET_STATUS', () => {
     it('updates only status', () => {
       const next = appReducer(initialState, { type: 'SET_STATUS', payload: 'error' });

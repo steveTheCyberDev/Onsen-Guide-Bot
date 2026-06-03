@@ -41,7 +41,7 @@ const MAP_OPTIONS = {
  * Owns the GoogleMap instance and the /hotels API call.
  */
 export default function MapPanel({ state, dispatch }) {
-  const { onsens, hotels, selectedOnsen, selectedHotel, activeMarkers, selectedPrefecture, status } =
+  const { onsens, hotels, selectedOnsen, selectedHotel, activeMarkers, selectedPrefecture, status, focusCounter } =
     state;
 
   const mapRef = useRef(null);
@@ -78,6 +78,18 @@ export default function MapPanel({ state, dispatch }) {
       mapRef.current.panTo({ lat: selectedHotel.lat, lng: selectedHotel.lng });
     }
   }, [selectedHotel, isLoaded]);
+
+  // Pan + zoom to onsen when the user explicitly focuses one from the chat
+  // (FOCUS_ONSEN action). We watch focusCounter — a monotonic nonce — so this
+  // effect fires only on deliberate card clicks, NOT on every hover event that
+  // updates selectedOnsen via HOVER_ONSEN.
+  useEffect(() => {
+    if (!mapRef.current || !isLoaded || focusCounter === 0) return;
+    if (!selectedOnsen?.lat || !selectedOnsen?.lng) return;
+    mapRef.current.panTo({ lat: selectedOnsen.lat, lng: selectedOnsen.lng });
+    mapRef.current.setZoom(13);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [focusCounter, isLoaded]);
 
   const onMapLoad = useCallback((map) => {
     mapRef.current = map;

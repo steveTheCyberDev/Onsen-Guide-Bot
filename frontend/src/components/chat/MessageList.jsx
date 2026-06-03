@@ -4,8 +4,9 @@ import Message from './Message';
 /**
  * MessageList — scrollable list of chat messages.
  * aria-live="polite" announces new messages to screen readers.
+ * onSelectOnsen: callback(onsen) forwarded down to each Message/OnsenMiniCard.
  */
-export default function MessageList({ messages }) {
+export default function MessageList({ messages, onSelectOnsen }) {
   const bottomRef = useRef(null);
 
   // Auto-scroll to bottom when messages change
@@ -26,6 +27,7 @@ export default function MessageList({ messages }) {
           role={msg.role}
           content={msg.content}
           onsens={msg.onsens}
+          onSelectOnsen={onSelectOnsen}
         />
       ))}
       <div ref={bottomRef} aria-hidden="true" />

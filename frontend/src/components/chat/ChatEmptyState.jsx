@@ -1,9 +1,6 @@
 const SUGGESTIONS = [
   'Find onsen in Okinawa',
-  'Best outdoor bath near Tokyo',
-  'Onsen that allow tattoos',
-  'Couples onsen in Kyoto',
-  'Family-friendly hot springs in Hokkaido',
+  'Find onsen in Shizuoka'
 ];
 
 export default function ChatEmptyState({ onSuggestionClick }) {

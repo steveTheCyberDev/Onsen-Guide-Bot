@@ -1,12 +1,27 @@
 /**
  * OnsenMiniCard — compact onsen card rendered inline inside an assistant message bubble.
  * Receives an onsen object: { name, location, spring_type, spa_quality, sales_point }
+ *
+ * When onSelect is provided the card is rendered as a focusable button so the
+ * user can click/keyboard-activate it to centre that marker on the map.
+ * Cards for onsens without lat/lng still render but onSelect is a no-op so the
+ * map is not panned to a missing position.
  */
-export default function OnsenMiniCard({ onsen }) {
+export default function OnsenMiniCard({ onsen, onSelect }) {
   if (!onsen) return null;
 
-  return (
-    <div className="mt-2 rounded-lg border border-[#D9D0C5] bg-[#FAF7F2] px-3 py-2 text-xs text-[#2C2C2C] space-y-1">
+  const hasCoords = Boolean(onsen.lat && onsen.lng);
+
+  function handleSelect() {
+    if (onSelect && hasCoords) {
+      onSelect(onsen);
+    }
+  }
+
+  const isInteractive = Boolean(onSelect);
+
+  const innerContent = (
+    <>
       <div className="flex items-center gap-1">
         <span className="text-sm" aria-hidden="true">♨️</span>
         <span className="font-semibold text-[#C9533A] truncate">{onsen.name}</span>
@@ -48,6 +63,25 @@ export default function OnsenMiniCard({ onsen }) {
       {onsen.sales_point && (
         <p className="text-[#6B6B6B] leading-relaxed line-clamp-2">{onsen.sales_point}</p>
       )}
+    </>
+  );
+
+  if (isInteractive) {
+    return (
+      <button
+        type="button"
+        onClick={handleSelect}
+        aria-label={`Show ${onsen.name} on map`}
+        className="w-full text-left mt-2 rounded-lg border border-[#D9D0C5] bg-[#FAF7F2] px-3 py-2 text-xs text-[#2C2C2C] space-y-1 transition-colors duration-150 hover:border-[#C9533A] hover:bg-[#FDF5F3] focus:outline-none focus:ring-2 focus:ring-[#C9533A] focus:ring-offset-1 cursor-pointer"
+      >
+        {innerContent}
+      </button>
+    );
+  }
+
+  return (
+    <div className="mt-2 rounded-lg border border-[#D9D0C5] bg-[#FAF7F2] px-3 py-2 text-xs text-[#2C2C2C] space-y-1">
+      {innerContent}
     </div>
   );
 }
