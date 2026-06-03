@@ -1,12 +1,15 @@
 from vectorstore.store import get_collection
 
 
-def query_onsen(query: str, n_results: int = 5, prefecture: str | None = None) -> str:
+def query_onsen(query: str, n_results: int = 20, prefecture: str | None = None) -> str:
     """Search the onsen vector store, optionally constrained to a prefecture.
 
     Args:
         query: Free-text semantic query (e.g. "relaxing sulfur spring").
-        n_results: Maximum number of onsen to return.
+        n_results: Maximum number of onsen to return. Defaults to 20 so broad
+            requests ("all onsen in Shizuoka") surface a useful list rather than
+            just the top few; kept bounded because each returned onsen is
+            geocoded downstream (one Google call apiece).
         prefecture: Optional English prefecture name (e.g. "Okinawa"). When
             provided, results are filtered to that prefecture via a ChromaDB
             metadata `where` clause; semantic similarity alone does not
