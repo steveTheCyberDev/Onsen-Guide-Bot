@@ -8,6 +8,11 @@ class Settings(BaseSettings):
     rakuten_app_id: str
     rakuten_access_key: str
     rakuten_hotel_url: str
+    # Shared secret required in the X-API-Key header on /chat and /hotels.
+    # Defaults to "" which FAILS CLOSED: when unset, those endpoints reject every
+    # request with 401. Must be set in every real environment (Railway, local .env,
+    # and the frontend's matching VITE_API_KEY).
+    api_key: str = ""
     cors_origins: list[str] = ["http://localhost:5173"]
     # Filesystem path where ChromaDB persists. Default is relative ("chroma_db"),
     # which resolves to backend/chroma_db when run from the backend/ dir (local dev).
