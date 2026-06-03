@@ -2,8 +2,7 @@ import ChatEmptyState from './ChatEmptyState';
 import MessageList from './MessageList';
 import TypingIndicator from './TypingIndicator';
 import ChatInput from './ChatInput';
-
-const API_URL = import.meta.env.VITE_API_URL ?? 'http://localhost:8000';
+import { apiPost } from '../../services/api';
 
 /**
  * ChatPanel — left panel wrapper.
@@ -20,15 +19,7 @@ export default function ChatPanel({ state, dispatch }) {
     dispatch({ type: 'SET_STATUS', payload: 'loading' });
 
     try {
-      const res = await fetch(`${API_URL}/chat`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ message: text, session_id: 'default' }),
-      });
-
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-
-      const data = await res.json();
+      const data = await apiPost('/chat', { message: text, session_id: 'default' });
       const onsens = data.onsens ?? [];
       const hotels = data.hotels ?? [];
 

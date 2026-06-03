@@ -4,9 +4,9 @@ import OnsenMarker from './OnsenMarker';
 import HotelMarker from './HotelMarker';
 import OnsenInfoStrip from './OnsenInfoStrip';
 import ResultsSummaryBar from '../layout/ResultsSummaryBar';
+import { apiPost } from '../../services/api';
 
 const MAPS_API_KEY = import.meta.env.VITE_GOOGLE_MAPS_API_KEY ?? '';
-const API_URL = import.meta.env.VITE_API_URL ?? 'http://localhost:8000';
 
 const DEFAULT_CENTER = { lat: 26.2124, lng: 127.6809 }; // Naha, Okinawa
 const DEFAULT_ZOOM = 11;
@@ -117,15 +117,11 @@ export default function MapPanel({ state, dispatch }) {
     dispatch({ type: 'SET_STATUS', payload: 'loading' });
 
     try {
-      const res = await fetch(`${API_URL}/hotels`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ latitude: onsen.lat, longitude: onsen.lng, radius: 3 }),
+      const data = await apiPost('/hotels', {
+        latitude: onsen.lat,
+        longitude: onsen.lng,
+        radius: 3,
       });
-
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-
-      const data = await res.json();
       dispatch({ type: 'SHOW_HOTELS', payload: data.hotels ?? [] });
     } catch (err) {
       console.error('[MapPanel] /hotels error:', err);
