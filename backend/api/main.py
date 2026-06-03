@@ -1,8 +1,9 @@
 import logging
 
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from api.dependencies import require_api_key
 from api.routes import chat, hotels
 from core.config import settings
 
@@ -20,10 +21,11 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-app.include_router(chat.router)
-app.include_router(hotels.router)
+app.include_router(chat.router, dependencies=[Depends(require_api_key)])
+app.include_router(hotels.router, dependencies=[Depends(require_api_key)])
 
 
 @app.get("/health")
 def health():
+    # Intentionally unauthenticated — Railway healthchecks hit this without a key.
     return {"status": "ok"}

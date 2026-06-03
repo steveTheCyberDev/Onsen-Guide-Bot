@@ -17,16 +17,35 @@ os.environ.setdefault("GOOGLE_MAPS_API_KEY", "test-google-key")
 os.environ.setdefault("RAKUTEN_APP_ID", "test-rakuten-app-id")
 os.environ.setdefault("RAKUTEN_ACCESS_KEY", "test-rakuten-access-key")
 os.environ.setdefault("RAKUTEN_HOTEL_URL", "https://example.com/rakuten")
+os.environ.setdefault("API_KEY", "test-api-key")
+
+# The valid key for the test suite, kept in sync with the API_KEY env above.
+TEST_API_KEY = "test-api-key"
 
 
 @pytest.fixture
 def client():
-    """FastAPI TestClient bound to the real app.
+    """FastAPI TestClient that authenticates by default.
 
     Importing the app pulls in `agent.agent`, which constructs a ChatOpenAI
     client and a LangGraph react agent at import time. No network call is made
     on import, so this is safe; tests that hit `/chat` mock `run_agent`.
+
+    The valid X-API-Key header is attached to every request so existing route
+    tests don't each have to set it; auth-specific behaviour is covered by the
+    `unauth_client` fixture and test_auth.py.
     """
+    from fastapi.testclient import TestClient
+
+    from api.main import app
+
+    with TestClient(app, headers={"X-API-Key": TEST_API_KEY}) as test_client:
+        yield test_client
+
+
+@pytest.fixture
+def unauth_client():
+    """FastAPI TestClient with NO default API key header — for auth tests."""
     from fastapi.testclient import TestClient
 
     from api.main import app

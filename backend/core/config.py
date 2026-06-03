@@ -8,7 +8,19 @@ class Settings(BaseSettings):
     rakuten_app_id: str
     rakuten_access_key: str
     rakuten_hotel_url: str
-    cors_origins: list[str] = ["http://localhost:5173"]
+    # Shared secret required in the X-API-Key header on /chat and /hotels.
+    # Defaults to "" which FAILS CLOSED: when unset, those endpoints reject every
+    # request with 401. Must be set in every real environment (Railway, local .env,
+    # and the frontend's matching VITE_API_KEY).
+    api_key: str = ""
+    # Allowed browser origins for CORS. Includes the local Vite dev server and the
+    # deployed Vercel frontend. Override via env CORS_ORIGINS as a JSON array
+    # (pydantic-settings parses list env vars as JSON), e.g.
+    # CORS_ORIGINS='["https://onsen-guide-bot.vercel.app"]'. No trailing slashes.
+    cors_origins: list[str] = [
+        "http://localhost:5173",
+        "https://onsen-guide-bot.vercel.app",
+    ]
     # Filesystem path where ChromaDB persists. Default is relative ("chroma_db"),
     # which resolves to backend/chroma_db when run from the backend/ dir (local dev).
     # Override via env var CHROMA_PATH in production (Railway sets it to /app/chroma_db,
