@@ -185,6 +185,7 @@ VITE_API_KEY=...           # matches the backend API_KEY
 **Backend:** FastAPI · LangGraph ReAct agent · GPT-4o + `text-embedding-3-small` · ChromaDB · Pydantic
 **Frontend:** React 18 · Vite 5 · Tailwind · `@react-google-maps/api`
 **Data:** ~220 onsen (Okinawa + Tokai), Japanese→English translated at ingest via `gpt-4o-mini`, embedded with prefecture/city/spring-type metadata
+**Integrations:** Google Maps (geocoding + JS map) · Rakuten Travel API (live hotels) — displayed with the required [Rakuten Web Service credit badge](https://webservice.rakuten.co.jp/guide/credit) per their attribution terms
 **Infra:** Railway (backend, persistent ChromaDB volume) · Vercel (frontend) · GitHub Actions CI
 
 ---
