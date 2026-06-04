@@ -4,6 +4,7 @@ import OnsenMarker from './OnsenMarker';
 import HotelMarker from './HotelMarker';
 import OnsenInfoStrip from './OnsenInfoStrip';
 import ResultsSummaryBar from '../layout/ResultsSummaryBar';
+import RakutenCredit from '../shared/RakutenCredit';
 import { apiPost } from '../../services/api';
 import { GOOGLE_MAPS_API_KEY as MAPS_API_KEY } from '../../config';
 
@@ -227,6 +228,11 @@ export default function MapPanel({ state, dispatch }) {
         onSeeHotels={handleSeeHotels}
         onClose={handleCloseStrip}
       />
+
+      {/* Rakuten Web Service credit — mandatory compliance badge */}
+      <div className="shrink-0 border-t border-[#D9D0C5] bg-[#FAF7F2]">
+        <RakutenCredit />
+      </div>
     </div>
   );
 }

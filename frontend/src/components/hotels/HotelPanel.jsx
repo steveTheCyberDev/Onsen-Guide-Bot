@@ -2,6 +2,7 @@ import { useEffect, useRef } from 'react';
 import HotelPanelEmpty from './HotelPanelEmpty';
 import HotelList from './HotelList';
 import HotelCardSkeleton from './HotelCardSkeleton';
+import RakutenCredit from '../shared/RakutenCredit';
 
 /**
  * HotelPanel — right panel wrapper.
@@ -80,6 +81,11 @@ export default function HotelPanel({ state, dispatch }) {
         ) : (
           <HotelPanelEmpty />
         )}
+      </div>
+
+      {/* Rakuten Web Service credit — mandatory compliance badge */}
+      <div className="shrink-0 border-t border-[#D9D0C5] bg-[#FAF7F2]">
+        <RakutenCredit />
       </div>
     </div>
   );
