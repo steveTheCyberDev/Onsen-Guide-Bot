@@ -84,9 +84,10 @@ This is the part I'm most proud of — most of these were *correctness* and *pro
 **Problem:** Frontend tests asserted the `fetch` headers object *exactly*; the moment I added the `X-API-Key` header, they broke — even though the behaviour was correct.
 **Solution:** Relaxed to `expect.objectContaining`, asserting the contract that matters rather than an exhaustive snapshot. A good reminder that over-specified tests punish correct change.
 
-### 8. Performance: per-request geocoding (the current bottleneck)
-**Problem:** The dataset has no coordinates, so the agent geocodes *every* returned onsen via a Google call at request time. After I raised the result cap from 5 to 20 (so "find all onsen in X" actually returns a useful list), that's up to ~20 geocoding calls per `/chat` — the dominant latency cost.
-**Planned solution (next up):** geocode each onsen **once at ingest** and store `lat`/`lng` in ChromaDB metadata, then drop runtime geocoding entirely. (See roadmap.)
+### 8. Performance: I fixed the "obvious" bottleneck — and measured that it wasn't one
+**Problem:** The dataset has no coordinates, so the agent geocoded *every* returned onsen via a Google call at request time — up to ~20 per `/chat` after I raised the result cap to 20. The obvious latency culprit.
+**Solution:** Geocode each onsen **once at ingest** and store `lat`/`lng` in ChromaDB metadata, then drop runtime geocoding. Shipped.
+**The twist — I measured before *and* after.** Baseline ~22 s for a Shizuoka query; after removing runtime geocoding, ~22 s. No change. Reading the code explained why: the geocoding was already parallel (`asyncio.gather`), so it was never the dominant cost — the GPT-4o ReAct loop is (13–32 s, high variance). So the refactor was a real **cost + reliability** win (it stops re-paying Google to geocode the same static data on every request, and removes a runtime dependency) but **not** a latency win. The lesson: the "obvious" bottleneck was wrong, and only the measurement revealed it. The actual latency lever is the LLM loop — which points straight at the V2 workflow redesign.
 
 ---
 
@@ -96,6 +97,8 @@ This is the part I'm most proud of — most of these were *correctness* and *pro
 - **Retrieval needs structure, not just vectors.** Metadata filters + semantic ranking beat similarity alone.
 - **Single source of truth or bust.** The Chroma path bug came from two code paths computing the "same" value independently.
 - **Production is its own skill.** Auth, CORS, monorepo deploys, env handling, release discipline — none of it shows up in a local demo, all of it matters.
+- **Measure before optimising — the obvious culprit is often wrong.** I was sure per-request geocoding was the latency bottleneck. Timing `/chat` before and after removing it showed no change; the LLM ReAct loop was the real cost. The number corrected the guess.
+- **Use the least autonomy that solves the task.** I reached for an autonomous agent in V1; measuring and re-reading the flows showed they're fixed pipelines — a *workflow* with the LLM only where judgment is genuinely needed is cheaper, faster, and removes fabrication *structurally* (the LLM can't invent data it never assembles). The agent earns its keep at V3, not before.
 
 ---
 
@@ -104,9 +107,9 @@ This is the part I'm most proud of — most of these were *correctness* and *pro
 I'd rather name the gaps than pretend they don't exist. Here's what V1 deliberately doesn't do yet, and what it would take to make it production-/senior-grade. (The first three are also the top of my V2 plan — they're product improvements *and* the things that demonstrate real LLM-engineering rigor.)
 
 **AI engineering depth**
-- **No eval harness yet.** Today I verify behaviour with manual + smoke tests. The right answer is a fixed evaluation set measuring retrieval hit-rate, fabrication rate, and answer quality — so "is the agent good?" has a *number*, not an opinion.
+- **Eval harness — seeded (fabrication slice).** I built a small fabrication eval (`scripts/eval_fabrication.py`): fixed cases with ground truth read from the DB — out-of-data prefectures must return *empty* (the no-fabrication contract), in-data ones must return only real onsen. It already earned its keep, catching that `gpt-4o-mini` isn't a safe drop-in (it misuses the search tool). Still to broaden: retrieval hit-rate, tool-selection accuracy, answer quality, and wiring it to gate CI — so "is the agent good?" has a fuller *number*, not an opinion.
 - **No observability.** No request tracing, token/cost accounting, or latency metrics. I'd add structured per-request logging (tokens, cost, latency, tool calls) and/or tracing.
-- **Performance is unmeasured.** The per-request geocoding bottleneck (see challenge #8) needs the ingest-time-geocoding fix *plus* before/after latency numbers — measurement is the point.
+- **Performance — now measured (and the result surprised me).** Before/after timing on `/chat` (challenge #8) showed ingest-time geocoding was a cost/reliability win, not a latency one — the GPT-4o ReAct loop is the real bottleneck. Next perf work targets the loop (a workflow with fewer round-trips + a cheaper model), not geocoding. Still missing: token/cost accounting and tracing to attribute latency per step.
 
 **Engineering rigor**
 - **Resilience:** external calls (Rakuten, Google, OpenAI) lack retries, timeouts, and graceful degradation — the unhappy path isn't designed for yet.
