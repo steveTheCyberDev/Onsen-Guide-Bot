@@ -1,4 +1,3 @@
-import asyncio
 import logging
 
 from langchain_openai import ChatOpenAI
@@ -10,9 +9,7 @@ from agent.tools.retrieval_tool import search_onsen
 from agent.tools.geocoding_tool import geocode_location
 from agent.tools.rakuten_tool import search_rakuten_onsen
 from services.chat.chat_service import get_history, save_message
-from services.geocoding.geocoding_service import geocode
 from core.config import settings
-from core.exceptions import GeocodingError
 
 logger = logging.getLogger(__name__)
 
@@ -33,6 +30,11 @@ _SYSTEM_PROMPT = (
     "invent, guess, or recall onsen names, locations, spring types, spa quality, "
     "or descriptions from your own knowledge — only report onsen present in the "
     "tool output. "
+    "CRITICAL — onsen coordinates: for each onsen, copy the `Latitude` and "
+    "`Longitude` values from the search_onsen tool output VERBATIM into the "
+    "OnsenResult `lat` and `lng` fields. Do NOT round them, invent them, or recall "
+    "them from your own knowledge. If the tool output for an onsen has no Latitude/"
+    "Longitude lines, leave `lat` and `lng` null. "
     "CRITICAL — hotels: every hotel you return MUST come verbatim from the "
     "search_rakuten_onsen tool's output. If you did not call search_rakuten_onsen, "
     "or it returned no results, the hotels list MUST be empty. NEVER invent, guess, "
@@ -50,8 +52,20 @@ class OnsenResult(BaseModel):
     spring_type: str
     spa_quality: str
     sales_point: str | None = Field(default=None, description="Hot spring sales point")
-    lat: float | None = Field(default=None, description="Latitude of the onsen")
-    lng: float | None = Field(default=None, description="Longitude of the onsen")
+    lat: float | None = Field(
+        default=None,
+        description=(
+            "Latitude of the onsen, copied VERBATIM from the search_onsen tool "
+            "output's Latitude line. Null if the tool output has no coordinates."
+        ),
+    )
+    lng: float | None = Field(
+        default=None,
+        description=(
+            "Longitude of the onsen, copied VERBATIM from the search_onsen tool "
+            "output's Longitude line. Null if the tool output has no coordinates."
+        ),
+    )
 
 class HotelResult(BaseModel):
     name: str = Field(description="Name in English")
@@ -108,21 +122,12 @@ tools = [search_onsen, geocode_location, search_rakuten_onsen]
 
 graph = create_react_agent(llm, tools, prompt=_SYSTEM_PROMPT, response_format=AgentResponse)
 
-async def _enrich_coordinates(onsen: OnsenResult) -> None:
-    query = f"{onsen.name}, {onsen.location}, Japan" if onsen.location else f"{onsen.name}, Japan"
-    try:
-        coords = await asyncio.to_thread(geocode, query)
-        onsen.lat = coords["latitude"]
-        onsen.lng = coords["longitude"]
-    except GeocodingError:
-        pass
-
-
 async def run_agent(message: str, session_id: str) -> dict:
     history = get_history(session_id)
     result = await graph.ainvoke({"messages": history + [HumanMessage(content=message)]})
     structured: AgentResponse = result["structured_response"]
-    if structured.onsens:
-        await asyncio.gather(*[_enrich_coordinates(o) for o in structured.onsens])
+    # Onsen coordinates come straight from the structured response, which the LLM
+    # populates verbatim from the search_onsen tool output (coordinates are stored
+    # in ChromaDB metadata at ingest time). No request-time geocoding is performed.
     save_message(session_id, message, structured.reply)
     return structured.model_dump()
