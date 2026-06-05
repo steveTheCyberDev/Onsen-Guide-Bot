@@ -26,6 +26,10 @@ class Settings(BaseSettings):
     # Override via env var CHROMA_PATH in production (Railway sets it to /app/chroma_db,
     # the mount point of the persistent volume) so the app and ingest job agree.
     chroma_path: str = "chroma_db"
+    # Chat LLM used by the agent. Override via env var CHAT_MODEL (e.g. to swap
+    # "gpt-4o" for "gpt-4o-mini" and measure the difference via the fabrication
+    # eval at scripts/eval_fabrication.py).
+    chat_model: str = "gpt-4o"
 
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
 

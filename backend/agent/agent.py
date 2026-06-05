@@ -114,7 +114,7 @@ class AgentResponse(BaseModel):
 
 
 llm = ChatOpenAI(
-    model="gpt-4o",
+    model=settings.chat_model,
     api_key=settings.openai_api_key,
 )
 
