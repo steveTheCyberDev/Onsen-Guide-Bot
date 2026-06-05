@@ -4,12 +4,18 @@ Ingest onsen data into ChromaDB.
 Usage (from project root):
     python backend/scripts/ingest.py --file data/okinawa_springs.jsonl
 
-Reads raw Japanese JSONL, translates name/city/sales_point via OpenAI,
-applies static lookups for prefecture and spa quality, then upserts into ChromaDB.
+Reads a region JSONL, applies static English lookups (prefecture / spa quality),
+LLM-translates name/city/sales_point for records that have NOT been translated
+yet, then upserts into ChromaDB.
+
+Translation is cached: enriched records (including the `_en` fields) are written
+back into the source JSONL, and the sibling copy is kept byte-identical. A second
+ingest of the same file therefore performs ZERO LLM translation.
 """
 
 import argparse
 import json
+import shutil
 import sys
 from pathlib import Path
 
@@ -113,64 +119,167 @@ def translate_spa_quality(quality_ja: str | None) -> str:
     return ", ".join(translated)
 
 
-def build_document(record: dict, translation: dict) -> str:
+def build_document(record: dict, translation: dict | None = None) -> str:
     """The text embedded for retrieval.
+
+    Works from the record's final merged fields regardless of whether the
+    translation was fresh or cached. `translation` is an optional override:
+    when given (the fresh-translation path) its `_en` fields take precedence;
+    otherwise the `_en` fields are read straight off the record (the cached
+    path). Either way the record itself is the fallback source.
 
     Prefer the translated sales pitch, then the original Japanese one. Some
     records have an empty sales_point — embedding "" gives a meaningless vector
     (and can error at the embeddings API), so fall back to name + prefecture and,
     in the worst case, a constant, guaranteeing a non-empty document.
     """
-    name = translation.get("name_en") or record.get("name", "")
+    translation = translation or {}
+    name = translation.get("name_en") or record.get("name_en") or record.get("name", "")
     fallback = ". ".join(p for p in (name, record.get("prefecture_en", "")) if p)
     return (
         translation.get("sales_point_en")
+        or record.get("sales_point_en")
         or record.get("sales_point")
         or fallback
         or "onsen"
     )
 
 
+def is_translated(record: dict) -> bool:
+    """A record is already translated if it has a non-empty `name_en`.
+
+    `name_en` is the marker for the whole LLM-translation step: it is only ever
+    written by `translate_batch`, so its presence means city_en / sales_point_en
+    were produced in the same call. Such records skip the LLM on re-ingest.
+    """
+    return bool(record.get("name_en"))
+
+
+def apply_static_fields(record: dict, region_slug: str) -> None:
+    """Compute the cheap, deterministic English fields on every record.
+
+    These are recomputed on every ingest (no LLM cost) so the cache stays
+    correct even if the static lookup tables change.
+    """
+    prefecture_ja, city_ja = parse_location(record["location"])
+    record["prefecture_ja"] = prefecture_ja
+    record["city_ja"] = city_ja
+    record["prefecture_en"] = PREFECTURE_MAP.get(prefecture_ja, prefecture_ja)
+    record["spa_quality_en"] = translate_spa_quality(record["spa_quality"])
+    record["region_slug"] = region_slug
+
+
+def translate_missing(records: list[dict], batch_size: int) -> None:
+    """LLM-translate only records missing `name_en`, merging results in place.
+
+    The `_en` fields (name_en / city_en / sales_point_en) are written onto each
+    record dict so they persist to the source JSONL and are reused next run.
+    """
+    pending = [r for r in records if not is_translated(r)]
+    print(f"{len(pending)} records need translation "
+          f"({len(records) - len(pending)} already cached).")
+    if not pending:
+        return
+
+    for i in range(0, len(pending), batch_size):
+        batch = pending[i : i + batch_size]
+        print(f"Translating batch {i // batch_size + 1} ({len(batch)} records)...")
+        translations = translate_batch(batch)
+        trans_map = {t["id"]: t for t in translations}
+        for j, record in enumerate(batch):
+            t = trans_map.get(j, {})
+            record["name_en"] = t.get("name_en", "")
+            record["city_en"] = t.get("city_en", "")
+            record["sales_point_en"] = t.get("sales_point_en", "")
+
+
+def build_metadata(record: dict) -> dict:
+    """Metadata dict for the Chroma upsert, built from the merged record.
+
+    ChromaDB rejects None metadata values, so latitude/longitude are only
+    included when BOTH are non-null (geocoding writes null on failure).
+    """
+    meta = {
+        "name": record["name"],
+        "name_en": record.get("name_en", ""),
+        "prefecture_en": record["prefecture_en"],
+        "city_en": record.get("city_en", ""),
+        "spa_quality_en": record["spa_quality_en"],
+        "region_slug": record["region_slug"],
+        "detail_url": record["detail_url"],
+    }
+    lat, lng = record.get("latitude"), record.get("longitude")
+    if lat is not None and lng is not None:
+        meta["latitude"] = lat
+        meta["longitude"] = lng
+    return meta
+
+
+def write_back(jsonl_path: Path, records: list[dict]) -> None:
+    """Rewrite the source JSONL with enriched records, then sync the sibling.
+
+    The two byte-identical copies (`data/<region>_springs.jsonl` and
+    `backend/data/<region>_springs.jsonl`) must stay in sync so a second ingest
+    of either copy is fully cached. We write `--file`, then copy it to the
+    sibling and verify they match.
+    """
+    with jsonl_path.open("w", encoding="utf-8") as f:
+        for record in records:
+            f.write(json.dumps(record, ensure_ascii=False) + "\n")
+    print(f"Wrote {len(records)} enriched records back to {jsonl_path}")
+
+    sibling = sibling_path(jsonl_path)
+    if sibling is None:
+        print("No sibling copy resolved — skipping sync. "
+              "(File is not under a data/ or backend/data/ tree.)")
+        return
+    if sibling.resolve() == jsonl_path.resolve():
+        return
+    shutil.copyfile(jsonl_path, sibling)
+    print(f"Synced sibling copy: {sibling}")
+
+
+def sibling_path(jsonl_path: Path) -> Path | None:
+    """Resolve the other copy of a region JSONL.
+
+    Files live in two trees: `<root>/data/` and `<root>/backend/data/`. Given a
+    path in one tree, return the matching path in the other, or None if the path
+    is not under a recognised data/ tree.
+    """
+    p = jsonl_path.resolve()
+    parts = p.parts
+    if len(parts) >= 3 and parts[-3] == "backend" and parts[-2] == "data":
+        # backend/data/<file> -> data/<file>
+        return Path(*parts[:-3], "data", parts[-1])
+    if len(parts) >= 2 and parts[-2] == "data":
+        # data/<file> -> backend/data/<file>
+        return Path(*parts[:-2], "backend", "data", parts[-1])
+    return None
+
+
 def ingest(jsonl_path: Path, batch_size: int = 20) -> None:
     records = [json.loads(line) for line in jsonl_path.read_text(encoding="utf-8").splitlines() if line.strip()]
     print(f"Loaded {len(records)} records from {jsonl_path.name}")
 
-    # Add derived fields before translation
+    region_slug = jsonl_path.stem.replace("_springs", "")
+
+    # Static fields are cheap/deterministic — (re)compute on every record.
     for r in records:
-        prefecture_ja, city_ja = parse_location(r["location"])
-        r["prefecture_ja"] = prefecture_ja
-        r["city_ja"] = city_ja
-        r["prefecture_en"] = PREFECTURE_MAP.get(prefecture_ja, prefecture_ja)
-        r["spa_quality_en"] = translate_spa_quality(r["spa_quality"])
-        r["region_slug"] = jsonl_path.stem.replace("_springs", "")
+        apply_static_fields(r, region_slug)
 
-    # Translate in batches
+    # LLM-translate only the records that aren't cached yet, merging in place.
+    translate_missing(records, batch_size)
+
+    # Persist enrichment back to the source (the cache) + sync the sibling copy.
+    write_back(jsonl_path, records)
+
+    # Upsert every record (translations now live on the record itself).
     collection = get_collection()
-    for i in range(0, len(records), batch_size):
-        batch = records[i : i + batch_size]
-        print(f"Translating batch {i // batch_size + 1} ({len(batch)} records)...")
-        translations = translate_batch(batch)
-        trans_map = {t["id"]: t for t in translations}
-
-        ids, documents, metadatas = [], [], []
-        for j, record in enumerate(batch):
-            t = trans_map.get(j, {})
-            doc = build_document(record, t)
-            meta = {
-                "name": record["name"],
-                "name_en": t.get("name_en", ""),
-                "prefecture_en": record["prefecture_en"],
-                "city_en": t.get("city_en", ""),
-                "spa_quality_en": record["spa_quality_en"],
-                "region_slug": record["region_slug"],
-                "detail_url": record["detail_url"],
-            }
-            ids.append(record["detail_url"])
-            documents.append(doc)
-            metadatas.append(meta)
-
-        collection.upsert(ids=ids, documents=documents, metadatas=metadatas)
-        print(f"  Upserted {len(ids)} records.")
+    ids = [r["detail_url"] for r in records]
+    documents = [build_document(r) for r in records]
+    metadatas = [build_metadata(r) for r in records]
+    collection.upsert(ids=ids, documents=documents, metadatas=metadatas)
+    print(f"Upserted {len(ids)} records.")
 
     print(f"\nDone. Total in collection: {collection.count()}")
 
