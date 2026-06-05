@@ -122,6 +122,24 @@ I'd rather name the gaps than pretend they don't exist. Here's what V1 deliberat
 ## Roadmap
 
 ### V2 — Intermediate (next)
+
+#### What to fix BEFORE starting V2
+The slot-filling migration is the headline of V2, but I'm deliberately doing the *scaffolding around the agent* first — otherwise I can't prove the new agent is better, only assert it. The senior move isn't building a fancier agent; it's the loop **instrument → baseline → change → show the measured delta**. (This list is verified against current AI-engineering practice, not just my own gut.)
+
+- **Tier 1 — unblock everything (do first):**
+  - *Ingest-time geocoding* — the one measurable perf win; doing it first gives V2 a concrete before/after latency number (also a V2 feature, but really pre-work).
+  - *Eval harness* — a fixed set scoring retrieval hit-rate, fabrication rate, tool-selection accuracy. Without a number I can't honestly claim slot-filling is "more accurate." The senior version is evals **gating CI** plus a loop where real failed traces become new eval cases.
+  - *Agent tracing* — step-level traces (LangSmith/Langfuse, OpenTelemetry-compatible) on the *current* ReAct agent, to capture the baseline the migration is measured against.
+  - *Frontend tests into CI* — uncomment the `frontend-tests` job in `ci.yml` and require both checks on `main` (trivial, overdue).
+- **Tier 2 — foundation V2 leans on:**
+  - *Resilience* — today only `timeout=10` exists. Add the real stack: retry with backoff + jitter, fallback chains, circuit breakers, graceful degradation, and multi-provider failover (LLM providers run ~99–99.5% uptime). The V3 GPT-4o→Claude migration is the natural hook for a fallback chain.
+  - *Observability* — structured per-request logging: tokens, cost, latency, tool calls. The whole point of slot-filling is "cheaper, fewer calls" — unprovable without this.
+  - *Persistent chat history* — the in-memory dict breaks on restart / multi-instance; slot-filling is *more* stateful, so this only gets worse if ignored.
+- **Tier 3 — pin against regressions (can run alongside early V2):**
+  - *Assert the anti-fabrication guardrails* as real tests (today smoke-level) — lock in the proudest correctness win before refactoring the agent.
+  - *Rate limiting* on the paid endpoints (the API-key guard exists; add a limiter).
+
+#### V2 features
 - **Performance:** ingest-time geocoding (kill per-request Google calls); consider response streaming and a faster/cheaper model where the ReAct loop allows; cache query embeddings.
 - **New services:** `booking_service`, `preferences_service`, `translation_service` (cache hotel-name translations by Rakuten hotel id instead of re-translating each fetch).
 - **Product:** richer map view + filters; wire the prefecture filter to actually constrain results (today it only re-centres the map); user preference memory.
