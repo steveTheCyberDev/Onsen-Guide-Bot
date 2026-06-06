@@ -140,7 +140,7 @@ tools = [search_onsen, geocode_location, search_rakuten_onsen]
 
 graph = create_react_agent(llm, tools, prompt=_SYSTEM_PROMPT, response_format=AgentResponse)
 
-async def run_agent(message: str, session_id: str) -> dict:
+async def run_react_agent(message: str, session_id: str) -> dict:
     history = get_history(session_id)
     # Name/tag the run so this GPT-4o ReAct baseline is easy to locate and filter
     # in the LangSmith UI later (and to compare against the slot-filling/workflow
@@ -168,3 +168,34 @@ async def run_agent(message: str, session_id: str) -> dict:
     # in ChromaDB metadata at ingest time). No request-time geocoding is performed.
     save_message(session_id, message, structured.reply)
     return structured.model_dump()
+
+
+async def run_agent(message: str, session_id: str) -> dict:
+    """Dispatch /chat to the configured chat engine (the A/B + rollback seam).
+
+    Routes on ``settings.chat_engine`` (env ``CHAT_ENGINE``):
+      * ``"workflow"`` → the deterministic V2 pipeline (``run_workflow``).
+      * anything else (incl. ``"react"``, the default) → the legacy ReAct agent.
+
+    Keeps the public name/signature/return shape (dict) stable so
+    ``api/routes/chat.py`` is unchanged. ``run_workflow`` is imported lazily here
+    to avoid a circular import: ``agent.workflow.pipeline`` imports the Pydantic
+    models (AgentResponse/HotelResult/OnsenResult) from this module at top level.
+
+    Args:
+        message: The latest user message.
+        session_id: Conversation/session identifier.
+
+    Returns:
+        ``AgentResponse.model_dump()`` — same dict shape from either engine.
+    """
+    if settings.chat_engine == "workflow":
+        logger.info("run_agent | engine=workflow | session_id=%s", session_id)
+        # Lazy import: agent.workflow.pipeline imports models from this module,
+        # so a top-level import here would create an import cycle.
+        from agent.workflow.pipeline import run_workflow
+
+        return await run_workflow(message, session_id)
+
+    logger.info("run_agent | engine=react | session_id=%s", session_id)
+    return await run_react_agent(message, session_id)

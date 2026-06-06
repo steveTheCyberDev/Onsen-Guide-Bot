@@ -33,6 +33,12 @@ class Settings(BaseSettings):
     # "gpt-4o" for "gpt-4o-mini" and measure the difference via the fabrication
     # eval at scripts/eval_fabrication.py).
     chat_model: str = "gpt-4o"
+    # Which engine the /chat dispatcher (agent/agent.py::run_agent) routes to.
+    # "react"    → the legacy GPT-4o ReAct agent (run_react_agent) — current live behavior.
+    # "workflow" → the deterministic V2 pipeline (agent/workflow/pipeline.py::run_workflow).
+    # Default MUST stay "react" so live behavior is unchanged until explicitly flipped.
+    # This is the A/B + instant-rollback seam. Override via env var CHAT_ENGINE.
+    chat_engine: str = "react"
     # Small, fast LLM used by the V2 workflow's intent-parsing node
     # (agent/workflow/intent.py) to extract {prefecture, query, wants_hotels}.
     # Kept separate from chat_model so the cheap routing call can use a smaller
