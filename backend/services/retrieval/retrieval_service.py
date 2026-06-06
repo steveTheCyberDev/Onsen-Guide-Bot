@@ -93,10 +93,16 @@ def query_onsen_structured(
             {
                 "name": meta.get("name_en", meta.get("name", "")),
                 "location": location,
+                # spring_type is the short spring-type label (e.g. "Sulfur
+                # Spring"); spa_quality carries the rich description text (the
+                # embedded Chroma document, `doc`) so the user-facing field has
+                # the full descriptive text, matching the legacy ReAct output.
                 "spring_type": meta.get("spa_quality_en", ""),
-                "spa_quality": meta.get("spa_quality_en", ""),
+                "spa_quality": doc,
+                # sales_point is not in Chroma metadata in prod, so this resolves
+                # to None for now. Intentional: the deferred guide/analyze layer
+                # will generate a real per-onsen pitch later.
                 "sales_point": meta.get("sales_point_en") or None,
-                "description": doc,
                 "detail_url": meta.get("detail_url"),
                 "lat": lat,
                 "lng": lng,
