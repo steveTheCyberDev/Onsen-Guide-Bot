@@ -33,6 +33,12 @@ class Settings(BaseSettings):
     # "gpt-4o" for "gpt-4o-mini" and measure the difference via the fabrication
     # eval at scripts/eval_fabrication.py).
     chat_model: str = "gpt-4o"
+    # Small, fast LLM used by the V2 workflow's intent-parsing node
+    # (agent/workflow/intent.py) to extract {prefecture, query, wants_hotels}.
+    # Kept separate from chat_model so the cheap routing call can use a smaller
+    # model (gpt-4o-mini) than the main chat/analyze path. Override via env var
+    # INTENT_MODEL.
+    intent_model: str = "gpt-4o-mini"
 
     # --- LangSmith step-level tracing (V2 Tier-1 instrumentation) ---
     # These surface the standard LangChain/LangSmith tracing env vars through one
