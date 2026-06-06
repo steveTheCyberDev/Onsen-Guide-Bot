@@ -179,3 +179,260 @@ def test_query_onsen_omits_where_filter_when_prefecture_empty_string():
     # Assert
     _, kwargs = collection.query.call_args
     assert "where" not in kwargs
+
+
+# ---------------------------------------------------------------------------
+# query_onsen_structured — returns list[dict] (V2 deterministic assembly path)
+# ---------------------------------------------------------------------------
+
+
+def test_structured_maps_all_fields_from_metadata_and_document():
+    # Arrange — a fully-populated record exercises every mapped key at once.
+    docs = ["A relaxing sulfur spring."]
+    metas = [
+        {
+            "name_en": "Beppu Onsen",
+            "city_en": "Beppu",
+            "prefecture_en": "Oita",
+            "spa_quality_en": "Sulfur spring",
+            "sales_point_en": "Famous for its eight hells.",
+            "detail_url": "https://example.com/beppu",
+            "latitude": 33.2846,
+            "longitude": 131.4914,
+        }
+    ]
+    # Act
+    with patch.object(retrieval_service, "get_collection", return_value=_fake_collection(docs, metas)):
+        records = retrieval_service.query_onsen_structured("relaxing spring")
+    # Assert
+    assert records == [
+        {
+            "name": "Beppu Onsen",
+            "location": "Beppu, Oita",
+            "spring_type": "Sulfur spring",
+            "spa_quality": "Sulfur spring",
+            "sales_point": "Famous for its eight hells.",
+            "description": "A relaxing sulfur spring.",
+            "detail_url": "https://example.com/beppu",
+            "lat": 33.2846,
+            "lng": 131.4914,
+        }
+    ]
+
+
+def test_structured_name_uses_name_en_when_present():
+    # Arrange
+    docs = ["doc"]
+    metas = [{"name_en": "Beppu Onsen", "name": "別府温泉"}]
+    # Act
+    with patch.object(retrieval_service, "get_collection", return_value=_fake_collection(docs, metas)):
+        records = retrieval_service.query_onsen_structured("spring")
+    # Assert
+    assert records[0]["name"] == "Beppu Onsen"
+
+
+def test_structured_name_falls_back_to_name_when_name_en_absent():
+    # Arrange — only the Japanese `name` is present.
+    docs = ["doc"]
+    metas = [{"name": "別府温泉"}]
+    # Act
+    with patch.object(retrieval_service, "get_collection", return_value=_fake_collection(docs, metas)):
+        records = retrieval_service.query_onsen_structured("spring")
+    # Assert
+    assert records[0]["name"] == "別府温泉"
+
+
+def test_structured_location_joins_city_and_prefecture():
+    # Arrange
+    docs = ["doc"]
+    metas = [{"city_en": "Beppu", "prefecture_en": "Oita"}]
+    # Act
+    with patch.object(retrieval_service, "get_collection", return_value=_fake_collection(docs, metas)):
+        records = retrieval_service.query_onsen_structured("spring")
+    # Assert
+    assert records[0]["location"] == "Beppu, Oita"
+
+
+def test_structured_location_drops_empty_city_no_leading_comma():
+    # Arrange — city missing must not leave a leading ", " in the location.
+    docs = ["doc"]
+    metas = [{"prefecture_en": "Oita"}]
+    # Act
+    with patch.object(retrieval_service, "get_collection", return_value=_fake_collection(docs, metas)):
+        records = retrieval_service.query_onsen_structured("spring")
+    # Assert
+    assert records[0]["location"] == "Oita"
+
+
+def test_structured_location_drops_empty_prefecture_no_trailing_comma():
+    # Arrange — prefecture missing must not leave a trailing ", ".
+    docs = ["doc"]
+    metas = [{"city_en": "Beppu"}]
+    # Act
+    with patch.object(retrieval_service, "get_collection", return_value=_fake_collection(docs, metas)):
+        records = retrieval_service.query_onsen_structured("spring")
+    # Assert
+    assert records[0]["location"] == "Beppu"
+
+
+def test_structured_location_empty_when_both_city_and_prefecture_missing():
+    # Arrange
+    docs = ["doc"]
+    metas = [{"name_en": "Nowhere Onsen"}]
+    # Act
+    with patch.object(retrieval_service, "get_collection", return_value=_fake_collection(docs, metas)):
+        records = retrieval_service.query_onsen_structured("spring")
+    # Assert
+    assert records[0]["location"] == ""
+
+
+def test_structured_surfaces_sales_point_from_sales_point_en():
+    # Arrange — this is the key behaviour the old string path did NOT expose.
+    docs = ["doc"]
+    metas = [{"sales_point_en": "Open-air bath with a sea view."}]
+    # Act
+    with patch.object(retrieval_service, "get_collection", return_value=_fake_collection(docs, metas)):
+        records = retrieval_service.query_onsen_structured("spring")
+    # Assert
+    assert records[0]["sales_point"] == "Open-air bath with a sea view."
+
+
+def test_structured_sales_point_is_none_when_absent():
+    # Arrange
+    docs = ["doc"]
+    metas = [{"name_en": "No Sales Point"}]
+    # Act
+    with patch.object(retrieval_service, "get_collection", return_value=_fake_collection(docs, metas)):
+        records = retrieval_service.query_onsen_structured("spring")
+    # Assert
+    assert records[0]["sales_point"] is None
+
+
+def test_structured_sales_point_is_none_when_explicitly_none():
+    # Arrange — an explicit None metadata value must coerce to None, not stay falsy-but-present.
+    docs = ["doc"]
+    metas = [{"sales_point_en": None}]
+    # Act
+    with patch.object(retrieval_service, "get_collection", return_value=_fake_collection(docs, metas)):
+        records = retrieval_service.query_onsen_structured("spring")
+    # Assert
+    assert records[0]["sales_point"] is None
+
+
+def test_structured_sets_coordinates_when_both_present():
+    # Arrange
+    docs = ["doc"]
+    metas = [{"latitude": 33.2846, "longitude": 131.4914}]
+    # Act
+    with patch.object(retrieval_service, "get_collection", return_value=_fake_collection(docs, metas)):
+        records = retrieval_service.query_onsen_structured("spring")
+    # Assert
+    assert records[0]["lat"] == 33.2846 and records[0]["lng"] == 131.4914
+
+
+def test_structured_both_coords_none_when_only_latitude_present():
+    # Arrange — both-or-neither guard: a lone latitude must zero out both.
+    docs = ["doc"]
+    metas = [{"latitude": 35.0}]
+    # Act
+    with patch.object(retrieval_service, "get_collection", return_value=_fake_collection(docs, metas)):
+        records = retrieval_service.query_onsen_structured("spring")
+    # Assert
+    assert records[0]["lat"] is None and records[0]["lng"] is None
+
+
+def test_structured_both_coords_none_when_only_longitude_present():
+    # Arrange — symmetric to the latitude-only case.
+    docs = ["doc"]
+    metas = [{"longitude": 131.0}]
+    # Act
+    with patch.object(retrieval_service, "get_collection", return_value=_fake_collection(docs, metas)):
+        records = retrieval_service.query_onsen_structured("spring")
+    # Assert
+    assert records[0]["lat"] is None and records[0]["lng"] is None
+
+
+def test_structured_both_coords_none_when_neither_present():
+    # Arrange
+    docs = ["doc"]
+    metas = [{"name_en": "No Coords"}]
+    # Act
+    with patch.object(retrieval_service, "get_collection", return_value=_fake_collection(docs, metas)):
+        records = retrieval_service.query_onsen_structured("spring")
+    # Assert
+    assert records[0]["lat"] is None and records[0]["lng"] is None
+
+
+def test_structured_description_maps_from_document():
+    # Arrange — description comes from the Chroma `documents` entry, not metadata.
+    docs = ["A milky white sulfur bath high in the mountains."]
+    metas = [{"name_en": "Mountain Onsen"}]
+    # Act
+    with patch.object(retrieval_service, "get_collection", return_value=_fake_collection(docs, metas)):
+        records = retrieval_service.query_onsen_structured("spring")
+    # Assert
+    assert records[0]["description"] == "A milky white sulfur bath high in the mountains."
+
+
+def test_structured_detail_url_from_meta():
+    # Arrange
+    docs = ["doc"]
+    metas = [{"detail_url": "https://example.com/beppu"}]
+    # Act
+    with patch.object(retrieval_service, "get_collection", return_value=_fake_collection(docs, metas)):
+        records = retrieval_service.query_onsen_structured("spring")
+    # Assert
+    assert records[0]["detail_url"] == "https://example.com/beppu"
+
+
+def test_structured_detail_url_is_none_when_absent():
+    # Arrange
+    docs = ["doc"]
+    metas = [{"name_en": "No URL"}]
+    # Act
+    with patch.object(retrieval_service, "get_collection", return_value=_fake_collection(docs, metas)):
+        records = retrieval_service.query_onsen_structured("spring")
+    # Assert
+    assert records[0]["detail_url"] is None
+
+
+def test_structured_builds_where_filter_when_prefecture_given():
+    # Arrange
+    collection = _fake_collection([], [])
+    # Act
+    with patch.object(retrieval_service, "get_collection", return_value=collection):
+        retrieval_service.query_onsen_structured("spring", prefecture="Okinawa")
+    # Assert
+    _, kwargs = collection.query.call_args
+    assert kwargs["where"] == {"prefecture_en": "Okinawa"}
+
+
+def test_structured_omits_where_filter_when_prefecture_absent():
+    # Arrange
+    collection = _fake_collection([], [])
+    # Act
+    with patch.object(retrieval_service, "get_collection", return_value=collection):
+        retrieval_service.query_onsen_structured("spring")
+    # Assert
+    _, kwargs = collection.query.call_args
+    assert "where" not in kwargs
+
+
+def test_structured_returns_empty_list_when_no_results():
+    # Arrange — empty result set must be [], NOT a "No onsen found" string.
+    # Act
+    with patch.object(retrieval_service, "get_collection", return_value=_fake_collection([], [])):
+        records = retrieval_service.query_onsen_structured("nothing here")
+    # Assert
+    assert records == []
+
+
+def test_structured_forwards_n_results_to_collection():
+    # Arrange
+    collection = _fake_collection([], [])
+    # Act
+    with patch.object(retrieval_service, "get_collection", return_value=collection):
+        retrieval_service.query_onsen_structured("spring", n_results=7)
+    # Assert
+    _, kwargs = collection.query.call_args
+    assert kwargs["n_results"] == 7
