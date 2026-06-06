@@ -9,9 +9,23 @@ from agent.tools.retrieval_tool import search_onsen
 from agent.tools.geocoding_tool import geocode_location
 from agent.tools.rakuten_tool import search_rakuten_onsen
 from services.chat.chat_service import get_history, save_message
-from core.config import settings
+from core.config import settings, export_langsmith_env
 
 logger = logging.getLogger(__name__)
+
+# Export LangSmith tracing env vars (if enabled) BEFORE constructing the LLM /
+# graph. langsmith reads these env vars and caches them, so they must be present
+# in os.environ before the first run. No-op + tracing disabled unless
+# LANGSMITH_TRACING=true and an API key are set — see core.config.
+_TRACING_ENABLED = export_langsmith_env()
+if _TRACING_ENABLED:
+    logger.info(
+        "LangSmith tracing ENABLED | project=%s | endpoint=%s",
+        settings.langsmith_project,
+        settings.langsmith_endpoint,
+    )
+else:
+    logger.info("LangSmith tracing disabled (no-op)")
 
 _SYSTEM_PROMPT = (
     "You are an expert guide for Japanese hot springs (onsen). "
@@ -116,6 +130,10 @@ class AgentResponse(BaseModel):
 llm = ChatOpenAI(
     model=settings.chat_model,
     api_key=settings.openai_api_key,
+    # Emit token-usage metadata on every response so per-step token counts show
+    # up in LangSmith traces (and aggregate into the run's total). Harmless when
+    # tracing is off — it just attaches usage_metadata to the AIMessage.
+    stream_usage=True,
 )
 
 tools = [search_onsen, geocode_location, search_rakuten_onsen]
@@ -124,7 +142,26 @@ graph = create_react_agent(llm, tools, prompt=_SYSTEM_PROMPT, response_format=Ag
 
 async def run_agent(message: str, session_id: str) -> dict:
     history = get_history(session_id)
-    result = await graph.ainvoke({"messages": history + [HumanMessage(content=message)]})
+    # Name/tag the run so this GPT-4o ReAct baseline is easy to locate and filter
+    # in the LangSmith UI later (and to compare against the slot-filling/workflow
+    # migration). Metadata is request-scoped; we deliberately omit the raw user
+    # message to avoid logging PII into traces. Config is inert when tracing is
+    # disabled.
+    run_config = {
+        "run_name": "chat-react-agent",
+        "tags": ["chat", "react-agent", f"model:{settings.chat_model}"],
+        "metadata": {
+            "endpoint": "/chat",
+            "session_id": session_id,
+            "chat_model": settings.chat_model,
+            "agent_type": "react",
+            "version": "v1-baseline",
+        },
+    }
+    result = await graph.ainvoke(
+        {"messages": history + [HumanMessage(content=message)]},
+        config=run_config,
+    )
     structured: AgentResponse = result["structured_response"]
     # Onsen coordinates come straight from the structured response, which the LLM
     # populates verbatim from the search_onsen tool output (coordinates are stored

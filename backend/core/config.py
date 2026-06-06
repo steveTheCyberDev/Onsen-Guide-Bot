@@ -1,3 +1,6 @@
+import os
+
+from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings
 
 
@@ -31,7 +34,74 @@ class Settings(BaseSettings):
     # eval at scripts/eval_fabrication.py).
     chat_model: str = "gpt-4o"
 
-    model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
+    # --- LangSmith step-level tracing (V2 Tier-1 instrumentation) ---
+    # These surface the standard LangChain/LangSmith tracing env vars through one
+    # source of truth. Tracing is OFF by default and FAILS SAFE: when
+    # langsmith_tracing is False (the default) or no API key is present,
+    # export_langsmith_env() exports nothing, so LangChain never attempts to
+    # contact LangSmith and the app behaves exactly as before. Turn it on by
+    # setting LANGSMITH_TRACING=true (or the legacy LANGCHAIN_TRACING_V2=true)
+    # plus LANGSMITH_API_KEY in the environment.
+    # Each field accepts both the modern LANGSMITH_* name and the legacy
+    # LANGCHAIN_* alias (LANGCHAIN_TRACING_V2 etc.) so either works in the env.
+    langsmith_tracing: bool = Field(
+        default=False,
+        validation_alias=AliasChoices(
+            "LANGSMITH_TRACING", "LANGSMITH_TRACING_V2", "LANGCHAIN_TRACING_V2"
+        ),
+    )
+    langsmith_api_key: str = Field(
+        default="",
+        validation_alias=AliasChoices("LANGSMITH_API_KEY", "LANGCHAIN_API_KEY"),
+    )
+    # Project name traces are grouped under in the LangSmith UI. Keep this stable
+    # so the GPT-4o ReAct baseline is easy to find later and compare against the
+    # slot-filling/workflow migration.
+    langsmith_project: str = Field(
+        default="onsen-guide-bot",
+        validation_alias=AliasChoices("LANGSMITH_PROJECT", "LANGCHAIN_PROJECT"),
+    )
+    # LangSmith ingestion endpoint. Default is the US SaaS endpoint; override for
+    # the EU region ("https://eu.api.smith.langchain.com") or a self-hosted host.
+    langsmith_endpoint: str = Field(
+        default="https://api.smith.langchain.com",
+        validation_alias=AliasChoices("LANGSMITH_ENDPOINT", "LANGCHAIN_ENDPOINT"),
+    )
+
+    model_config = {
+        "env_file": ".env",
+        "env_file_encoding": "utf-8",
+        # Accept both the LANGSMITH_* names above and the legacy LANGCHAIN_*
+        # aliases (LANGCHAIN_TRACING_V2, LANGCHAIN_API_KEY, ...) so existing
+        # tooling/docs keep working. Defined per-field via validation_alias.
+        "extra": "ignore",
+    }
 
 
 settings = Settings()
+
+
+def export_langsmith_env() -> bool:
+    """Export LangSmith tracing settings into ``os.environ`` if enabled.
+
+    LangChain's tracer reads ``LANGSMITH_*`` / ``LANGCHAIN_*`` environment
+    variables directly (langsmith caches them via ``lru_cache``), so they must be
+    present in ``os.environ`` before the agent first runs. Call this once at the
+    agent/config layer at import time.
+
+    No-op (and returns ``False``) unless ``langsmith_tracing`` is True AND an API
+    key is set — this keeps tracing strictly opt-in and prevents broken local/prod
+    runs when keys are absent. Does not overwrite any tracing vars already present
+    in the real environment (so an operator's explicit override wins).
+
+    Returns:
+        True if tracing env vars were exported (tracing active), else False.
+    """
+    if not settings.langsmith_tracing or not settings.langsmith_api_key:
+        return False
+    # setdefault: never clobber an explicit value already in the environment.
+    os.environ.setdefault("LANGSMITH_TRACING", "true")
+    os.environ.setdefault("LANGSMITH_API_KEY", settings.langsmith_api_key)
+    os.environ.setdefault("LANGSMITH_PROJECT", settings.langsmith_project)
+    os.environ.setdefault("LANGSMITH_ENDPOINT", settings.langsmith_endpoint)
+    return True
