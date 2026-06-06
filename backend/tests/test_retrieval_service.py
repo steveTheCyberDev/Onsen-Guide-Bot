@@ -204,20 +204,27 @@ def test_structured_maps_all_fields_from_metadata_and_document():
     # Act
     with patch.object(retrieval_service, "get_collection", return_value=_fake_collection(docs, metas)):
         records = retrieval_service.query_onsen_structured("relaxing spring")
-    # Assert
+    # Assert — spring_type carries the short spa_quality_en label; spa_quality
+    # now carries the rich Chroma document text (the `description` key was
+    # removed and its value moved into spa_quality). There is no `description`
+    # key in the record.
     assert records == [
         {
             "name": "Beppu Onsen",
             "location": "Beppu, Oita",
             "spring_type": "Sulfur spring",
-            "spa_quality": "Sulfur spring",
+            "spa_quality": "A relaxing sulfur spring.",
             "sales_point": "Famous for its eight hells.",
-            "description": "A relaxing sulfur spring.",
             "detail_url": "https://example.com/beppu",
             "lat": 33.2846,
             "lng": 131.4914,
         }
     ]
+    # Regression guard (A/B bug): when the spring-type label and the document
+    # text differ, spring_type must NOT duplicate spa_quality — this locks in
+    # that spa_quality stops mirroring the short spring-type label.
+    assert records[0]["spring_type"] != records[0]["spa_quality"]
+    assert "description" not in records[0]
 
 
 def test_structured_name_uses_name_en_when_present():
@@ -363,15 +370,18 @@ def test_structured_both_coords_none_when_neither_present():
     assert records[0]["lat"] is None and records[0]["lng"] is None
 
 
-def test_structured_description_maps_from_document():
-    # Arrange — description comes from the Chroma `documents` entry, not metadata.
+def test_structured_spa_quality_maps_from_document():
+    # Arrange — spa_quality (the user-facing rich description) comes from the
+    # Chroma `documents` entry, not metadata. spring_type still carries the
+    # short spa_quality_en label.
     docs = ["A milky white sulfur bath high in the mountains."]
-    metas = [{"name_en": "Mountain Onsen"}]
+    metas = [{"name_en": "Mountain Onsen", "spa_quality_en": "Sulfur spring"}]
     # Act
     with patch.object(retrieval_service, "get_collection", return_value=_fake_collection(docs, metas)):
         records = retrieval_service.query_onsen_structured("spring")
     # Assert
-    assert records[0]["description"] == "A milky white sulfur bath high in the mountains."
+    assert records[0]["spa_quality"] == "A milky white sulfur bath high in the mountains."
+    assert records[0]["spring_type"] == "Sulfur spring"
 
 
 def test_structured_detail_url_from_meta():
