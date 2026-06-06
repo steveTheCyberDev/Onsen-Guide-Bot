@@ -3,6 +3,11 @@
 Status: **planned** (2026-06-06). Builds on the measured baseline in
 `PROJECT_JOURNEY.md` challenge #9.
 
+> **Resequenced 2026-06-06:** analyze (Step 3/⑤) is deferred to the END of the
+> pipeline. `run_workflow` (Step 4) ships with analyze as a gated seam (a
+> commented no-op hook), NOT implemented — keeping the response contract
+> identical to v1 for a clean A/B.
+
 ## Why
 
 Tracing attributed `"find me 20 onsens in Shizuoka"` (~30s) to two redundant
