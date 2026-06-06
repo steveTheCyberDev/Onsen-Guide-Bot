@@ -36,7 +36,7 @@ logger = logging.getLogger(__name__)
 # records carry EXTRA keys (description, detail_url) that are NOT fields on
 # OnsenResult; since OnsenResult forbids extras (Pydantic v2 default),
 # OnsenResult(**record) would raise. We project onto this allow-list instead.
-_ONSEN_FIELDS = ("name", "location", "spring_type", "spa_quality", "sales_point", "lat", "lng")
+_ONSEN_FIELDS = ("name", "location", "spring_type", "spa_quality", "lat", "lng")
 
 # --- LangSmith tracing (import-guarded, no-op when disabled) ---
 # Wrap run_workflow with langsmith's @traceable so the V2 workflow run is

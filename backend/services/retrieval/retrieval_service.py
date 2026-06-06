@@ -99,10 +99,6 @@ def query_onsen_structured(
                 # the full descriptive text, matching the legacy ReAct output.
                 "spring_type": meta.get("spa_quality_en", ""),
                 "spa_quality": doc,
-                # sales_point is not in Chroma metadata in prod, so this resolves
-                # to None for now. Intentional: the deferred guide/analyze layer
-                # will generate a real per-onsen pitch later.
-                "sales_point": meta.get("sales_point_en") or None,
                 "detail_url": meta.get("detail_url"),
                 "lat": lat,
                 "lng": lng,

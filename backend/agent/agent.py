@@ -36,7 +36,7 @@ _SYSTEM_PROMPT = (
     "and pass it to the search_onsen tool's `prefecture` argument as the English prefecture name "
     "(e.g. 'Okinawa', 'Mie', 'Tokyo'); this restricts results to that prefecture. If the user does "
     "not specify a location, omit the prefecture argument. "
-    "List out onsens along with name, location and sale point in the reply. "
+    "List out onsens along with name and location in the reply. "
     "CRITICAL — onsen: every onsen you return MUST come verbatim from the "
     "search_onsen tool's output. If search_onsen returned no matches (e.g. it "
     "responded 'No onsen found matching your query') or you did not call it, the "
@@ -65,7 +65,6 @@ class OnsenResult(BaseModel):
     location: str | None = Field(default=None, description="City in English")
     spring_type: str
     spa_quality: str
-    sales_point: str | None = Field(default=None, description="Hot spring sales point")
     lat: float | None = Field(
         default=None,
         description=(
