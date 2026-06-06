@@ -9,7 +9,6 @@ function makeOnsen(overrides = {}) {
     location: 'Naha, Okinawa',
     spring_type: 'Sodium chloride',
     spa_quality: 'High mineral content',
-    sales_point: 'Open-air bath overlooking the sea.',
     lat: 26.2,
     lng: 127.6,
     ...overrides,
@@ -27,20 +26,18 @@ describe('OnsenMiniCard', () => {
     expect(screen.getByText('Yamada Onsen')).toBeInTheDocument();
   });
 
-  it('renders location, spring type, quality and sales point when present', () => {
+  it('renders location, spring type, and spa_quality description when present', () => {
     render(<OnsenMiniCard onsen={makeOnsen()} />);
     expect(screen.getByText('Naha, Okinawa')).toBeInTheDocument();
     expect(screen.getByText('Sodium chloride')).toBeInTheDocument();
     expect(screen.getByText('High mineral content')).toBeInTheDocument();
-    expect(
-      screen.getByText('Open-air bath overlooking the sea.')
-    ).toBeInTheDocument();
   });
 
-  it('renders the Type and Quality labels', () => {
+  it('renders the Type label but no Quality label; spa_quality text renders as a plain paragraph', () => {
     render(<OnsenMiniCard onsen={makeOnsen()} />);
     expect(screen.getByText('Type:')).toBeInTheDocument();
-    expect(screen.getByText('Quality:')).toBeInTheDocument();
+    expect(screen.queryByText('Quality:')).not.toBeInTheDocument();
+    expect(screen.getByText('High mineral content')).toBeInTheDocument();
   });
 
   it('omits optional fields that are absent', () => {
@@ -50,7 +47,6 @@ describe('OnsenMiniCard', () => {
           location: null,
           spring_type: null,
           spa_quality: null,
-          sales_point: null,
         })}
       />
     );
@@ -58,6 +54,7 @@ describe('OnsenMiniCard', () => {
     expect(screen.queryByText('Type:')).not.toBeInTheDocument();
     expect(screen.queryByText('Quality:')).not.toBeInTheDocument();
     expect(screen.queryByText('Naha, Okinawa')).not.toBeInTheDocument();
+    expect(screen.queryByText('High mineral content')).not.toBeInTheDocument();
   });
 
   // -------------------------------------------------------------------------

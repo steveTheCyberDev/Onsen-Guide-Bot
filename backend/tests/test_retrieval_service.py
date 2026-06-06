@@ -195,7 +195,6 @@ def test_structured_maps_all_fields_from_metadata_and_document():
             "city_en": "Beppu",
             "prefecture_en": "Oita",
             "spa_quality_en": "Sulfur spring",
-            "sales_point_en": "Famous for its eight hells.",
             "detail_url": "https://example.com/beppu",
             "latitude": 33.2846,
             "longitude": 131.4914,
@@ -214,7 +213,6 @@ def test_structured_maps_all_fields_from_metadata_and_document():
             "location": "Beppu, Oita",
             "spring_type": "Sulfur spring",
             "spa_quality": "A relaxing sulfur spring.",
-            "sales_point": "Famous for its eight hells.",
             "detail_url": "https://example.com/beppu",
             "lat": 33.2846,
             "lng": 131.4914,
@@ -225,6 +223,7 @@ def test_structured_maps_all_fields_from_metadata_and_document():
     # that spa_quality stops mirroring the short spring-type label.
     assert records[0]["spring_type"] != records[0]["spa_quality"]
     assert "description" not in records[0]
+    assert "sales_point" not in records[0]
 
 
 def test_structured_name_uses_name_en_when_present():
@@ -291,39 +290,6 @@ def test_structured_location_empty_when_both_city_and_prefecture_missing():
         records = retrieval_service.query_onsen_structured("spring")
     # Assert
     assert records[0]["location"] == ""
-
-
-def test_structured_surfaces_sales_point_from_sales_point_en():
-    # Arrange — this is the key behaviour the old string path did NOT expose.
-    docs = ["doc"]
-    metas = [{"sales_point_en": "Open-air bath with a sea view."}]
-    # Act
-    with patch.object(retrieval_service, "get_collection", return_value=_fake_collection(docs, metas)):
-        records = retrieval_service.query_onsen_structured("spring")
-    # Assert
-    assert records[0]["sales_point"] == "Open-air bath with a sea view."
-
-
-def test_structured_sales_point_is_none_when_absent():
-    # Arrange
-    docs = ["doc"]
-    metas = [{"name_en": "No Sales Point"}]
-    # Act
-    with patch.object(retrieval_service, "get_collection", return_value=_fake_collection(docs, metas)):
-        records = retrieval_service.query_onsen_structured("spring")
-    # Assert
-    assert records[0]["sales_point"] is None
-
-
-def test_structured_sales_point_is_none_when_explicitly_none():
-    # Arrange — an explicit None metadata value must coerce to None, not stay falsy-but-present.
-    docs = ["doc"]
-    metas = [{"sales_point_en": None}]
-    # Act
-    with patch.object(retrieval_service, "get_collection", return_value=_fake_collection(docs, metas)):
-        records = retrieval_service.query_onsen_structured("spring")
-    # Assert
-    assert records[0]["sales_point"] is None
 
 
 def test_structured_sets_coordinates_when_both_present():
