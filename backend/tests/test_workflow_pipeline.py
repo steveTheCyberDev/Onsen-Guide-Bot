@@ -32,7 +32,6 @@ def _record(
     location="Beppu",
     spring_type="Sulfur",
     spa_quality="Sulfur spring",
-    sales_point="Great views",
     lat=33.2846,
     lng=131.4914,
     **extra,
@@ -47,7 +46,6 @@ def _record(
         "location": location,
         "spring_type": spring_type,
         "spa_quality": spa_quality,
-        "sales_point": sales_point,
         "lat": lat,
         "lng": lng,
     }
@@ -130,7 +128,6 @@ async def test_onsen_mapping_drops_description_and_detail_url_extras():
         _record(
             name="Atami Onsen",
             location="Atami",
-            sales_point="Seaside rotenburo",
             lat=35.1,
             lng=139.07,
             description="A long Japanese-translated blurb that must be dropped.",
@@ -144,7 +141,6 @@ async def test_onsen_mapping_drops_description_and_detail_url_extras():
     # Assert — accepted fields carried through; forbidden extras absent.
     onsen = result["onsens"][0]
     assert onsen["name"] == "Atami Onsen"
-    assert onsen["sales_point"] == "Seaside rotenburo"
     assert onsen["lat"] == 35.1
     assert onsen["lng"] == 139.07
     assert "description" not in onsen
