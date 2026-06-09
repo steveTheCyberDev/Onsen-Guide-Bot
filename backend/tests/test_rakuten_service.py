@@ -1,7 +1,9 @@
 """Unit tests for services.rakuten.rakuten_service.
 
-`requests.get` to the Rakuten Travel API is mocked in every test. The service
-parses the nested `hotels[].hotel[0].hotelBasicInfo` structure into a flat dict.
+The outbound HTTP call to the Rakuten Travel API (made via
+services.http_retry.get_with_retries) is mocked at the service module's import
+site in every test. The service parses the nested
+`hotels[].hotel[0].hotelBasicInfo` structure into a flat dict.
 """
 
 from unittest.mock import MagicMock, patch
@@ -46,7 +48,7 @@ def test_search_hotels_returns_parsed_list():
     # Arrange
     payload = {"hotels": [_hotel_entry(), _hotel_entry(hotelName="Second Hotel")]}
     # Act
-    with patch.object(rakuten_service.requests, "get", return_value=_mock_response(payload)):
+    with patch.object(rakuten_service, "get_with_retries", return_value=_mock_response(payload)):
         result = rakuten_service.search_hotels(26.2, 127.6)
     # Assert
     assert len(result) == 2
@@ -56,7 +58,7 @@ def test_search_hotels_maps_hotel_name():
     # Arrange
     payload = {"hotels": [_hotel_entry(hotelName="Ryukyu Inn")]}
     # Act
-    with patch.object(rakuten_service.requests, "get", return_value=_mock_response(payload)):
+    with patch.object(rakuten_service, "get_with_retries", return_value=_mock_response(payload)):
         result = rakuten_service.search_hotels(26.2, 127.6)
     # Assert
     assert result[0]["name"] == "Ryukyu Inn"
@@ -66,7 +68,7 @@ def test_search_hotels_maps_coordinates():
     # Arrange
     payload = {"hotels": [_hotel_entry(latitude=34.05, longitude=135.0)]}
     # Act
-    with patch.object(rakuten_service.requests, "get", return_value=_mock_response(payload)):
+    with patch.object(rakuten_service, "get_with_retries", return_value=_mock_response(payload)):
         result = rakuten_service.search_hotels(26.2, 127.6)
     # Assert
     assert result[0]["lat"] == 34.05 and result[0]["lng"] == 135.0
@@ -76,7 +78,7 @@ def test_search_hotels_maps_url_from_hotel_information_url():
     # Arrange
     payload = {"hotels": [_hotel_entry(hotelInformationUrl="https://example.com/x")]}
     # Act
-    with patch.object(rakuten_service.requests, "get", return_value=_mock_response(payload)):
+    with patch.object(rakuten_service, "get_with_retries", return_value=_mock_response(payload)):
         result = rakuten_service.search_hotels(26.2, 127.6)
     # Assert
     assert result[0]["url"] == "https://example.com/x"
@@ -88,7 +90,7 @@ def test_search_hotels_price_defaults_to_none_when_missing():
     del info["hotelMinCharge"]
     payload = {"hotels": [{"hotel": [{"hotelBasicInfo": info}]}]}
     # Act
-    with patch.object(rakuten_service.requests, "get", return_value=_mock_response(payload)):
+    with patch.object(rakuten_service, "get_with_retries", return_value=_mock_response(payload)):
         result = rakuten_service.search_hotels(26.2, 127.6)
     # Assert
     assert result[0]["price"] is None
@@ -98,7 +100,7 @@ def test_search_hotels_empty_when_no_hotels_key():
     # Arrange
     payload = {"hotels": []}
     # Act
-    with patch.object(rakuten_service.requests, "get", return_value=_mock_response(payload)):
+    with patch.object(rakuten_service, "get_with_retries", return_value=_mock_response(payload)):
         result = rakuten_service.search_hotels(26.2, 127.6)
     # Assert
     assert result == []
@@ -108,7 +110,7 @@ def test_search_hotels_raises_rakuten_error_on_error_field():
     # Arrange
     payload = {"error": "wrong_parameter", "error_description": "Invalid lat/lng"}
     # Act / Assert
-    with patch.object(rakuten_service.requests, "get", return_value=_mock_response(payload)):
+    with patch.object(rakuten_service, "get_with_retries", return_value=_mock_response(payload)):
         with pytest.raises(RakutenError, match="Invalid lat/lng"):
             rakuten_service.search_hotels(0.0, 0.0)
 
@@ -117,7 +119,7 @@ def test_search_hotels_raises_with_default_message_when_no_description():
     # Arrange — error present but no error_description
     payload = {"error": "wrong_parameter"}
     # Act / Assert
-    with patch.object(rakuten_service.requests, "get", return_value=_mock_response(payload)):
+    with patch.object(rakuten_service, "get_with_retries", return_value=_mock_response(payload)):
         with pytest.raises(RakutenError, match="Rakuten API error"):
             rakuten_service.search_hotels(0.0, 0.0)
 
@@ -128,7 +130,7 @@ def test_search_hotels_warns_when_empty_with_no_error(caplog):
     # misconfig is visible instead of silently looking like "no hotels nearby".
     payload = {"hotels": []}
     # Act
-    with patch.object(rakuten_service.requests, "get", return_value=_mock_response(payload)):
+    with patch.object(rakuten_service, "get_with_retries", return_value=_mock_response(payload)):
         with caplog.at_level("WARNING"):
             result = rakuten_service.search_hotels(26.2, 127.6)
     # Assert
@@ -141,7 +143,7 @@ def test_search_hotels_no_warning_when_results_present(caplog):
     # Arrange
     payload = {"hotels": [_hotel_entry()]}
     # Act
-    with patch.object(rakuten_service.requests, "get", return_value=_mock_response(payload)):
+    with patch.object(rakuten_service, "get_with_retries", return_value=_mock_response(payload)):
         with caplog.at_level("WARNING"):
             rakuten_service.search_hotels(26.2, 127.6)
     # Assert — no empty-result warning when hotels came back
@@ -152,7 +154,7 @@ def test_search_hotels_passes_radius_param():
     # Arrange
     payload = {"hotels": []}
     # Act
-    with patch.object(rakuten_service.requests, "get", return_value=_mock_response(payload)) as mock_get:
+    with patch.object(rakuten_service, "get_with_retries", return_value=_mock_response(payload)) as mock_get:
         rakuten_service.search_hotels(26.2, 127.6, radius=5)
     # Assert
     _, kwargs = mock_get.call_args
