@@ -1,4 +1,5 @@
 import os
+from pathlib import Path
 
 from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings
@@ -29,6 +30,13 @@ class Settings(BaseSettings):
     # Override via env var CHROMA_PATH in production (Railway sets it to /app/chroma_db,
     # the mount point of the persistent volume) so the app and ingest job agree.
     chroma_path: str = "chroma_db"
+    # Filesystem path to the onsen data directory (the *_springs.jsonl files the
+    # ingest scripts read). Default is "" which means "use the computed local
+    # default" — backend/data, resolved from this file's own location so it is
+    # CWD-independent. Override via env var DATA_PATH in production (Railway/Docker
+    # sets it to /app/data, where COPY data/ data/ lands) so the ingest job finds
+    # the files regardless of the source-tree layout. Mirrors chroma_path above.
+    data_path: str = ""
     # Chat LLM used by the agent. Override via env var CHAT_MODEL (e.g. to swap
     # "gpt-4o" for "gpt-4o-mini" and measure the difference via the fabrication
     # eval at scripts/eval_fabrication.py).
@@ -79,6 +87,19 @@ class Settings(BaseSettings):
         default="https://api.smith.langchain.com",
         validation_alias=AliasChoices("LANGSMITH_ENDPOINT", "LANGCHAIN_ENDPOINT"),
     )
+
+    @property
+    def data_dir(self) -> Path:
+        """Resolved onsen data directory.
+
+        Returns ``Path(data_path)`` when DATA_PATH is set (prod override), else the
+        backend-relative ``data/`` resolved from this config file's own location
+        (config.py lives at backend/core/config.py, so parent.parent == backend/).
+        Resolving from __file__ keeps it correct no matter the current working dir.
+        """
+        if self.data_path:
+            return Path(self.data_path)
+        return Path(__file__).resolve().parent.parent / "data"
 
     model_config = {
         "env_file": ".env",
