@@ -148,13 +148,17 @@ async def run_react_agent(message: str, session_id: str) -> dict:
     # disabled.
     run_config = {
         "run_name": "chat-react-agent",
-        "tags": ["chat", "react-agent", f"model:{settings.chat_model}"],
+        "tags": ["chat", "react-agent", f"model:{settings.chat_model}", f"env:{settings.app_env}"],
         "metadata": {
             "endpoint": "/chat",
             "session_id": session_id,
             "chat_model": settings.chat_model,
             "agent_type": "react",
+            # `version` labels the engine variant (v1-baseline vs v2-workflow);
+            # `app_version` below is the deploy id (git SHA/tag) — a different axis.
             "version": "v1-baseline",
+            "environment": settings.app_env,
+            "app_version": settings.app_version,
         },
     }
     result = await graph.ainvoke(

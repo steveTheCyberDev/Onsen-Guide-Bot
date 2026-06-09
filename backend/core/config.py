@@ -53,6 +53,14 @@ class Settings(BaseSettings):
     # model (gpt-4o-mini) than the main chat/analyze path. Override via env var
     # INTENT_MODEL.
     intent_model: str = "gpt-4o-mini"
+    # Deployment environment label for trace/log filtering. Default is "local";
+    # Railway sets APP_ENV=production so traces/logs from the deployed app can be
+    # told apart from local runs. Override via env var APP_ENV.
+    app_env: str = "local"
+    # Release/deploy identifier (e.g. git short SHA or tag) so traces correlate
+    # with a specific deploy. Railway sets APP_VERSION per deploy; local default
+    # is "dev". Override via env var APP_VERSION.
+    app_version: str = "dev"
 
     # --- LangSmith step-level tracing (V2 Tier-1 instrumentation) ---
     # These surface the standard LangChain/LangSmith tracing env vars through one
