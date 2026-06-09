@@ -6,8 +6,6 @@ model name, each value carrying input_tokens / output_tokens). Cost is in USD,
 priced per 1,000 tokens, rounded to 6 dp.
 """
 
-import pytest
-
 from agent.workflow.cost import _PRICING_PER_1K, _price_for, summarize_usage
 
 
@@ -123,18 +121,9 @@ def test_price_for_exact_match():
     assert _price_for("gpt-4o-mini") == _PRICING_PER_1K["gpt-4o-mini"]
 
 
-@pytest.mark.xfail(
-    reason=(
-        "BUG: _price_for iterates _PRICING_PER_1K in insertion order and uses "
-        "startswith, so a dated gpt-4o-mini snapshot (e.g. gpt-4o-mini-2024-07-18) "
-        "matches the 'gpt-4o' prefix FIRST and is priced as gpt-4o (~16x too "
-        "expensive). Reported, not fixed (source change out of scope for this PR's "
-        "test pass)."
-    ),
-    strict=True,
-)
-def test_dated_mini_snapshot_should_use_mini_pricing():
-    # Arrange / Act / Assert — desired behaviour: mini snapshot → mini pricing.
+def test_dated_mini_snapshot_uses_mini_pricing():
+    # Arrange / Act / Assert — a dated mini snapshot must resolve to mini
+    # pricing via longest-prefix match, not the shorter gpt-4o prefix.
     assert _price_for("gpt-4o-mini-2024-07-18") == _PRICING_PER_1K["gpt-4o-mini"]
 
 

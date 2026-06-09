@@ -38,9 +38,13 @@ def _price_for(model: str) -> dict[str, float] | None:
     """
     if model in _PRICING_PER_1K:
         return _PRICING_PER_1K[model]
-    for known, price in _PRICING_PER_1K.items():
+    # Match the LONGEST known prefix first so a more specific id wins over a
+    # shorter one that is also a prefix. Without this, insertion order let a
+    # dated mini snapshot (gpt-4o-mini-2024-07-18) match the shorter "gpt-4o"
+    # prefix and get priced ~16x too high; "gpt-4o-mini" must win.
+    for known in sorted(_PRICING_PER_1K, key=len, reverse=True):
         if model.startswith(known):
-            return price
+            return _PRICING_PER_1K[known]
     return None
 
 
