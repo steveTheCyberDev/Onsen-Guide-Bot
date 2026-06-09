@@ -60,6 +60,9 @@ _llm = ChatOpenAI(
     model=settings.intent_model,
     api_key=settings.openai_api_key,
     stream_usage=True,
+    # Bounded retries on transient OpenAI errors (timeouts, 429/5xx); the OpenAI
+    # SDK handles the backoff. Same knob as the main chat llm in agent/agent.py.
+    max_retries=settings.llm_max_retries,
 ).with_structured_output(Intent)
 
 
