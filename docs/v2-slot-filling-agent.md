@@ -25,6 +25,120 @@ follow-up when something required is missing.
 
 ---
 
+## Workflow vs. agent — and why V1/V2 is really a *workflow*
+
+The deeper realisation behind this redesign: **for V1/V2's scope, this was never
+an "agent" problem.** It's worth being precise about the words, because they get
+conflated:
+
+- **Workflow** — *you* wire the steps; the path is fixed code/edges. The LLM only
+  fills slots at predefined points.
+- **Agent** — the *LLM* decides which tools to call, and in what order, looping
+  until it judges itself done. You need this only when the tool sequence **isn't
+  knowable ahead of time.**
+
+V1 uses a real agent (`create_react_agent`, an autonomous tool-loop). But the
+actual flows are fixed pipelines:
+
+1. *"onsen in X"* → extract prefecture → search vector DB → return.
+2. *"hotels near this onsen"* → get coordinates → call Rakuten → return.
+
+The only genuinely "agentic" decisions are tiny and bounded: did the user give a
+location? do they want hotels too, or onsen only? which onsen does *"it"* refer
+to? That's **intent/slot classification** — a single cheap LLM call (or rules),
+not an autonomous loop. Using a ReAct agent for this is the same category of
+over-reach as using GPT-4o to copy a database row.
+
+**The autonomy ladder — use the least that solves the task:**
+
+> rules → pipeline → **workflow-graph** → agent → multi-agent
+
+V1 jumped straight to *agent*. That wasn't wrong — it was the right *bootstrapping*
+move: maximally flexible while the query shapes were still unknown. But the shapes
+are known now, so the honest V2 framing isn't "build a better agent" — it's
+**"graduate down to a workflow."** A LangGraph `StateGraph` with hardcoded edges
+*is* a workflow, even though it's still LangGraph; we keep LangGraph because it's
+the V3 stepping stone, and drop only the autonomous prebuilt.
+
+**When does the agent come back?** At **V3**, when autonomy genuinely earns its
+cost — open-ended goals where the tool sequence can't be pre-wired: *"plan me a
+5-day onsen trip with transport, budget, and weather"* (dynamic re-planning),
+*"compare these regions and recommend."* That's the multi-agent orchestrator. For
+"find onsen / find hotels," a workflow is the correct altitude.
+
+This also directly attacks the measured latency bottleneck: the ReAct loop's
+`reason → tool → observe → re-reason → structure` collapses to `one intent call +
+deterministic work + one reply call` — fewer round-trips is the real speedup.
+(Geocoding was *not* the bottleneck; see the perf note in `PROJECT_JOURNEY.md`.)
+
+---
+
+## Deterministic assembly — the LLM shouldn't copy data it already has
+
+A workflow unlocks a second win that an autonomous agent makes awkward: building
+the `onsens[]` result **in code**, not via the LLM.
+
+Today there's a wasteful, risky round-trip. Watch the data change shape:
+
+```
+Chroma metadata (STRUCTURED)
+   → retrieval_service flattens it to TEXT ("Name: …\nLocation: …\nLatitude: …")
+      → LLM reads the text and RE-STRUCTURES it back into OnsenResult objects
+```
+
+The LLM is taking structured data we already have, that we deliberately turned
+into text, and laboriously turning it back into structure — while we *hope* it
+copies every field verbatim and invents nothing. That round-trip is the source of
+the fabrication risk, the lat/lng float-mangling, and a big slice of output tokens.
+
+**Fix: assemble the objects directly from retrieval, in code.**
+
+```python
+# retrieval_service.py — return objects, not a text blob
+def query_onsen(query, prefecture=None) -> list[OnsenResult]:
+    results = collection.query(...)
+    docs, metas = results["documents"][0], results["metadatas"][0]
+    return [
+        OnsenResult(
+            name        = meta.get("name_en") or meta.get("name"),
+            location    = meta.get("city_en"),
+            spring_type = meta.get("spa_quality_en", ""),
+            spa_quality = meta.get("spa_quality_en", ""),
+            sales_point = doc,                    # the embedded description
+            lat         = meta.get("latitude"),   # exact float, not retyped
+            lng         = meta.get("longitude"),
+        )
+        for doc, meta in zip(docs, metas)
+    ]
+```
+
+Then the response's onsen list **is** that list; the LLM writes only the reply:
+
+```python
+AgentResponse.onsens = onsens_from_retrieval   # assembled by code
+AgentResponse.reply  = llm_reply               # LLM writes ONLY the sentence
+```
+
+Every field maps from what we already store (`name_en`, `city_en`,
+`spa_quality_en`, `latitude`, `longitude` in metadata; `sales_point` is the Chroma
+*document*). What this kills outright:
+
+- **Fabrication** — onsen come straight from the DB; the LLM *cannot* invent one.
+  The project's biggest correctness win becomes structural, not prompt-dependent.
+- **Float-mangling** — coordinates pass by reference, never retyped by the model.
+- **Tokens / latency / cost** — the LLM stops re-emitting N onsen per response.
+- **Prompt weight** — the heavy "copy verbatim / empty if none" onsen guardrail
+  can mostly go.
+
+**Why this needs the workflow:** in a ReAct agent the tool output flows *into the
+LLM's context*, not back to orchestration code — so you can't easily keep the
+structured list "outside" the model. The workflow's `search` node calls retrieval
+directly and holds the objects, which is exactly what makes deterministic assembly
+possible. Hotels may still need the LLM for translation (until the hotel-name
+translation cache lands), but **onsen become fully deterministic.**
+
+---
+
 ## Slots
 
 | Slot | Required? | Used by | Notes |

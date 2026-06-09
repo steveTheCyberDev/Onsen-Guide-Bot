@@ -1,6 +1,6 @@
 /**
  * OnsenMiniCard — compact onsen card rendered inline inside an assistant message bubble.
- * Receives an onsen object: { name, location, spring_type, spa_quality, sales_point }
+ * Receives an onsen object: { name, location, spring_type, spa_quality }
  *
  * When onSelect is provided the card is rendered as a focusable button so the
  * user can click/keyboard-activate it to centre that marker on the map.
@@ -56,12 +56,7 @@ export default function OnsenMiniCard({ onsen, onSelect }) {
         </div>
       )}
       {onsen.spa_quality && (
-        <div className="text-[#6B6B6B]">
-          <span className="font-medium">Quality:</span> {onsen.spa_quality}
-        </div>
-      )}
-      {onsen.sales_point && (
-        <p className="text-[#6B6B6B] leading-relaxed line-clamp-2">{onsen.sales_point}</p>
+        <p className="text-[#6B6B6B] leading-relaxed line-clamp-2">{onsen.spa_quality}</p>
       )}
     </>
   );
