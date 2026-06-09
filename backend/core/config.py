@@ -53,6 +53,16 @@ class Settings(BaseSettings):
     # model (gpt-4o-mini) than the main chat/analyze path. Override via env var
     # INTENT_MODEL.
     intent_model: str = "gpt-4o-mini"
+    # LLM used by the V2.5 RECOMMEND brain (agent/workflow/analyze.py::analyze_onsen)
+    # to produce grounded per-onsen pros/cons + a top-level recommendation. Kept
+    # separate from intent_model so the cheap routing hop and the heavier judgement
+    # hop can use different models. Override via env var ANALYZE_MODEL.
+    analyze_model: str = "gpt-4o"
+    # Gate for the RECOMMEND brain. When False (default) the recommend branch skips
+    # the analyze_onsen LLM call and returns candidates without pros/cons (safe/dead
+    # until flipped) — this is the A/B rollout seam, mirroring chat_engine above.
+    # Override via env var ANALYZE_ENABLED.
+    analyze_enabled: bool = False
     # Deployment environment label for trace/log filtering. Default is "local";
     # Railway sets APP_ENV=production so traces/logs from the deployed app can be
     # told apart from local runs. Override via env var APP_ENV.
