@@ -4,13 +4,11 @@
 # Jobs defined here:
 #   backend-tests   — lint-free pytest run (Python 3.12). Runs on backend/**
 #                     changes, PRs, and pushes to any branch.
+#   frontend-tests  — Vitest 2.x + Node 20.16.0. Runs on frontend/**
+#                     changes, PRs, and pushes to any branch.
 #
-# Jobs planned for a later phase (frontend deployment):
-#   frontend-tests  — Vitest 2.x + Node 20.16.0. Added when the frontend
-#                     deployment phase begins. See DEPLOYMENT.md §Frontend.
-#
-# Branch-protection note: once both jobs exist, require BOTH as status checks
-# before any merge to main.
+# Branch-protection note: both jobs are required status checks before any
+# merge to main.  See §Branch Protection at the bottom of this file.
 # ─────────────────────────────────────────────────────────────────────────────
 
 name: CI
@@ -18,13 +16,15 @@ name: CI
 on:
   push:
     paths:
-      # Run whenever backend source or its dependencies change.
+      # Run whenever backend or frontend source or their dependencies change.
       # workflow_dispatch (below) always runs regardless of paths.
       - "backend/**"
+      - "frontend/**"
       - ".github/workflows/ci.yml"
   pull_request:
     paths:
       - "backend/**"
+      - "frontend/**"
       - ".github/workflows/ci.yml"
   # Allow a manual trigger from the Actions tab — useful for verifying the
   # pipeline after Railway provisioning without needing a code change.
@@ -59,24 +59,37 @@ jobs:
         working-directory: backend
         run: pytest
 
-  # ── Frontend test gate (placeholder — added in frontend deployment phase) ───
-  # frontend-tests:
-  #   name: Frontend — Vitest (Node 20.16.0)
-  #   runs-on: ubuntu-latest
-  #   steps:
-  #     - uses: actions/checkout@v4
-  #     - name: Set up Node
-  #       uses: actions/setup-node@v4
-  #       with:
-  #         node-version-file: frontend/.nvmrc   # pins to 20.16.0 via .nvmrc
-  #         cache: npm
-  #         cache-dependency-path: frontend/package-lock.json
-  #     - name: Install frontend dependencies
-  #       working-directory: frontend
-  #       run: npm ci
-  #     - name: Run Vitest
-  #       working-directory: frontend
-  #       run: npm test -- --run
-  #       env:
-  #         VITE_API_URL: http://localhost:8000          # not used in unit tests
-  #         VITE_GOOGLE_MAPS_API_KEY: test-maps-key     # not used in unit tests
+  # ── Frontend test gate ──────────────────────────────────────────────────────
+  frontend-tests:
+    name: Frontend — Vitest (Node 20.16.0)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          # Reads the exact version from frontend/.nvmrc (currently 20.16.0).
+          # Vitest 2.x + jsdom 25.x are pinned in package.json — do NOT bump
+          # these; newer versions break on this project.
+          node-version-file: frontend/.nvmrc
+          cache: npm
+          # Bust the cache only when the lockfile changes, not on every run.
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install frontend dependencies
+        working-directory: frontend
+        # npm ci ensures a clean, reproducible install from the lockfile.
+        run: npm ci
+
+      - name: Run Vitest
+        working-directory: frontend
+        # package.json "test" script is `vitest run` — no extra --run flag needed.
+        run: npm test
+        env:
+          # Vite requires these vars to be defined even for unit tests that
+          # don't exercise the API or Maps SDK.  Dummy values are fine here.
+          VITE_API_URL: http://localhost:8000
+          VITE_GOOGLE_MAPS_API_KEY: test-maps-key
