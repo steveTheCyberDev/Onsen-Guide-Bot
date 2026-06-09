@@ -103,6 +103,18 @@ This is the part I'm most proud of — most of these were *correctness* and *pro
 
 **Finding:** ~28 s of the 30 s is two GPT-4o round-trips that route the 20 retrieved records *through* the model — once to "observe" (#2), once to coerce into the response schema (#3). Both are configured on a single line: `create_react_agent(llm, tools, response_format=AgentResponse)`. Two distinct redundancies fall out: **#3 is redundant because the data is structured** (assemble `onsens[]` in Python), and **#2 is redundant because the control flow is predictable** for the dominant single-hop query (replace LLM routing with `if user_wants_hotels: …`). #2 isn't useless in principle — it's the tool-chaining router — so the workflow *replaces* it with explicit code rather than deleting the capability. This is the measured case for V2: collapse 3 round-trips → ~1, plausibly ~30 s → ~3–5 s, and remove the fabrication surface structurally. The high variance (16 s observed from Postman vs 30 s here) is itself an argument for fewer, smaller LLM calls.
 
+### 10. I shipped the workflow redesign — and the predicted delta landed
+**Problem:** Challenge #9 ended on a *prediction* (~30 s → ~3–5 s), not a result. The redesign had to be built, measured against the *same* query, and rolled out without a risky big-bang cutover.
+**Solution:** Replaced the ReAct loop with a deterministic **workflow** for the dominant path, behind a `CHAT_ENGINE=react|workflow` env flag — same `/chat` contract, instant rollback, and a real A/B seam. The workflow keeps exactly **one** LLM call (`parse_intent`, on the cheaper `gpt-4o-mini`) to extract `{prefecture, query, wants_hotels}`, then assembles `onsens[]` in pure Python from Chroma metadata; hotels are a conditional code branch, not an LLM routing decision. Baseline calls #2 (observe) and #3 (JSON re-serialize) are gone.
+**The measured A/B (same `"find me 20 onsens in Shizuoka"`; both return 20 grounded onsen):**
+
+| Engine | LLM round-trips | Latency |
+|---|---:|---:|
+| ReAct (v1 baseline) | 3 | **35.3 s** |
+| Workflow (v2) | 1 | **3.47–3.76 s** |
+
+**Result:** ~**10× faster**, and #9's prediction held. The win isn't only speed: removing the LLM from the data-assembly path kills the fabrication surface *structurally* — the model can't invent onsen it never assembles. Shipped flag-gated, validated in prod via the A/B, then **cut over to `workflow` as the live engine** (ReAct retained behind the flag for rollback). The next LLM call to earn its place back is the `analyze_onsen` judgment layer — the one step where weighing trade-offs is genuinely a model's job.
+
 ---
 
 ## What I learned
@@ -144,7 +156,7 @@ I'd rather name the gaps than pretend they don't exist. Here's what V1 deliberat
 The slot-filling migration is the headline of V2, but I'm deliberately doing the *scaffolding around the agent* first — otherwise I can't prove the new agent is better, only assert it. The senior move isn't building a fancier agent; it's the loop **instrument → baseline → change → show the measured delta**. (This list is verified against current AI-engineering practice, not just my own gut.)
 
 - **Tier 1 — unblock everything (do first):**
-  - *Ingest-time geocoding* — the one measurable perf win; doing it first gives V2 a concrete before/after latency number (also a V2 feature, but really pre-work).
+  - *Ingest-time geocoding* — **DONE.** Onsen are geocoded once at ingest with lat/lng stored in Chroma; per-request Google calls removed. Measured: a **cost + reliability** win, not a latency one (the LLM loop dominates — challenge #8), which is exactly what pointed at the workflow redesign.
   - *Eval harness* — a fixed set scoring retrieval hit-rate, fabrication rate, tool-selection accuracy. Without a number I can't honestly claim slot-filling is "more accurate." The senior version is evals **gating CI** plus a loop where real failed traces become new eval cases.
   - *Agent tracing* — **DONE.** LangSmith step-level tracing on the current ReAct agent (challenge #9). Captured the baseline: a 20-onsen Shizuoka query is ~30 s, ~28 s of it two GPT-4o round-trips (observe + JSON re-serialization). This is the number the slot-filling migration is measured against.
   - *Frontend tests into CI* — uncomment the `frontend-tests` job in `ci.yml` and require both checks on `main` (trivial, overdue).
@@ -178,4 +190,4 @@ Each addition is self-contained: a new external API is a new `services/{name}`, 
 
 ## Status
 
-V1 is **live in production and feature-complete** for its scope. I'm not stopping here — V2 is next, starting with the geocoding performance work.
+V1 is **live in production and feature-complete** for its scope. V2's performance headline has since shipped and is **live in prod**: ingest-time geocoding plus the ReAct→workflow redesign (challenge #10) — ~10× faster and now the default `/chat` engine, flag-gated for rollback. Next in V2: the `analyze_onsen` "guide" judgment layer and the V2.5 knowledge-base / recommendation work.
