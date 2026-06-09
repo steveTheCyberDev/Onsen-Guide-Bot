@@ -235,6 +235,14 @@ def write_back(jsonl_path: Path, records: list[dict]) -> None:
         return
     if sibling.resolve() == jsonl_path.resolve():
         return
+    if not sibling.parent.exists():
+        # Single-copy environments (e.g. the Railway image, which ships only
+        # /app/data) have no second data/ tree to sync to. The sibling sync is a
+        # local-dev convenience for keeping data/ and backend/data/ byte-identical,
+        # so skip it rather than crashing the ingest before the ChromaDB upsert.
+        print(f"Sibling tree {sibling.parent} not present — skipping sync "
+              f"(single-copy environment).")
+        return
     shutil.copyfile(jsonl_path, sibling)
     print(f"Synced sibling copy: {sibling}")
 
