@@ -33,11 +33,27 @@ import sys
 from pathlib import Path
 
 # ── Path setup ───────────────────────────────────────────────────────────────
-# Keep identical to the pattern in ingest.py so both scripts resolve the same
-# BACKEND_DIR and DATA_DIR when run from any working directory.
+# BACKEND_DIR is added to sys.path here (before the core.config import below) so
+# `python backend/scripts/ingest_regions.py` works from the project root as well
+# as from backend/. The data directory is resolved by settings.data_dir
+# (core/config.py), the single source of truth — backend/data locally, or the
+# DATA_PATH override (/app/data) in prod — mirroring the chroma_path convention.
 
 BACKEND_DIR = Path(__file__).parent.parent       # .../backend
-DATA_DIR = BACKEND_DIR / "data"
+sys.path.insert(0, str(BACKEND_DIR))
+
+# Load backend/.env by ABSOLUTE path before importing settings, so Settings()
+# finds its required keys regardless of the working directory (matches the
+# load_dotenv pattern in ingest.py). Settings()'s relative env_file=".env" only
+# resolves when CWD is backend/, so this keeps `python backend/scripts/...`
+# runnable from the project root too.
+from dotenv import load_dotenv  # noqa: E402
+
+load_dotenv(BACKEND_DIR / ".env")
+
+from core.config import settings  # noqa: E402
+
+DATA_DIR = settings.data_dir
 
 # ── Launch subset ─────────────────────────────────────────────────────────────
 # The current launch subset — add slugs here to expand coverage.

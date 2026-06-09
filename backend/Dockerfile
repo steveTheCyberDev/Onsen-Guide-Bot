@@ -33,6 +33,11 @@ ENV PYTHONUNBUFFERED=1
 # Both the app and the ingest job read settings.chroma_path, so they always agree.
 ENV CHROMA_PATH=/app/chroma_db
 
+# Onsen data dir for the ingest scripts. COPY data/ data/ (below) lands at
+# /app/data, so pin DATA_PATH there. Locally (no override) settings.data_dir
+# falls back to backend/data. Mirrors CHROMA_PATH above.
+ENV DATA_PATH=/app/data
+
 WORKDIR /app
 
 # ── 1. Install dependencies ──────────────────────────────────────────────────
