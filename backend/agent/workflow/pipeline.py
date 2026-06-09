@@ -26,6 +26,7 @@ import logging
 
 from agent.agent import AgentResponse, HotelResult, OnsenResult
 from agent.workflow.intent import parse_intent
+from core.config import settings
 from services.chat.chat_service import get_history, save_message
 from services.rakuten.rakuten_service import search_hotels
 from services.retrieval.retrieval_service import query_onsen_structured
@@ -50,11 +51,16 @@ try:
 
     _trace = traceable(
         run_name="chat-workflow",
-        tags=["chat", "workflow"],
+        tags=["chat", "workflow", f"env:{settings.app_env}"],
         metadata={
             "endpoint": "/chat",
             "agent_type": "workflow",
+            # `version` labels the engine variant; `app_version` is the deploy id
+            # (git SHA/tag) — a different axis. settings is process-static, so
+            # reading it at decorator/import time is fine.
             "version": "v2-workflow",
+            "environment": settings.app_env,
+            "app_version": settings.app_version,
         },
     )
 except Exception:  # pragma: no cover - langsmith always present in this project
