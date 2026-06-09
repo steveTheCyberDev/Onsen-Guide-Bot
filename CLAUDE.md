@@ -165,6 +165,39 @@ RAKUTEN_ACCESS_KEY=...      # Rakuten Travel API
 create a env.example in the project 
 ---
 
+## Local vs Production Config — always check for an env split
+
+Whenever a value differs between **local dev** and **production (Railway)** —
+filesystem paths, hostnames, feature toggles, API endpoints, model choices — do
+NOT hard-code it. Surface it as a setting in `core/config.py` with a
+local-friendly default, and override it per environment via an env var. This is
+the single source of truth pattern (see Core Config above).
+
+**Checklist when adding any new behaviour:**
+1. Ask: *does this value differ between local and prod?* If yes, it needs an env split.
+2. Add a field to `core/config.py` with the **local default** baked in.
+3. Override in prod via the Railway env panel (and/or the Dockerfile `ENV` line).
+4. Both the app and any one-off scripts read the SAME setting, so they never disagree.
+
+**Pattern (mirror `chroma_path` / `CHROMA_PATH`):**
+```python
+# core/config.py — relative/local default; prod overrides via env var.
+chroma_path: str = "chroma_db"     # Railway: CHROMA_PATH=/app/chroma_db
+data_path:   str = ""              # Railway: DATA_PATH=/app/data (else resolves backend/data)
+```
+
+**Worked examples (why this rule exists):**
+- **Ingest data dir** — local data lives at `backend/data/`, but the Railway image
+  ships it at `/app/data`. Hard-coding `BACKEND_DIR/data` broke prod ingest. Fixed
+  by `DATA_PATH` env override (`data_dir` in `core/config.py`).
+- **LangSmith tracing** — we want to test/trace in BOTH local and prod, but keep
+  the data separate. Tracing is env-gated (`LANGSMITH_TRACING` + `LANGSMITH_API_KEY`,
+  read at import time → needs a redeploy) and prod should use a **separate project**
+  (e.g. `LANGSMITH_PROJECT=onsen-guide-bot-prod`) so prod traffic isn't mixed with
+  local test runs.
+
+---
+
 ## Running Locally
 
 Two servers run side by side. Start each in its own terminal from its own directory.
