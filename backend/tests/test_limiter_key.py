@@ -1,9 +1,10 @@
 """Unit tests for the rate-limit key function (api.limiter._client_ip).
 
-The key function picks the real client IP: the left-most X-Forwarded-For entry
-when present, falling back to the socket peer (slowapi's get_remote_address)
-when the header is absent. No network or app needed — a minimal fake Request
-with `.headers` and `.client` is enough.
+The key function picks the real client IP: the right-most X-Forwarded-For entry
+(the address appended by our single trusted proxy) when present, falling back to
+the socket peer (slowapi's get_remote_address) when the header is absent. No
+network or app needed — a minimal fake Request with `.headers` and `.client` is
+enough.
 """
 
 from unittest.mock import patch
@@ -24,18 +25,27 @@ class _FakeRequest:
         self.client = _FakeClient(client_host)
 
 
-def test_picks_leftmost_xff_entry():
-    # Arrange — real client first, then a chain of proxies
+def test_picks_rightmost_xff_entry():
+    # Arrange — client-supplied entries first, our trusted proxy appends last
     req = _FakeRequest(headers={"X-Forwarded-For": "203.0.113.7, 70.41.3.18, 150.172.238.178"})
     # Act
     key = _client_ip(req)
+    # Assert — right-most is what the trusted proxy saw; left-most is forgeable
+    assert key == "150.172.238.178"
+
+
+def test_rightmost_resists_spoofed_leftmost_entry():
+    # Arrange — a caller forges a left-most IP; only the right-most is trusted
+    req = _FakeRequest(headers={"X-Forwarded-For": "1.2.3.4, 10.0.0.1"})
+    # Act
+    key = _client_ip(req)
     # Assert
-    assert key == "203.0.113.7"
+    assert key == "10.0.0.1"
 
 
-def test_strips_whitespace_around_leftmost_entry():
+def test_strips_whitespace_around_rightmost_entry():
     # Arrange
-    req = _FakeRequest(headers={"X-Forwarded-For": "   198.51.100.5  , 10.0.0.1"})
+    req = _FakeRequest(headers={"X-Forwarded-For": "10.0.0.1,   198.51.100.5  "})
     # Act
     key = _client_ip(req)
     # Assert

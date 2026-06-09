@@ -17,20 +17,25 @@ from starlette.requests import Request
 
 
 def _client_ip(request: Request) -> str:
-    """Rate-limit key: the real client IP.
+    """Rate-limit key: the real client IP, as seen by our trusted proxy.
 
-    The app runs behind Railway's proxy, so the socket peer is the proxy, not
-    the caller. The real client IP is the left-most entry of ``X-Forwarded-For``
-    (the original client; later entries are intermediate proxies). When the
-    header is absent — e.g. local dev with no proxy — fall back to slowapi's
-    ``get_remote_address`` (the socket peer). We only read the left-most XFF
-    entry rather than trusting the whole chain.
+    The app runs behind exactly one trusted proxy (Railway), so the socket peer
+    is the proxy, not the caller. We key off the RIGHT-MOST ``X-Forwarded-For``
+    entry: that is the address our single trusted proxy appended — the real
+    client as the proxy observed it. The left-most entry is NOT trustworthy:
+    it is client-supplied and trivially forgeable, so keying off it would let a
+    caller spoof an arbitrary IP and bypass the per-IP limit on the paid
+    endpoints. (If we ever sit behind >1 trusted hop, this would need an
+    explicit trusted-hop count to pick the right entry instead of the last one.)
+    When the header is absent — e.g. local dev with no proxy — fall back to
+    slowapi's ``get_remote_address`` (the socket peer).
     """
     forwarded_for = request.headers.get("X-Forwarded-For")
     if forwarded_for:
-        client_ip = forwarded_for.split(",")[0].strip()
-        if client_ip:
-            return client_ip
+        entries = [entry.strip() for entry in forwarded_for.split(",")]
+        for client_ip in reversed(entries):
+            if client_ip:
+                return client_ip
     return get_remote_address(request)
 
 
