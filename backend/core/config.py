@@ -57,10 +57,15 @@ class Settings(BaseSettings):
     # Railway sets APP_ENV=production so traces/logs from the deployed app can be
     # told apart from local runs. Override via env var APP_ENV.
     app_env: str = "local"
-    # Release/deploy identifier (e.g. git short SHA or tag) so traces correlate
-    # with a specific deploy. Railway sets APP_VERSION per deploy; local default
-    # is "dev". Override via env var APP_VERSION.
-    app_version: str = "dev"
+    # Release/deploy identifier so traces correlate with a specific deploy.
+    # Resolution order: an explicit APP_VERSION wins; otherwise fall back to
+    # Railway's auto-injected RAILWAY_GIT_COMMIT_SHA (full 40-char SHA, present
+    # on GitHub-deployed services); local default is "dev". Same AliasChoices
+    # pattern as the LangSmith settings below.
+    app_version: str = Field(
+        default="dev",
+        validation_alias=AliasChoices("APP_VERSION", "RAILWAY_GIT_COMMIT_SHA"),
+    )
 
     # --- LangSmith step-level tracing (V2 Tier-1 instrumentation) ---
     # These surface the standard LangChain/LangSmith tracing env vars through one
