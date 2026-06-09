@@ -7,8 +7,10 @@
 #   frontend-tests  — Vitest 2.x + Node 20.16.0. Runs on frontend/**
 #                     changes, PRs, and pushes to any branch.
 #
-# Branch-protection note: both jobs are required status checks before any
-# merge to main.  See §Branch Protection at the bottom of this file.
+# Branch-protection note: this file only DEFINES the jobs and runs them on
+# every PR. It cannot make them mandatory on its own — to require them before a
+# merge to main, mark both jobs as required status checks via branch protection
+# (GitHub → Settings → Branches → branch protection rule for main).
 # ─────────────────────────────────────────────────────────────────────────────
 
 name: CI
