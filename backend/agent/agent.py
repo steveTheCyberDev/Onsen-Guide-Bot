@@ -79,6 +79,17 @@ class OnsenResult(BaseModel):
             "output's Longitude line. Null if the tool output has no coordinates."
         ),
     )
+    # V2.5 RECOMMEND additions (ADDITIVE). Populated only by the recommend-mode
+    # analyze_onsen brain (agent/workflow/analyze.py); search mode and the legacy
+    # ReAct path leave them empty so neither output regresses.
+    pros: list[str] = Field(
+        default=[],
+        description="Grounded positives for this onsen (recommend mode only).",
+    )
+    cons: list[str] = Field(
+        default=[],
+        description="Grounded caveats for this onsen (recommend mode only).",
+    )
 
 class HotelResult(BaseModel):
     name: str = Field(description="Name in English")
@@ -124,6 +135,13 @@ class AgentResponse(BaseModel):
             "originalName. Leave any field null if the tool output does not provide it."
         )
     )
+    # V2.5 RECOMMEND addition (ADDITIVE, optional). A top-level grounded pick
+    # produced by the recommend-mode analyze_onsen brain. None in search mode and
+    # on the legacy ReAct path, so neither output regresses.
+    recommendation: str | None = Field(
+        default=None,
+        description="Top-level recommendation across the returned onsen (recommend mode only).",
+    )
 
 
 llm = ChatOpenAI(
@@ -133,6 +151,9 @@ llm = ChatOpenAI(
     # up in LangSmith traces (and aggregate into the run's total). Harmless when
     # tracing is off — it just attaches usage_metadata to the AIMessage.
     stream_usage=True,
+    # Bounded retries on transient OpenAI errors (timeouts, 429/5xx). The OpenAI
+    # SDK handles the backoff; we just cap the attempt count via config.
+    max_retries=settings.llm_max_retries,
 )
 
 tools = [search_onsen, geocode_location, search_rakuten_onsen]

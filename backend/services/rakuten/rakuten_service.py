@@ -1,9 +1,8 @@
 import logging
 
-import requests
-
 from core.config import settings
 from core.exceptions import RakutenError
+from services.http_retry import get_with_retries
 
 logger = logging.getLogger(__name__)
 
@@ -40,7 +39,9 @@ def search_hotels(latitude: float, longitude: float, radius: int = 3) -> list:
         {k: v for k, v in params.items() if k not in ("applicationId", "accessKey")},
     )
 
-    response = requests.get(url, headers=headers, params=params, timeout=10)
+    # Retries transient failures (connection/timeout + 5xx) with jittered backoff;
+    # 4xx and the existing 10s per-request timeout are preserved (see http_retry).
+    response = get_with_retries(url, headers=headers, params=params, timeout=10)
     logger.info("Rakuten actual request URL | %s", response.request.url)
 
     data = response.json()

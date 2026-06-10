@@ -8,6 +8,7 @@ deterministic pipeline.
 """
 
 import logging
+from typing import Literal
 
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_openai import ChatOpenAI
@@ -21,6 +22,16 @@ logger = logging.getLogger(__name__)
 class Intent(BaseModel):
     """Routing signals extracted from a user's onsen request."""
 
+    mode: Literal["search", "recommend", "ask"] = Field(
+        default="search",
+        description=(
+            "How to handle the request. 'search': location- or fact-based listing "
+            "('find onsen in Okinawa'). 'recommend': preference/vibe-based, wants a "
+            "judged pick ('a relaxing onsen with mountain views', 'good for families'). "
+            "'ask': general onsen knowledge Q&A not tied to a result set ('do they "
+            "allow tattoos?', 'what should I bring?', etiquette)."
+        ),
+    )
     prefecture: str | None = Field(
         default=None,
         description=(
@@ -39,7 +50,17 @@ class Intent(BaseModel):
 
 _INSTRUCTIONS = (
     "You parse a traveller's message about Japanese hot springs (onsen) into "
-    "routing signals for a search pipeline. Extract three things:\n"
+    "routing signals for a search pipeline. Extract four things:\n"
+    "0. mode: classify the request as one of:\n"
+    "   - 'search': the user wants a location- or fact-based listing of onsen "
+    "(e.g. 'find onsen in Okinawa', 'onsen near Hakone'). A raw list is fine.\n"
+    "   - 'recommend': the user expresses a preference, vibe, or use-case and "
+    "wants a judged pick rather than a raw list (e.g. 'a relaxing onsen with "
+    "mountain views', 'somewhere good for families', 'best outdoor baths in "
+    "Gunma'). Words like best/relaxing/recommend/good for/perfect signal this.\n"
+    "   - 'ask': the user asks a general onsen knowledge question not tied to a "
+    "specific result set (e.g. 'do onsen allow tattoos?', 'what should I bring?', "
+    "etiquette/rules/customs). \n"
     "1. prefecture: if the user names a location, return its English prefecture "
     "name only (e.g. 'Shizuoka', 'Okinawa', 'Tokyo'). Use just the prefecture "
     "name without the word 'Prefecture'. If the user names no location, return "
@@ -60,10 +81,15 @@ _llm = ChatOpenAI(
     model=settings.intent_model,
     api_key=settings.openai_api_key,
     stream_usage=True,
+    # Bounded retries on transient OpenAI errors (timeouts, 429/5xx); the OpenAI
+    # SDK handles the backoff. Same knob as the main chat llm in agent/agent.py.
+    max_retries=settings.llm_max_retries,
 ).with_structured_output(Intent)
 
 
-async def parse_intent(message: str, history: list) -> Intent:
+async def parse_intent(
+    message: str, history: list, callbacks: list | None = None
+) -> Intent:
     """Parse a user message into routing signals for the onsen workflow.
 
     Args:
@@ -71,9 +97,13 @@ async def parse_intent(message: str, history: list) -> Intent:
         history: Conversation history as a list of LangChain messages (same
             shape ``run_agent`` gets from ``get_history``), passed through so
             follow-up questions resolve against prior turns.
+        callbacks: Optional LangChain callbacks (e.g. a
+            ``UsageMetadataCallbackHandler``) so the caller can capture token
+            usage — this call uses ``.with_structured_output``, so usage is not
+            on the return value.
 
     Returns:
-        An ``Intent`` with the extracted prefecture, semantic query, and
+        An ``Intent`` with the mode, extracted prefecture, semantic query, and
         whether the user wants hotels.
     """
     messages = [
@@ -81,7 +111,7 @@ async def parse_intent(message: str, history: list) -> Intent:
         *history,
         HumanMessage(content=message),
     ]
-    run_config = {
+    run_config: dict = {
         "run_name": "parse-intent",
         "tags": ["workflow", "intent", f"model:{settings.intent_model}"],
         "metadata": {
@@ -90,9 +120,12 @@ async def parse_intent(message: str, history: list) -> Intent:
             "version": "v2-workflow",
         },
     }
+    if callbacks:
+        run_config["callbacks"] = callbacks
     intent: Intent = await _llm.ainvoke(messages, config=run_config)
     logger.info(
-        "parse_intent | prefecture=%s | wants_hotels=%s",
+        "parse_intent | mode=%s | prefecture=%s | wants_hotels=%s",
+        intent.mode,
         intent.prefecture,
         intent.wants_hotels,
     )
