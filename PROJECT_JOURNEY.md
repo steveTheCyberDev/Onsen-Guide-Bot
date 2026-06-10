@@ -188,6 +188,44 @@ Each addition is self-contained: a new external API is a new `services/{name}`, 
 
 ---
 
+## Next direction — from workflow to *agent* (design captured 2026-06-10; not yet built)
+
+A design discussion on where the system goes next. Captured here as direction; **to be reconciled with current progress next session** (the `analyze_onsen` recommend brain + the LangSmith eval harness have since shipped, so some of the V2 roadmap above is now done).
+
+### Reframe: capabilities vs. orchestration
+The instinct was "add a knowledge base + an external ratings API to *make it an agent*." The clarifying distinction: a knowledge base and a ratings API are **capabilities** (`services/` + `tools/`); **agent vs. workflow** is the *orchestration* on top — does code decide the path (workflow) or does an LLM decide which tools to call, and when, in a loop (agent)? Adding a capability does **not** by itself make it an agent. So: **build the capabilities now as workflow steps** (reliable, cheap, testable), and treat "become an agent" as a *separate, later* decision — the same conclusion reached for V1/V2. Because `services/` are framework-agnostic and `tools/` are thin wrappers, whatever I build now is reusable by a workflow **or** a future agent unchanged.
+
+### Capability 1 — Knowledge base (the `ask` mode / V2.5 Layer 2)
+Author markdown domain docs (etiquette, tattoo policy, bathing steps, spring-type benefits) and serve the currently-stubbed `ask` branch via semantic RAG.
+
+### Capability 2 — Real ratings/reviews, to *ground* pros/cons
+Today's pros/cons are **LLM-inferred from each onsen's own description** — the unmeasured groundedness gap the eval flagged. A ratings/reviews source replaces inference with real signal. Two refinements over the first instinct (TripAdvisor):
+- **Provider:** prefer **Google Places** (already integrated for geocoding; a `place_id` can be captured at the same ingest step; better coverage of small Japanese onsen; simpler attribution) over TripAdvisor. Build a `ratings_service` seam so the provider is swappable.
+- **Ingest-time enrichment, not per-request** — the proven pattern (geocoding, translation): pull rating + a few review snippets once at ingest, store in Chroma metadata. Grounds pros/cons with **zero per-request latency/cost**. A per-request tool only earns its place once freshness matters or the system is genuinely agentic.
+
+### The key insight: the KB should feed `recommend`, not just `ask`
+A KB-grounded recommendation **is** more accurate — but there are **two kinds of knowledge → two kinds of accuracy**:
+- **Per-onsen signal** (description, ratings, reviews) **differentiates** candidates — the biggest lever for "which of these is best" (= Capability 2).
+- **General domain knowledge** (the KB) improves the **reasoning**: it's the same for every candidate, so it doesn't pick A over B, but it lets the LLM map a **need → attribute**. *E.g. user says "skin problems" → KB knows "sulfur springs help skin" → recommend ranks toward `spring_type = sulfur` and explains why.*
+
+**Grounding discipline (critical):** keep the layers doing different jobs or fabrication returns — **onsen records ground the FACTS** (any claim about a specific onsen must come from its own data), **the KB grounds the REASONING** (domain knowledge used to interpret the need, never to assert new facts about a specific onsen). The recommend brain gets three clearly-labelled inputs: candidate onsen, user preferences, relevant KB snippets. The eval's grounding evaluator + the planned LLM-judge keep it honest.
+
+### Do we store the KB in a vector DB? Only the prose.
+Match storage to **size + structure + access pattern** — don't reach for vectors by reflex:
+- **Long-form prose** (etiquette, tattoo policy) → open-ended semantic Q&A → **vector DB**, in a **separate Chroma collection** (not mixed with onsen records — different shape; mixing muddies both). This is the `ask`-mode showcase.
+- **Structured domain facts** (spring-type → benefit) → a **small table/dict or prompt injection**, *not* embeddings. You look these up, you don't semantically search them; embedding a 15-row table and hoping similarity returns the right row is strictly worse than a dict. (Mirrors the earlier rule: structured facts stay queryable lookups/metadata; only prose goes into a semantic RAG pool.)
+- It's a **hybrid** — and that's correct. Caveat: if the prose KB starts tiny, prompt-stuff it and graduate to the vector collection only once it outgrows cheap context.
+
+### When it actually *becomes* an agent
+Once `recommend` wants to consult **two retrieval sources** (onsen DB + KB) and an **enrichment tool** (ratings), and *which* it needs depends on the query, deciding that dynamically is precisely a **LangGraph agent's** job — and the cleanest reason the system graduates from workflow to agent. That's the V3 upgrade, arriving when query complexity (not the résumé) demands it.
+
+### Recommended build sequence
+1. **Knowledge base / `ask` mode** (Layer 2) — separate vector collection for prose + a small spring-type→benefit table for reasoning. *(workflow)*
+2. **`ratings_service` + ingest-time enrichment** (Google Places) — grounds pros/cons in real ratings; pair with an **LLM-as-judge evaluator** so pros/cons groundedness becomes *measurable* (and the gpt-4o → gpt-4o-mini switch can be re-decided on data). *(workflow)*
+3. **Then** wrap these as agent tools under a LangGraph orchestrator for multi-step queries. *(agent — the real V3 upgrade)*
+
+---
+
 ## Status
 
 V1 is **live in production and feature-complete** for its scope. V2's performance headline has since shipped and is **live in prod**: ingest-time geocoding plus the ReAct→workflow redesign (challenge #10) — ~10× faster and now the default `/chat` engine, flag-gated for rollback. Next in V2: the `analyze_onsen` "guide" judgment layer and the V2.5 knowledge-base / recommendation work.
