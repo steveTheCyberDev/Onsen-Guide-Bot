@@ -12,6 +12,11 @@ openai>=1.50.0
 anthropic>=0.34.0
 requests>=2.32.0
 python-dotenv>=1.0.0
+# Inbound per-IP rate limiting on the paid endpoints (api/limiter.py).
+slowapi>=0.1.9
+# Outbound HTTP retry/backoff for the services layer (services/http_retry.py).
+# Already pulled in transitively by langchain; pinned here as a direct dep.
+tenacity>=8.2.0
 
 # --- Testing ---
 pytest>=8.0.0

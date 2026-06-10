@@ -151,6 +151,9 @@ llm = ChatOpenAI(
     # up in LangSmith traces (and aggregate into the run's total). Harmless when
     # tracing is off — it just attaches usage_metadata to the AIMessage.
     stream_usage=True,
+    # Bounded retries on transient OpenAI errors (timeouts, 429/5xx). The OpenAI
+    # SDK handles the backoff; we just cap the attempt count via config.
+    max_retries=settings.llm_max_retries,
 )
 
 tools = [search_onsen, geocode_location, search_rakuten_onsen]

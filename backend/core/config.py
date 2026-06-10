@@ -63,6 +63,22 @@ class Settings(BaseSettings):
     # until flipped) — this is the A/B rollout seam, mirroring chat_engine above.
     # Override via env var ANALYZE_ENABLED.
     analyze_enabled: bool = False
+    # Bounded retry count for outbound LLM calls (ChatOpenAI). Passed as
+    # `max_retries` to every ChatOpenAI instance (the ReAct llm in agent/agent.py
+    # and the intent llm in agent/workflow/intent.py) so transient OpenAI errors
+    # (timeouts, 429/5xx) are retried a few times instead of failing the request,
+    # without retrying forever. Override via env var LLM_MAX_RETRIES.
+    llm_max_retries: int = 2
+    # --- Inbound rate limiting (slowapi) ---
+    # Per-client-IP limits applied to the PAID endpoints only (POST /chat and
+    # POST /hotels); /health and other infra routes stay unlimited. Values use
+    # slowapi's limit-string syntax ("<count>/<period>", e.g. "20/minute").
+    # Override via env vars RATE_LIMIT_CHAT / RATE_LIMIT_HOTELS.
+    # Storage is in-memory (slowapi default), correct for the current single-worker
+    # Dockerfile (uvicorn --workers 1). TODO: a multi-instance / multi-worker
+    # deploy needs a shared store (slowapi storage_uri → Redis); not built now.
+    rate_limit_chat: str = "20/minute"
+    rate_limit_hotels: str = "60/minute"
     # Deployment environment label for trace/log filtering. Default is "local";
     # Railway sets APP_ENV=production so traces/logs from the deployed app can be
     # told apart from local runs. Override via env var APP_ENV.

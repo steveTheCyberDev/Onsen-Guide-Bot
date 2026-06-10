@@ -2,9 +2,11 @@ import asyncio
 import logging
 from math import asin, cos, radians, sin, sqrt
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
+from api.limiter import limiter
+from core.config import settings
 from core.exceptions import OnsenBotError
 from services.rakuten.rakuten_service import search_hotels
 
@@ -74,18 +76,23 @@ def _to_item(h: dict, origin_lat: float, origin_lng: float) -> HotelItem:
     )
 
 
+# Rate-limited per client IP (paid endpoint). The limit string comes from
+# settings.rate_limit_hotels (env RATE_LIMIT_HOTELS). slowapi requires the
+# `request: Request` parameter to read the client key; the parsed body stays in
+# `payload`.
 @router.post("", response_model=HotelsResponse)
-async def get_hotels(request: HotelsRequest):
+@limiter.limit(settings.rate_limit_hotels)
+async def get_hotels(request: Request, payload: HotelsRequest):
     logger.info(
         "POST /hotels request | lat=%.4f | lng=%.4f | radius=%d",
-        request.latitude,
-        request.longitude,
-        request.radius,
+        payload.latitude,
+        payload.longitude,
+        payload.radius,
     )
     try:
         # search_hotels is sync (uses requests) — run off the event loop.
         raw = await asyncio.to_thread(
-            search_hotels, request.latitude, request.longitude, request.radius
+            search_hotels, payload.latitude, payload.longitude, payload.radius
         )
     except OnsenBotError as e:
         logger.error("POST /hotels service error | %s", e)
@@ -94,6 +101,6 @@ async def get_hotels(request: HotelsRequest):
         logger.exception("POST /hotels unexpected error")
         raise HTTPException(status_code=500, detail="An unexpected error occurred.")
 
-    hotels = [_to_item(h, request.latitude, request.longitude) for h in raw]
+    hotels = [_to_item(h, payload.latitude, payload.longitude) for h in raw]
     logger.info("POST /hotels response | hotels=%d", len(hotels))
     return HotelsResponse(hotels=hotels)
