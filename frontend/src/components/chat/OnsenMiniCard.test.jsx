@@ -146,4 +146,71 @@ describe('OnsenMiniCard', () => {
       expect(screen.getByText('Yamada Onsen')).toBeInTheDocument();
     });
   });
+
+  // -------------------------------------------------------------------------
+  // pros / cons block (recommend mode + analyze enabled)
+  // -------------------------------------------------------------------------
+
+  describe('pros/cons block', () => {
+    it('renders the pros/cons block with correct items and symbols when both present', () => {
+      const onsen = makeOnsen({
+        pros: ['Great view', 'Quiet location'],
+        cons: ['Far from station'],
+      });
+      render(<OnsenMiniCard onsen={onsen} />);
+
+      const block = screen.getByTestId('onsen-pros-cons');
+      expect(block).toBeInTheDocument();
+
+      const prosList = screen.getByRole('list', { name: 'Yamada Onsen pros' });
+      expect(prosList).toBeInTheDocument();
+      expect(screen.getByText('Great view')).toBeInTheDocument();
+      expect(screen.getByText('Quiet location')).toBeInTheDocument();
+
+      const consList = screen.getByRole('list', { name: 'Yamada Onsen cons' });
+      expect(consList).toBeInTheDocument();
+      expect(screen.getByText('Far from station')).toBeInTheDocument();
+
+      // ✓ symbols for pros, ✕ symbols for cons
+      const checks = prosList.querySelectorAll('span[aria-hidden="true"]');
+      checks.forEach((el) => expect(el.textContent).toBe('✓'));
+
+      const crosses = consList.querySelectorAll('span[aria-hidden="true"]');
+      crosses.forEach((el) => expect(el.textContent).toBe('✕'));
+    });
+
+    it('renders only the pros list when cons is empty', () => {
+      const onsen = makeOnsen({ pros: ['Great view'], cons: [] });
+      render(<OnsenMiniCard onsen={onsen} />);
+
+      expect(screen.getByTestId('onsen-pros-cons')).toBeInTheDocument();
+      expect(screen.getByRole('list', { name: 'Yamada Onsen pros' })).toBeInTheDocument();
+      expect(screen.queryByRole('list', { name: 'Yamada Onsen cons' })).not.toBeInTheDocument();
+      expect(screen.getByText('Great view')).toBeInTheDocument();
+    });
+
+    it('renders only the cons list when pros is empty', () => {
+      const onsen = makeOnsen({ pros: [], cons: ['Far from station'] });
+      render(<OnsenMiniCard onsen={onsen} />);
+
+      expect(screen.getByTestId('onsen-pros-cons')).toBeInTheDocument();
+      expect(screen.queryByRole('list', { name: 'Yamada Onsen pros' })).not.toBeInTheDocument();
+      expect(screen.getByRole('list', { name: 'Yamada Onsen cons' })).toBeInTheDocument();
+      expect(screen.getByText('Far from station')).toBeInTheDocument();
+    });
+
+    it('renders no pros/cons block when both pros and cons are empty', () => {
+      const onsen = makeOnsen({ pros: [], cons: [] });
+      render(<OnsenMiniCard onsen={onsen} />);
+      expect(screen.queryByTestId('onsen-pros-cons')).not.toBeInTheDocument();
+    });
+
+    it('renders no pros/cons block when pros and cons are absent (search-mode card unchanged)', () => {
+      const onsen = makeOnsen();
+      delete onsen.pros;
+      delete onsen.cons;
+      render(<OnsenMiniCard onsen={onsen} />);
+      expect(screen.queryByTestId('onsen-pros-cons')).not.toBeInTheDocument();
+    });
+  });
 });

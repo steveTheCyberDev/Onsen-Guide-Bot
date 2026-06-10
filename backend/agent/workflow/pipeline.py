@@ -81,6 +81,18 @@ except Exception:  # pragma: no cover - langsmith always present in this project
         return fn
 
 
+# Current-run accessor, guarded the same way as `_trace`. Unlike the static
+# decorator metadata above, this lets us attach PER-REQUEST values (mode, cost,
+# tokens) to the live run tree from inside run_workflow. When langsmith is absent
+# the name resolves to a no-op returning None, so the attach path below is inert.
+try:
+    from langsmith import get_current_run_tree
+except Exception:  # pragma: no cover - langsmith always present in this project
+
+    def get_current_run_tree():
+        return None
+
+
 def _build_onsens(records: list[dict]) -> list[OnsenResult]:
     """Project structured Chroma records onto OnsenResult.
 
@@ -129,6 +141,36 @@ def _build_reply(prefecture: str | None, onsens: list[OnsenResult], hotels: list
     return reply
 
 
+def _attach_cost_to_trace(mode: str, summary: dict) -> None:
+    """Attach per-request mode/cost/token fields to the active LangSmith run.
+
+    Mutates the CURRENT run tree's metadata + tags so cost can be sliced by mode
+    (search|recommend|ask) in LangSmith and cross-checked against LangSmith's own
+    cost estimate. LangSmith flushes the run tree on run end, so mutating it here
+    inside ``run_workflow`` is sufficient.
+
+    FULLY fail-safe: when langsmith is absent or tracing is disabled,
+    ``get_current_run_tree()`` returns None and this is a no-op; any unexpected
+    error is swallowed so trace bookkeeping never leaks into the request path.
+    """
+    try:
+        rt = get_current_run_tree()
+        if rt is None:
+            return
+        rt.metadata.update(
+            {
+                "mode": mode,
+                "cost_usd": summary["cost_usd"],
+                "input_tokens": summary["input_tokens"],
+                "output_tokens": summary["output_tokens"],
+                "models": ",".join(summary["models"]) or "none",
+            }
+        )
+        rt.tags = (rt.tags or []) + [f"mode:{mode}"]
+    except Exception:  # pragma: no cover - defensive; trace must never break /chat
+        logger.debug("failed to attach cost metadata to langsmith run", exc_info=True)
+
+
 def _log_cost(
     session_id: str,
     mode: str,
@@ -139,9 +181,11 @@ def _log_cost(
 
     Summarizes the request's token usage (captured by ``usage_cb`` across the
     intent + analyze LLM calls) into models used, token totals, estimated USD
-    cost, and end-to-end latency.
+    cost, and end-to-end latency. Also attaches mode/cost/tokens to the active
+    LangSmith run so cost is sliceable by mode in the trace UI.
     """
     summary = summarize_usage(usage_cb.usage_metadata)
+    _attach_cost_to_trace(mode, summary)
     latency_ms = int((time.monotonic() - started) * 1000)
     logger.info(
         "workflow_cost | session_id=%s | mode=%s | models=%s | input_tokens=%d | "

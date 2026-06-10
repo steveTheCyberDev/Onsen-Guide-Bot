@@ -175,7 +175,12 @@ describe('ChatPanel', () => {
           payload: {
             onsens,
             hotels,
-            assistantMessage: { role: 'assistant', content: 'Found some spots.', onsens },
+            assistantMessage: {
+              role: 'assistant',
+              content: 'Found some spots.',
+              onsens,
+              recommendation: null,
+            },
           },
         });
       });
@@ -197,6 +202,68 @@ describe('ChatPanel', () => {
           expect.objectContaining({
             type: 'CHAT_RESULTS',
             payload: expect.objectContaining({ onsens: [], hotels: [] }),
+          })
+        );
+      });
+    });
+
+    it('threads recommendation onto the assistant message when present in the response', async () => {
+      const onsens = [
+        {
+          name: 'Yamada Onsen',
+          lat: 26.2,
+          lng: 127.6,
+          pros: ['Great view'],
+          cons: ['Far from station'],
+        },
+      ];
+      const recommendation = 'Yamada Onsen is the best pick for a relaxing soak with a view.';
+
+      fetch.mockReturnValueOnce(
+        makeFetchOk({ reply: 'Here is my pick.', onsens, hotels: [], recommendation })
+      );
+
+      const user = userEvent.setup();
+      render(<ChatPanel state={makeState()} dispatch={dispatch} />);
+
+      await user.type(screen.getByRole('textbox', { name: /ask about onsen/i }), 'recommend one');
+      await user.click(screen.getByRole('button', { name: /send message/i }));
+
+      await waitFor(() => {
+        expect(dispatch).toHaveBeenCalledWith({
+          type: 'CHAT_RESULTS',
+          payload: {
+            onsens,
+            hotels: [],
+            assistantMessage: {
+              role: 'assistant',
+              content: 'Here is my pick.',
+              onsens,
+              recommendation,
+            },
+          },
+        });
+      });
+    });
+
+    it('threads recommendation as null when absent from the response', async () => {
+      fetch.mockReturnValueOnce(
+        makeFetchOk({ reply: 'Found 2 onsens.', onsens: [], hotels: [] }) // no recommendation key
+      );
+
+      const user = userEvent.setup();
+      render(<ChatPanel state={makeState()} dispatch={dispatch} />);
+
+      await user.type(screen.getByRole('textbox', { name: /ask about onsen/i }), 'find onsen');
+      await user.click(screen.getByRole('button', { name: /send message/i }));
+
+      await waitFor(() => {
+        expect(dispatch).toHaveBeenCalledWith(
+          expect.objectContaining({
+            type: 'CHAT_RESULTS',
+            payload: expect.objectContaining({
+              assistantMessage: expect.objectContaining({ recommendation: null }),
+            }),
           })
         );
       });

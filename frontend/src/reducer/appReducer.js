@@ -18,6 +18,10 @@ export function appReducer(state, action) {
     case 'CHAT_RESULTS': {
       // payload: { onsens, hotels, assistantMessage }
       // Appends the assistant reply to existing messages — no stale closure risk.
+      // assistantMessage may carry a `recommendation` (string | null) — non-null
+      // only in recommend mode with analyze enabled. It rides along on the
+      // message object so MessageList/Message can render it inline; no
+      // dedicated reducer handling needed.
       // If the chat response includes hotels (e.g. "show me X onsen and nearby
       // hotels"), show hotel markers too; otherwise just onsen markers.
       const hotels = action.payload.hotels ?? [];
