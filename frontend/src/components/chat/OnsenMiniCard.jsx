@@ -1,6 +1,9 @@
 /**
  * OnsenMiniCard — compact onsen card rendered inline inside an assistant message bubble.
- * Receives an onsen object: { name, location, spring_type, spa_quality }
+ * Receives an onsen object: { name, location, spring_type, spa_quality, pros, cons }
+ *
+ * pros/cons are string[] populated only in recommend mode with analyze enabled.
+ * Empty/absent in search mode — the card renders identically to before in that case.
  *
  * When onSelect is provided the card is rendered as a focusable button so the
  * user can click/keyboard-activate it to centre that marker on the map.
@@ -11,6 +14,9 @@ export default function OnsenMiniCard({ onsen, onSelect }) {
   if (!onsen) return null;
 
   const hasCoords = Boolean(onsen.lat && onsen.lng);
+  const pros = onsen.pros ?? [];
+  const cons = onsen.cons ?? [];
+  const hasProsOrCons = pros.length > 0 || cons.length > 0;
 
   function handleSelect() {
     if (onSelect && hasCoords) {
@@ -57,6 +63,30 @@ export default function OnsenMiniCard({ onsen, onSelect }) {
       )}
       {onsen.spa_quality && (
         <p className="text-[#6B6B6B] leading-relaxed line-clamp-2">{onsen.spa_quality}</p>
+      )}
+      {hasProsOrCons && (
+        <div className="mt-1 grid grid-cols-1 gap-1.5 sm:grid-cols-2" data-testid="onsen-pros-cons">
+          {pros.length > 0 && (
+            <ul aria-label={`${onsen.name} pros`} className="space-y-0.5">
+              {pros.map((pro, i) => (
+                <li key={i} className="flex items-start gap-1 text-[#2D6A4F]">
+                  <span aria-hidden="true" className="mt-px shrink-0">✓</span>
+                  <span className="leading-snug">{pro}</span>
+                </li>
+              ))}
+            </ul>
+          )}
+          {cons.length > 0 && (
+            <ul aria-label={`${onsen.name} cons`} className="space-y-0.5">
+              {cons.map((con, i) => (
+                <li key={i} className="flex items-start gap-1 text-[#C9533A]">
+                  <span aria-hidden="true" className="mt-px shrink-0">✕</span>
+                  <span className="leading-snug">{con}</span>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
       )}
     </>
   );

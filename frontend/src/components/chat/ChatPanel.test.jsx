@@ -175,7 +175,12 @@ describe('ChatPanel', () => {
           payload: {
             onsens,
             hotels,
-            assistantMessage: { role: 'assistant', content: 'Found some spots.', onsens },
+            assistantMessage: {
+              role: 'assistant',
+              content: 'Found some spots.',
+              onsens,
+              recommendation: null,
+            },
           },
         });
       });

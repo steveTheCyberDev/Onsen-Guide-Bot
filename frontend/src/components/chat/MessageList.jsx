@@ -27,6 +27,7 @@ export default function MessageList({ messages, onSelectOnsen }) {
           role={msg.role}
           content={msg.content}
           onsens={msg.onsens}
+          recommendation={msg.recommendation}
           onSelectOnsen={onSelectOnsen}
         />
       ))}

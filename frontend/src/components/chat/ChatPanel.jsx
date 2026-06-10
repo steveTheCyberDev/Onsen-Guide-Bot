@@ -22,16 +22,19 @@ export default function ChatPanel({ state, dispatch }) {
       const data = await apiPost('/chat', { message: text, session_id: 'default' });
       const onsens = data.onsens ?? [];
       const hotels = data.hotels ?? [];
+      const recommendation = data.recommendation ?? null;
 
       // 2. One atomic dispatch — appends assistant reply, sets onsens + hotels, resets selection.
       //    Reducer appends assistantMessage to current state.messages (no stale closure).
       //    When the reply includes hotels, the reducer also flips markers to 'both'.
+      //    `recommendation` is non-null only in recommend mode with analyze enabled —
+      //    attached to the assistant message so it renders alongside its onsen cards.
       dispatch({
         type: 'CHAT_RESULTS',
         payload: {
           onsens,
           hotels,
-          assistantMessage: { role: 'assistant', content: data.reply, onsens },
+          assistantMessage: { role: 'assistant', content: data.reply, onsens, recommendation },
         },
       });
     } catch (err) {
