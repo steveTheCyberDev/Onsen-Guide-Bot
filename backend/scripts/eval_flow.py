@@ -456,12 +456,19 @@ def run_evaluation() -> int:
     prior_analyze_enabled = settings.analyze_enabled
     settings.analyze_enabled = True
     try:
+        # Tag the experiment with the analyze model so two runs that differ only
+        # by ANALYZE_MODEL (the model-comparison use case) are distinguishable in
+        # the LangSmith UI — both in the experiment name and in its metadata.
         results = evaluate(
             target,
             data=DATASET_NAME,
             evaluators=EVALUATORS,
-            experiment_prefix="onsen-flow",
-            metadata={"harness": "eval_flow.py"},
+            experiment_prefix=f"onsen-flow-analyze-{settings.analyze_model}",
+            metadata={
+                "harness": "eval_flow.py",
+                "analyze_model": settings.analyze_model,
+                "intent_model": settings.intent_model,
+            },
             # Send the experiment + its child runs to the dedicated eval project.
             client=client,
             max_concurrency=1,  # serialize to keep latency measurements clean.
