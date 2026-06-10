@@ -192,6 +192,34 @@ Each addition is self-contained: a new external API is a new `services/{name}`, 
 
 A design discussion on where the system goes next. Captured here as direction; **to be reconciled with current progress next session** (the `analyze_onsen` recommend brain + the LangSmith eval harness have since shipped, so some of the V2 roadmap above is now done).
 
+### Target shape — KB feeds both `ask` and `recommend`
+
+```mermaid
+flowchart TD
+    U["User input"] --> R{"LLM router<br/>search · recommend · ask"}
+
+    R -->|search| S["DB search<br/>deterministic · Python assembly"]
+    R -->|recommend| REC["recommend<br/>retrieve candidates → analyze (LLM)<br/>→ grounded pros/cons + recommendation"]
+    R -->|ask| ASK["ask<br/>semantic RAG over KB"]
+
+    ONS[("ONSEN collection (Vector DB)<br/>name · spring_type · lat/lng<br/>description · ratings/reviews")]
+    KB[("KB collection — prose (Vector DB)<br/>etiquette · tattoo policy<br/>spring-type benefits")]
+
+    S --> ONS
+    REC ==>|"FACTS — may assert per-onsen claims"| ONS
+    REC -. "REASONING — interpret need, never assert facts" .-> KB
+    ASK --> KB
+
+    OD["Onsen data<br/>+ geocode + EN translation<br/>+ ratings (Google Places)"] -->|ingest + enrich| ONS
+    MD["Markdown knowledge docs"] -->|ingest| KB
+
+    S --> OUT["reply / answer"]
+    REC --> OUT
+    ASK --> OUT
+```
+
+The diagram encodes the **grounding boundary**: `recommend` draws two kinds of edge — a **solid (FACTS)** edge from the onsen collection (the only source allowed to assert claims about a *specific* onsen) and a **dotted (REASONING)** edge from the KB (domain knowledge to interpret the user's need, e.g. "skin → sulfur", but never to introduce a new fact about a specific onsen). Note also the **two separate Vector DB collections**, **ratings enrichment at ingest**, and that the spring-type→benefit reasoning is a small lookup table alongside the KB, not embeddings.
+
 ### Reframe: capabilities vs. orchestration
 The instinct was "add a knowledge base + an external ratings API to *make it an agent*." The clarifying distinction: a knowledge base and a ratings API are **capabilities** (`services/` + `tools/`); **agent vs. workflow** is the *orchestration* on top — does code decide the path (workflow) or does an LLM decide which tools to call, and when, in a loop (agent)? Adding a capability does **not** by itself make it an agent. So: **build the capabilities now as workflow steps** (reliable, cheap, testable), and treat "become an agent" as a *separate, later* decision — the same conclusion reached for V1/V2. Because `services/` are framework-agnostic and `tools/` are thin wrappers, whatever I build now is reusable by a workflow **or** a future agent unchanged.
 
