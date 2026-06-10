@@ -47,13 +47,23 @@ from dotenv import load_dotenv
 
 load_dotenv(BACKEND_DIR / ".env")
 
-from vectorstore.store import get_collection
-
 # --- Eval project (keep eval runs out of the prod/dev tracing project) --------
 # The flow itself traces to settings.langsmith_project; experiments and their
 # child runs should land in a SEPARATE project so eval traffic never mixes with
 # real /chat traffic. Override via LANGSMITH_EVAL_PROJECT.
 EVAL_PROJECT = os.getenv("LANGSMITH_EVAL_PROJECT", "onsen-guide-bot-evals")
+
+# IMPORT-ORDER CRITICAL — do NOT move this below the project-code imports.
+# core.config.export_langsmith_env() runs at agent-import time and uses
+# os.environ.setdefault(...) for LANGSMITH_PROJECT; langsmith also caches env
+# vars (lru_cache). So the eval project must be in os.environ BEFORE the first
+# `vectorstore.*` / `agent.*` / `langsmith` import fires — otherwise the flow's
+# CHILD workflow traces land in the default (prod/dev) project. langsmith honors
+# both the LANGSMITH_* and legacy LANGCHAIN_* aliases, so set both.
+os.environ["LANGSMITH_PROJECT"] = EVAL_PROJECT
+os.environ["LANGCHAIN_PROJECT"] = EVAL_PROJECT
+
+from vectorstore.store import get_collection
 
 DATASET_NAME = "onsen-flow-evals"
 
@@ -243,12 +253,16 @@ def make_target_with_usage():
     pipeline signature, we monkeypatch ``UsageMetadataCallbackHandler`` in the
     pipeline module so the instance it creates is one we can read afterwards.
     This is eval-only glue and is reverted per call.
+
+    NOTE: this factory does NOT toggle ``settings.analyze_enabled``. The eval
+    needs analyze mode ON (so recommend examples exercise the analyze brain), but
+    that global is flipped — and RESTORED — around the ``evaluate()`` run in
+    ``run_evaluation()`` so importing/calling this module from a long-lived
+    process (CI/pytest) never permanently mutates the prod setting.
     """
     from agent.workflow import pipeline
     from agent.workflow.cost import summarize_usage
-    from core.config import settings
 
-    settings.analyze_enabled = True
     _counter = {"n": 0}
 
     def target(inputs: dict) -> dict:
@@ -412,13 +426,11 @@ def run_evaluation() -> int:
         )
         return 1
 
-    # Route the flow's own traces (run_workflow + its child LLM runs) to the
-    # dedicated eval project so eval traffic never lands in the prod/dev tracing
-    # project. The experiment itself is grouped by experiment_prefix. Set BEFORE
-    # the pipeline module is imported (inside make_target_with_usage) so the
-    # @traceable on run_workflow picks it up.
-    os.environ["LANGSMITH_PROJECT"] = EVAL_PROJECT
-
+    # NOTE: LANGSMITH_PROJECT / LANGCHAIN_PROJECT routing for the flow's child
+    # traces is set at MODULE-TOP (see the import-order comment there), not here —
+    # by the time this function runs the agent module is already imported and
+    # langsmith has cached the project, so setting it here would be too late for
+    # child traces. The experiment itself is grouped by experiment_prefix below.
     client = Client()
 
     allowed = build_ground_truth()
@@ -433,16 +445,29 @@ def run_evaluation() -> int:
 
     target = make_target_with_usage()
 
-    results = evaluate(
-        target,
-        data=DATASET_NAME,
-        evaluators=EVALUATORS,
-        experiment_prefix="onsen-flow",
-        metadata={"harness": "eval_flow.py"},
-        # Send the experiment + its child runs to the dedicated eval project.
-        client=client,
-        max_concurrency=1,  # serialize to keep latency measurements clean.
-    )
+    # The eval needs analyze mode ON so recommend examples exercise the analyze
+    # brain. Flip it for the duration of evaluate() and RESTORE the prior value
+    # in finally — so calling run_evaluation() from a long-lived process
+    # (CI/pytest) never permanently flips the prod setting, even if evaluate()
+    # raises. (settings is a module-level singleton; importing here keeps the
+    # config import lazy, consistent with the rest of this module.)
+    from core.config import settings
+
+    prior_analyze_enabled = settings.analyze_enabled
+    settings.analyze_enabled = True
+    try:
+        results = evaluate(
+            target,
+            data=DATASET_NAME,
+            evaluators=EVALUATORS,
+            experiment_prefix="onsen-flow",
+            metadata={"harness": "eval_flow.py"},
+            # Send the experiment + its child runs to the dedicated eval project.
+            client=client,
+            max_concurrency=1,  # serialize to keep latency measurements clean.
+        )
+    finally:
+        settings.analyze_enabled = prior_analyze_enabled
 
     return _report(results)
 

@@ -219,3 +219,66 @@ def test_latency_recommend_has_more_headroom():
 def test_normalize_collapses_whitespace_and_lowercases():
     assert eval_flow.normalize("  Yamada   Onsen  ") == "yamada onsen"
     assert eval_flow.normalize(None) == ""
+
+
+# --- analyze_enabled restore discipline (regression for global-state leak) ----
+def _run_evaluation_with_no_paid_calls(evaluate_side_effect=None):
+    """Drive run_evaluation() with every paid/IO seam mocked out.
+
+    Stubs LangSmith (Client + evaluate), the ChromaDB ground-truth read, the
+    dataset upsert, the target factory, and the report so NO paid calls happen.
+    ``evaluate_side_effect`` lets a test make evaluate() raise, to prove the
+    restore still runs in the finally block. Returns nothing; the assertion is on
+    settings.analyze_enabled afterwards.
+    """
+    fake_evaluate = MagicMock(name="evaluate")
+    if evaluate_side_effect is not None:
+        fake_evaluate.side_effect = evaluate_side_effect
+
+    with patch("langsmith.Client", MagicMock()), \
+        patch("langsmith.evaluate", fake_evaluate), \
+        patch.object(eval_flow, "build_ground_truth", return_value={}), \
+        patch.object(eval_flow, "set_ground_truth"), \
+        patch.object(eval_flow, "get_or_create_dataset"), \
+        patch.object(eval_flow, "make_target_with_usage", return_value=lambda i: {}), \
+        patch.object(eval_flow, "_report", return_value=0), \
+        patch.dict("os.environ", {"LANGSMITH_API_KEY": "test-key"}):
+        eval_flow.run_evaluation()
+
+
+def test_run_evaluation_restores_analyze_enabled_on_success():
+    """run_evaluation flips analyze_enabled ON for the run, then restores it."""
+    from core.config import settings
+
+    original = settings.analyze_enabled
+    settings.analyze_enabled = False  # start from a known prior value
+    seen = {}
+
+    def _capture(*args, **kwargs):
+        # Inside evaluate(): the global must be ON so recommend examples run the
+        # analyze brain.
+        seen["analyze_enabled"] = settings.analyze_enabled
+        return MagicMock()
+
+    try:
+        _run_evaluation_with_no_paid_calls(evaluate_side_effect=_capture)
+        assert seen["analyze_enabled"] is True  # ON during the run
+        assert settings.analyze_enabled is False  # restored, no leak
+    finally:
+        settings.analyze_enabled = original
+
+
+def test_run_evaluation_restores_analyze_enabled_even_if_evaluate_raises():
+    """The restore lives in a finally, so a failing evaluate() must not leak."""
+    from core.config import settings
+
+    original = settings.analyze_enabled
+    settings.analyze_enabled = False
+    try:
+        with pytest.raises(RuntimeError, match="boom"):
+            _run_evaluation_with_no_paid_calls(
+                evaluate_side_effect=RuntimeError("boom")
+            )
+        assert settings.analyze_enabled is False  # restored despite the raise
+    finally:
+        settings.analyze_enabled = original
