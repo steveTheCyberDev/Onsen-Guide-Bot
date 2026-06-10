@@ -22,6 +22,10 @@ class ChatResponse(BaseModel):
     reply: str
     onsens: list[OnsenResult] = []
     hotels: list[HotelResult] = []
+    # V2.5 RECOMMEND addition (ADDITIVE, optional). Carries the recommend-mode
+    # top-level pick; None for search/ask modes and the legacy ReAct path so the
+    # existing contract is unchanged for those flows.
+    recommendation: str | None = None
 
 
 # Rate-limited per client IP (paid endpoint). The limit string comes from

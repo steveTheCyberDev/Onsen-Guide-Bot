@@ -79,6 +79,17 @@ class OnsenResult(BaseModel):
             "output's Longitude line. Null if the tool output has no coordinates."
         ),
     )
+    # V2.5 RECOMMEND additions (ADDITIVE). Populated only by the recommend-mode
+    # analyze_onsen brain (agent/workflow/analyze.py); search mode and the legacy
+    # ReAct path leave them empty so neither output regresses.
+    pros: list[str] = Field(
+        default=[],
+        description="Grounded positives for this onsen (recommend mode only).",
+    )
+    cons: list[str] = Field(
+        default=[],
+        description="Grounded caveats for this onsen (recommend mode only).",
+    )
 
 class HotelResult(BaseModel):
     name: str = Field(description="Name in English")
@@ -123,6 +134,13 @@ class AgentResponse(BaseModel):
             "Translate name, hotelSpecial and location to English; keep the Japanese name in "
             "originalName. Leave any field null if the tool output does not provide it."
         )
+    )
+    # V2.5 RECOMMEND addition (ADDITIVE, optional). A top-level grounded pick
+    # produced by the recommend-mode analyze_onsen brain. None in search mode and
+    # on the legacy ReAct path, so neither output regresses.
+    recommendation: str | None = Field(
+        default=None,
+        description="Top-level recommendation across the returned onsen (recommend mode only).",
     )
 
 

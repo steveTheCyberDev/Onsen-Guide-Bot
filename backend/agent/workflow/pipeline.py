@@ -23,8 +23,13 @@ the ReAct baseline. ``run_workflow`` is NOT wired into the API yet (that's the
 
 import asyncio
 import logging
+import time
+
+from langchain_core.callbacks import UsageMetadataCallbackHandler
 
 from agent.agent import AgentResponse, HotelResult, OnsenResult
+from agent.workflow.analyze import analyze_onsen
+from agent.workflow.cost import summarize_usage
 from agent.workflow.intent import parse_intent
 from core.config import settings
 from services.chat.chat_service import get_history, save_message
@@ -32,6 +37,13 @@ from services.rakuten.rakuten_service import search_hotels
 from services.retrieval.retrieval_service import query_onsen_structured
 
 logger = logging.getLogger(__name__)
+
+# ask-mode placeholder reply. Layer 2 (semantic RAG over knowledge docs) is a
+# later V2.5 chunk; until then ask-mode returns this rather than a result set.
+_ASK_STUB_REPLY = (
+    "Onsen knowledge Q&A is coming soon — for now I can help you find or "
+    "recommend onsen."
+)
 
 # Keys on the query_onsen_structured records that OnsenResult accepts. The
 # records carry EXTRA keys (description, detail_url) that are NOT fields on
@@ -117,6 +129,33 @@ def _build_reply(prefecture: str | None, onsens: list[OnsenResult], hotels: list
     return reply
 
 
+def _log_cost(
+    session_id: str,
+    mode: str,
+    usage_cb: UsageMetadataCallbackHandler,
+    started: float,
+) -> None:
+    """Emit one structured cost/token line per /chat from the workflow.
+
+    Summarizes the request's token usage (captured by ``usage_cb`` across the
+    intent + analyze LLM calls) into models used, token totals, estimated USD
+    cost, and end-to-end latency.
+    """
+    summary = summarize_usage(usage_cb.usage_metadata)
+    latency_ms = int((time.monotonic() - started) * 1000)
+    logger.info(
+        "workflow_cost | session_id=%s | mode=%s | models=%s | input_tokens=%d | "
+        "output_tokens=%d | cost_usd=%.6f | latency_ms=%d",
+        session_id,
+        mode,
+        ",".join(summary["models"]) or "none",
+        summary["input_tokens"],
+        summary["output_tokens"],
+        summary["cost_usd"],
+        latency_ms,
+    )
+
+
 @_trace
 async def run_workflow(message: str, session_id: str) -> dict:
     """Run the deterministic V2 onsen workflow.
@@ -133,23 +172,49 @@ async def run_workflow(message: str, session_id: str) -> dict:
     """
     logger.info("run_workflow | session_id=%s", session_id)
 
-    # ① Intent — the only LLM call (small/cheap intent_model).
-    history = get_history(session_id)
-    intent = await parse_intent(message, history)
+    # One usage callback spans every LLM call in this request (intent + analyze).
+    # The intent/analyze calls use .with_structured_output, so usage is NOT on
+    # their return values — the callback is the reliable capture point. Cost
+    # accounting lives here in the workflow layer, keeping services/ LLM-agnostic.
+    usage_cb = UsageMetadataCallbackHandler()
+    callbacks = [usage_cb]
+    started = time.monotonic()
 
-    # ② Retrieval — pure Python, no LLM, no fabrication.
+    # ① Intent — small/cheap intent_model. Also classifies the mode.
+    history = get_history(session_id)
+    intent = await parse_intent(message, history, callbacks=callbacks)
+
+    recommendation: str | None = None
+
+    # ask-mode: STUB. Layer 2 semantic RAG over knowledge docs is a later chunk.
+    # TODO(V2.5 Layer 2): semantic RAG over knowledge docs — replace this stub
+    # with a retrieval+answer call over a separate knowledge collection.
+    if intent.mode == "ask":
+        reply = _ASK_STUB_REPLY
+        onsens: list[OnsenResult] = []
+        hotels: list[HotelResult] = []
+        _log_cost(session_id, intent.mode, usage_cb, started)
+        save_message(session_id, message, reply)
+        return AgentResponse(
+            reply=reply, onsens=onsens, hotels=hotels, recommendation=recommendation
+        ).model_dump()
+
+    # ② Retrieval — pure Python, no LLM, no fabrication (search + recommend).
     records = query_onsen_structured(intent.query, prefecture=intent.prefecture)
     onsens = _build_onsens(records)
     logger.info("run_workflow | retrieved onsens=%d", len(onsens))
 
-    # ⑤ Analyze seam — DEFERRED. Resequenced 2026-06-06 to the end of the
-    # pipeline; not implemented here. When the guide layer lands it fills in
-    # the per-onsen pros/cons + recommendation here, gated off by default.
-    # TODO(analyze_onsen): guide pros/cons layer, gated off by default — fills in here.
+    # ⑤ Analyze — RECOMMEND brain. Runs ONLY in recommend mode AND only when the
+    # analyze_enabled gate is on (A/B rollout seam). When off, recommend falls
+    # back to returning candidates without pros/cons — safe/dead until flipped.
+    if intent.mode == "recommend" and settings.analyze_enabled:
+        onsens, recommendation = await analyze_onsen(
+            intent.query, onsens, callbacks=callbacks
+        )
 
     # ③ Hotels — conditional passthrough. Use the first onsen that has BOTH
     # coordinates; if none has coords, skip (no per-request geocoding).
-    hotels: list[HotelResult] = []
+    hotels = []
     if intent.wants_hotels and onsens:
         coords = next(
             ((o.lat, o.lng) for o in onsens if o.lat is not None and o.lng is not None),
@@ -167,5 +232,8 @@ async def run_workflow(message: str, session_id: str) -> dict:
     # ④ Reply — template, no LLM.
     reply = _build_reply(intent.prefecture, onsens, hotels)
 
+    _log_cost(session_id, intent.mode, usage_cb, started)
     save_message(session_id, message, reply)
-    return AgentResponse(reply=reply, onsens=onsens, hotels=hotels).model_dump()
+    return AgentResponse(
+        reply=reply, onsens=onsens, hotels=hotels, recommendation=recommendation
+    ).model_dump()
