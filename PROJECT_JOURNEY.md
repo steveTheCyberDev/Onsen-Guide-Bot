@@ -190,7 +190,7 @@ Each addition is self-contained: a new external API is a new `services/{name}`, 
 
 ## Next direction — from workflow to *agent* (design captured 2026-06-10; not yet built)
 
-A design discussion on where the system goes next. Captured here as direction; **to be reconciled with current progress next session** (the `analyze_onsen` recommend brain + the LangSmith eval harness have since shipped, so some of the V2 roadmap above is now done).
+A design discussion on where the system goes next. **Reconciled with progress 2026-06-11:** the `analyze_onsen` recommend brain and the LangSmith eval harness have since shipped — `recommend` is now live in prod (`ANALYZE_ENABLED=true`) with the frontend rendering pros/cons + recommendation — so the V2 roadmap above is largely done. The one capability still unbuilt is the `ask`-mode knowledge base (the agreed next build). The autonomy-ladder discussion below sharpens *when* this graduates from workflow to agent.
 
 ### Target shape — KB feeds both `ask` and `recommend`
 
@@ -247,6 +247,27 @@ Match storage to **size + structure + access pattern** — don't reach for vecto
 ### When it actually *becomes* an agent
 Once `recommend` wants to consult **two retrieval sources** (onsen DB + KB) and an **enrichment tool** (ratings), and *which* it needs depends on the query, deciding that dynamically is precisely a **LangGraph agent's** job — and the cleanest reason the system graduates from workflow to agent. That's the V3 upgrade, arriving when query complexity (not the résumé) demands it.
 
+### The autonomy ladder — and the case that defines the agent boundary (discussion 2026-06-11)
+
+Working through routing examples surfaced the cleanest framing for the whole roadmap: the system is walking **up an autonomy ladder**, one rung at a time —
+
+> **rules → pipeline → workflow → agent → multi-agent**
+
+The discipline is to use the **least autonomy that solves the task**, and to climb a rung only when a *concrete* case can't be served by the rung below — not because "agent" sounds more advanced. This is also the honest narrative arc of the project: V1 jumped straight to a ReAct **agent** (the right bootstrapping move while query shapes were unknown); I then **measured** it was over-reach for known shapes and graduated *down* to a deterministic **workflow** (challenge #10, ~10× faster); and now I climb back *up* to an agent **only for the one case that genuinely needs it.** "I measured my agent was the wrong altitude and graduated down, then back up for a real reason" is a far stronger story than "I built an agent."
+
+**The case that defines the boundary** came from a real test query: *"I'd like a 3-day onsen trip — what's your suggestion?"* This is the first query where the tool sequence **isn't knowable up front** — how many onsen, which regions, hotels per night, transport between them, re-plan if one's full. That dynamic, looping, re-planning shape is the textbook definition of when autonomy earns its cost. Everything below it stays a workflow:
+
+| Query | Mode | Rung |
+|---|---|---|
+| "Onsen in Shizuoka" | **search** | workflow (deterministic list) |
+| "Somewhere relaxing with outdoor baths" | **recommend** | workflow (candidates → analyze) |
+| "Do they allow tattoos? What do I bring?" | **ask** | workflow (semantic RAG over KB) |
+| **"3-day onsen trip, suggestions?"** | recommend (partial) | **agent** — a real itinerary (sequencing, transport, re-planning) is V3 |
+
+So `search` / `recommend` / `ask` are all correctly **pre-wired workflows**; the trip-planner is the concrete scenario that becomes the **V3 agent** (and then multi-agent for "compare these regions and plan"). The agent comes back when *query complexity* demands it — not the résumé.
+
+**Where slot-filling fits (it's not a separate agent).** Slot-filling — asking "Which prefecture?" when a required slot is missing — is an **upgrade to the router**, not a new component. The router (`parse_intent`) already *extracts* slots (prefecture, query, wants_hotels); slot-filling just adds a **gate + follow-up branch**: *required slot missing → ask → end the turn → re-enter on the next message.* Its real cost is **multi-turn state** (remember the pending question, merge the reply), which is why it's parked behind the in-memory-history limitation. It's orthogonal to `ask` mode — `ask` is a *destination* the router branches to; slot-filling is *how the router elicits* before branching.
+
 ### Recommended build sequence
 1. **Knowledge base / `ask` mode** (Layer 2) — separate vector collection for prose + a small spring-type→benefit table for reasoning. *(workflow)*
 2. **`ratings_service` + ingest-time enrichment** (Google Places) — grounds pros/cons in real ratings; pair with an **LLM-as-judge evaluator** so pros/cons groundedness becomes *measurable* (and the gpt-4o → gpt-4o-mini switch can be re-decided on data). *(workflow)*
@@ -256,4 +277,4 @@ Once `recommend` wants to consult **two retrieval sources** (onsen DB + KB) and 
 
 ## Status
 
-V1 is **live in production and feature-complete** for its scope. V2's performance headline has since shipped and is **live in prod**: ingest-time geocoding plus the ReAct→workflow redesign (challenge #10) — ~10× faster and now the default `/chat` engine, flag-gated for rollback. Next in V2: the `analyze_onsen` "guide" judgment layer and the V2.5 knowledge-base / recommendation work.
+V1 is **live in production and feature-complete** for its scope. V2's performance headline shipped and is **live in prod**: ingest-time geocoding plus the ReAct→workflow redesign (challenge #10) — ~10× faster and now the default `/chat` engine, flag-gated for rollback. V2.5's **3-mode router** and the **`analyze_onsen` "guide" judgment layer** have also shipped and are **live** (`recommend` enabled via `ANALYZE_ENABLED=true`, frontend renders pros/cons + recommendation). The one capability left in V2.5 is the **`ask`-mode knowledge base** — the agreed next build. The **trip-planning agent** is the deliberately-deferred V3 boundary (see the autonomy-ladder discussion above).
