@@ -20,7 +20,13 @@
 #
 # ChromaDB persistence — the image does NOT bake in chroma_db/.
 # Railway mounts a persistent disk at /app/chroma_db at runtime.
-# Run ingest.py once as a one-off job after first deploy to populate it.
+# After a deploy that changes data, run the one-off ingest job to populate it:
+#   python -m scripts.ingest_all   (onsen regions + Layer 2 knowledge base)
+# Both sub-ingests are idempotent (upsert). The KB docs ship at
+# /app/data/knowledge (via COPY data/ + DATA_PATH below) and settings.kb_data_dir
+# resolves there automatically, so no extra env var is required.
+# IMPORTANT: run this BEFORE flipping ASK_ENABLED, or ask mode answers against an
+# empty KB collection and always returns the "I don't know" fallback.
 # ─────────────────────────────────────────────────────────────────────────────
 
 FROM python:3.12-slim
@@ -55,8 +61,8 @@ COPY agent/        agent/
 COPY services/     services/
 COPY vectorstore/  vectorstore/
 COPY core/         core/
-# scripts/ + data/ are included so the same image can run ingest.py
-# as a one-off Railway job without needing a separate image.
+# scripts/ + data/ are included so the same image can run the ingest jobs
+# (scripts.ingest_all) as a one-off Railway job without needing a separate image.
 COPY scripts/      scripts/
 COPY data/         data/
 
