@@ -49,40 +49,46 @@ retrieval (EN query ↔ EN chunk) beats cross-lingual.
 
 ---
 
-## KB document set (Step A authors these)
+## KB document set (Step A — DONE, authored + sourced on PR #50)
 
-Propose `backend/data/knowledge/*.md` — a sibling of the onsen JSONL data, so the
-existing `data_dir` env-split (`config.py:130-141`) and the Railway `COPY data/
-data/` layout cover it for free. One concern per file (clean `doc_type`
-provenance, easy to cite):
+Live under `backend/data/knowledge/*.md` — a sibling of the onsen JSONL data, so
+the existing `data_dir` env-split (`config.py:130-141`) and the Railway `COPY
+data/ data/` layout cover it for free. One concern per file (clean `doc_type`
+provenance, easy to cite). **Nine docs** authored, each verified against
+authoritative sources (JNTO, Japan Onsen Association, Japan Secret Hot Springs
+Association, JAL, Japan-Guide, etc.) with per-section inline `**Source:**` lines:
 
 | File | `doc_type` | Scope |
 |---|---|---|
 | `etiquette.md` | `etiquette` | Wash-before-entering, no swimwear, towel handling, quiet/no-photos, no diving, hydration. |
 | `tattoo_policy.md` | `tattoo` | General tattoo stance, tattoo-friendly vs cover-up, private/family baths (kashikiri) as a workaround. NB: general guidance only — never per-onsen policy (a high-stakes field, kept `unknown` per the V2.5 reliability caveat). |
-| `bathing_steps.md` | `bathing` | Step-by-step first-timer flow: undress, rinse (kakeyu), soak, rest, repeat. |
-| `spring_types.md` | `spring_type` | Per spring type: what it is + commonly-cited benefits. Keys MUST match the English `spring_type` labels in onsen metadata (see Step D). |
+| `bathing_steps.md` | `bathing` | Step-by-step first-timer flow: undress, rinse (kakeyu), soak, rest, repeat; temperature + health cautions. |
+| `spring_types.md` | `spring_type` | Per spring type: what it is + commonly-cited benefits, plus general indications/contraindications. Keys MUST match the English `spring_type` labels in onsen metadata (see Step D). |
 | `ryokan_guide.md` | `ryokan` | Staying at a ryokan: yukata, tatami, kaiseki, in-room vs public baths, check-in customs. |
-| `seasonal_guide.md` | `seasonal` | Best seasons, rotenburo in winter/snow, summer considerations, regional notes. |
-| `what_to_bring.md` | `prep` | Towels (small + large), toiletries, hair tie, cash, what onsen provide. |
+| `seasonal_guide.md` | `seasonal` | Best seasons, seasonal baths (hanami-yu/yuzu-yu…), rotenburo in winter/snow, regional notes, crowds/cost. |
+| `what_to_bring.md` | `prep` | Towels (small + large), toiletries, hair tie, cash, what onsen/ryokan provide. |
+| `what_is_onsen.md` | `about` | Legal definition (25°C+/19 minerals), natural vs man-made (tennen/jinko), onsen vs sento, kakenagashi vs recirculated, yutoji. |
+| `after_bathing.md` | `after_bath` | Don't rinse off minerals, rest + rehydrate, post-bath treats (fruit/coffee milk, onsen tamago). |
 
-Source authoring: Claude drafts the **English** prose (the bot is English-facing).
-Where a Japanese source phrase is worth preserving for citation, carry it as
-`source_ja` metadata on that chunk; if a doc is authored directly in English, set
-`source_lang="en"` and leave `source_ja` empty. The JA→EN translate machinery is
-wired and available, but for Claude-drafted English docs there is nothing to
-translate — the translate step is a no-op pass-through for `source_lang="en"`
-docs and only fires for any future JA-sourced doc. This keeps the rule satisfied
-without inventing Japanese to translate back.
+(`drinking_onsen.md` 飲泉 was considered and deferred.)
+
+Source authoring (as built): docs are drafted/verified in **English** (the bot is
+English-facing) against authoritative public sources, with a `sources:` list in
+front-matter and per-section `**Source:**` citation lines so provenance travels
+with each RAG chunk. If a future doc is authored from a Japanese source, set
+`source_lang` accordingly and the JA→EN translate-at-ingest step applies; for the
+current English docs it is a no-op pass-through. Sections still lacking a
+`**Source:**` line are the visible signal of an unverified claim.
 
 ---
 
-## Step A — author the KB markdown docs (no code) — small PR
+## Step A — author the KB markdown docs (no code) — DONE (PR #50)
 
-Add the seven `.md` files above under `backend/data/knowledge/`. Each file starts
-with a tiny front-matter the ingest parser reads (`doc_type`, `source_lang`,
-optional `source_ja`, optional `source_url`), then English prose under `##`
-headings. No app wiring yet — pure content, reviewable on its own.
+The nine `.md` files above are under `backend/data/knowledge/`. Each file starts
+with front-matter the ingest parser reads (`doc_type`, `source_lang`, optional
+`source_ja`, and a `sources:` list of authoritative URLs), then English prose
+under `##` headings with per-section `**Source:**` citation lines. No app wiring
+yet — pure content, reviewable on its own.
 
 **Tests that will break:** none (content-only).
 
@@ -229,7 +235,11 @@ keeps each ingester single-purpose (matching the existing `ingest.py` /
    prompt-stuffing is fine until the KB outgrows cheap context).
 4. **Metadata per chunk:** `doc_type`, `source_filename` (the `.md` name),
    `heading`, `source_lang`, `source_ja` (Chroma rejects `None` — store `""` when
-   absent, mirroring `build_metadata` at `ingest.py:202-215`), `chunk_index`.
+   absent, mirroring `build_metadata` at `ingest.py:202-215`), `chunk_index`, and
+   `sources` (join the front-matter `sources:` list into a single string — Chroma
+   metadata values must be scalars, not lists). Note the prose already carries
+   per-section `**Source:**` lines inline, so the citation also travels inside the
+   chunk text and can be surfaced in the answer.
 5. **Embed the English chunk text**; `collection.upsert(ids=[f"{filename}#{chunk_index}"],
    documents=[english_text], metadatas=[meta])` into `get_kb_collection()`.
    Deterministic ids → re-ingest is idempotent (upsert), like the onsen path.
