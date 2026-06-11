@@ -137,6 +137,10 @@ async def answer_question(query: str, callbacks: list | None = None) -> str:
         run_config["callbacks"] = callbacks
 
     result = await _llm.ainvoke(messages, config=run_config)
-    answer = result.content if hasattr(result, "content") else str(result)
+    content = result.content if hasattr(result, "content") else result
+    # Coerce to str (content can be non-string for some model outputs) and strip:
+    # the no-info fallback must match NO_INFO_REPLY exactly, and a stray
+    # trailing newline would otherwise flap the eval's exact-equality check.
+    answer = (content if isinstance(content, str) else str(content)).strip()
     logger.info("answer_question | answered from chunks=%d", len(records))
     return answer
