@@ -412,3 +412,133 @@ def test_structured_forwards_n_results_to_collection():
     # Assert
     _, kwargs = collection.query.call_args
     assert kwargs["n_results"] == 7
+
+
+# ---------------------------------------------------------------------------
+# query_knowledge — Layer 2 KB retrieval (ask mode)
+# ---------------------------------------------------------------------------
+
+
+def _fake_kb_collection(documents, metadatas, distances):
+    """Fake KB collection: .query returns docs/metas/distances (the include shape
+    query_knowledge requests). Mirrors _fake_collection but with distances."""
+    collection = MagicMock()
+    collection.query.return_value = {
+        "documents": [documents],
+        "metadatas": [metadatas],
+        "distances": [distances],
+    }
+    return collection
+
+
+def test_query_knowledge_maps_all_fields_from_chroma():
+    # Arrange — a fully-populated KB chunk exercises every mapped key.
+    docs = ["Wash thoroughly before entering the communal bath."]
+    metas = [
+        {
+            "doc_type": "etiquette",
+            "source_filename": "etiquette.md",
+            "heading": "Wash before entering",
+            "source_ja": "入浴前に体を洗う",
+            "source_lang": "en",
+            "sources": "https://jnto.example/etiquette",
+        }
+    ]
+    dists = [0.12]
+    # Act
+    with patch.object(retrieval_service, "get_kb_collection", return_value=_fake_kb_collection(docs, metas, dists)):
+        records = retrieval_service.query_knowledge("do I wash first?", n_results=4)
+    # Assert
+    assert records == [
+        {
+            "text": "Wash thoroughly before entering the communal bath.",
+            "doc_type": "etiquette",
+            "source_filename": "etiquette.md",
+            "heading": "Wash before entering",
+            "source_ja": "入浴前に体を洗う",
+            "source_lang": "en",
+            "sources": "https://jnto.example/etiquette",
+            "distance": 0.12,
+        }
+    ]
+
+
+def test_query_knowledge_defaults_missing_metadata_to_empty_strings():
+    # Arrange — KB isn't ingested yet, so be robust to absent metadata keys.
+    docs = ["Some prose."]
+    metas = [{}]
+    dists = [0.2]
+    # Act
+    with patch.object(retrieval_service, "get_kb_collection", return_value=_fake_kb_collection(docs, metas, dists)):
+        records = retrieval_service.query_knowledge("anything", n_results=4)
+    # Assert — every metadata field defaults to "", text + distance still carried.
+    assert records[0] == {
+        "text": "Some prose.",
+        "doc_type": "",
+        "source_filename": "",
+        "heading": "",
+        "source_ja": "",
+        "source_lang": "",
+        "sources": "",
+        "distance": 0.2,
+    }
+
+
+def test_query_knowledge_passes_query_n_results_and_include():
+    # Arrange
+    collection = _fake_kb_collection([], [], [])
+    # Act
+    with patch.object(retrieval_service, "get_kb_collection", return_value=collection):
+        retrieval_service.query_knowledge("etiquette", n_results=4)
+    # Assert — query text, top-k, and the include shape are forwarded.
+    _, kwargs = collection.query.call_args
+    assert kwargs["query_texts"] == ["etiquette"]
+    assert kwargs["n_results"] == 4
+    assert kwargs["include"] == ["documents", "metadatas", "distances"]
+
+
+def test_query_knowledge_drops_chunks_over_max_distance():
+    # Arrange — one close chunk, one beyond the ceiling.
+    docs = ["close chunk", "far chunk"]
+    metas = [{"doc_type": "etiquette"}, {"doc_type": "etiquette"}]
+    dists = [0.30, 0.80]
+    # Act
+    with patch.object(retrieval_service, "get_kb_collection", return_value=_fake_kb_collection(docs, metas, dists)):
+        records = retrieval_service.query_knowledge("q", n_results=4, max_distance=0.55)
+    # Assert — only the close chunk survives.
+    assert len(records) == 1
+    assert records[0]["text"] == "close chunk"
+    assert records[0]["distance"] == 0.30
+
+
+def test_query_knowledge_keeps_all_chunks_when_max_distance_none():
+    # Arrange — no threshold means no filtering, even for far chunks.
+    docs = ["a", "b"]
+    metas = [{}, {}]
+    dists = [0.9, 0.95]
+    # Act
+    with patch.object(retrieval_service, "get_kb_collection", return_value=_fake_kb_collection(docs, metas, dists)):
+        records = retrieval_service.query_knowledge("q", n_results=4, max_distance=None)
+    # Assert
+    assert len(records) == 2
+
+
+def test_query_knowledge_returns_empty_when_no_results():
+    # Arrange — empty collection → [].
+    # Act
+    with patch.object(retrieval_service, "get_kb_collection", return_value=_fake_kb_collection([], [], [])):
+        records = retrieval_service.query_knowledge("nothing", n_results=4)
+    # Assert
+    assert records == []
+
+
+def test_query_knowledge_returns_empty_when_all_filtered_out():
+    # Arrange — every chunk is beyond the ceiling → all dropped → "I don't know".
+    docs = ["far one", "far two"]
+    metas = [{}, {}]
+    dists = [0.7, 0.9]
+    # Act
+    with patch.object(retrieval_service, "get_kb_collection", return_value=_fake_kb_collection(docs, metas, dists)):
+        records = retrieval_service.query_knowledge("q", n_results=4, max_distance=0.55)
+    # Assert
+    assert records == []
