@@ -17,7 +17,7 @@ from core.config import settings
 def _reset_store_singletons():
     """Clear the module-level client/collection caches between assertions."""
     store._client = None
-    store._collection = None
+    store._collections = {}
 
 
 def test_get_client_opens_settings_chroma_path():

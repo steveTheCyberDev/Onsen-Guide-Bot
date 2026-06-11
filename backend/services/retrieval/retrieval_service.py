@@ -1,4 +1,4 @@
-from vectorstore.store import get_collection
+from vectorstore.store import get_collection, get_kb_collection
 
 
 def query_onsen(query: str, n_results: int = 20, prefecture: str | None = None) -> str:
@@ -102,6 +102,62 @@ def query_onsen_structured(
                 "detail_url": meta.get("detail_url"),
                 "lat": lat,
                 "lng": lng,
+            }
+        )
+    return records
+
+
+def query_knowledge(
+    query: str, n_results: int, max_distance: float | None = None
+) -> list[dict]:
+    """Semantic search over the Layer 2 KB collection (etiquette, bathing, etc.).
+
+    Sibling of query_onsen_structured, but hits the SEPARATE KB collection
+    (get_kb_collection) so onsen and KB never cross-contaminate. Stays
+    LangChain-agnostic (no agent/ imports). Drives ask-mode's grounded answer
+    and its "I don't know" fallback via the distance threshold.
+
+    Args:
+        query: Free-text question (e.g. "do I wash before entering the bath?").
+        n_results: Maximum number of KB chunks to retrieve.
+        max_distance: Optional cosine-DISTANCE ceiling (Chroma returns distance,
+            lower = closer). Chunks with distance > max_distance are dropped.
+            When None, no distance filtering is applied.
+
+    Returns:
+        A list of structured chunk records, each shaped:
+        {text, doc_type, source_filename, heading, source_ja, source_lang,
+        sources, distance}. Metadata may be absent (the KB isn't ingested yet),
+        so missing keys default to "". Empty or all-filtered → [].
+    """
+    collection = get_kb_collection()
+    results = collection.query(
+        query_texts=[query],
+        n_results=n_results,
+        include=["documents", "metadatas", "distances"],
+    )
+    docs = results.get("documents", [[]])[0]
+    metadatas = results.get("metadatas", [[]])[0]
+    distances = results.get("distances", [[]])[0]
+
+    records: list[dict] = []
+    for doc, meta, distance in zip(docs, metadatas, distances):
+        # Drop chunks weaker than the threshold so a weak/empty match falls
+        # through to ask-mode's "I don't have that information" path rather than
+        # grounding an answer on an irrelevant passage.
+        if max_distance is not None and distance is not None and distance > max_distance:
+            continue
+        meta = meta or {}
+        records.append(
+            {
+                "text": doc,
+                "doc_type": meta.get("doc_type", ""),
+                "source_filename": meta.get("source_filename", ""),
+                "heading": meta.get("heading", ""),
+                "source_ja": meta.get("source_ja", ""),
+                "source_lang": meta.get("source_lang", ""),
+                "sources": meta.get("sources", ""),
+                "distance": distance,
             }
         )
     return records
