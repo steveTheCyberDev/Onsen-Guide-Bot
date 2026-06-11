@@ -167,6 +167,17 @@ _EXAMPLES: list[dict] = [
         "wants_hotels": False,
     },
     {
+        # No-data ask: a question the KB cannot answer (no wifi/password content),
+        # so the grounded ask path must return the no-info fallback rather than a
+        # fabricated answer. `expect_no_info` flags it for the structure evaluator.
+        "message": "What's the wifi password at the onsen?",
+        "expected_mode": "ask",
+        "prefecture": None,
+        "has_data": False,
+        "wants_hotels": False,
+        "expect_no_info": True,
+    },
+    {
         "message": "Find onsen in Hokkaido",
         "expected_mode": "no-data",
         "prefecture": "Hokkaido",
@@ -232,6 +243,9 @@ def get_or_create_dataset(client, allowed: dict[str, set[str]]):
             "prefecture": ex["prefecture"],
             "has_data": ex["has_data"],
             "wants_hotels": ex["wants_hotels"],
+            # Optional flag (ask-mode only): the answer should be the no-info
+            # fallback because the KB cannot answer the question. Defaults False.
+            "expect_no_info": ex.get("expect_no_info", False),
         }
         for ex in examples
     ]
@@ -358,7 +372,9 @@ def structure(outputs: dict, reference_outputs: dict) -> dict:
 
     recommend ⇒ recommendation non-null AND ≥1 onsen has non-empty pros.
     search    ⇒ recommendation is None AND every onsen has empty pros & cons.
-    ask       ⇒ onsens empty AND reply is the ask stub.
+    ask       ⇒ onsens empty AND recommendation None AND reply non-empty. When the
+                harness runs with ask_enabled ON (real RAG answer), reply must ALSO
+                differ from the stub (the stub means the answer node never ran).
     no-data   ⇒ onsens empty.
     """
     mode = reference_outputs.get("expected_mode")
@@ -375,7 +391,19 @@ def structure(outputs: dict, reference_outputs: dict) -> dict:
         )
         ok = recommendation is None and no_proscons
     elif mode == "ask":
-        ok = not onsens and reply == _ask_stub_reply()
+        # The ask answer rides in `reply` (empty onsens, no recommendation). When
+        # ask_enabled is ON the reply is a real grounded answer (or the no-info
+        # fallback), so it must be non-empty AND not the "coming soon" stub — the
+        # stub showing through here means the answer node never ran.
+        ok = not onsens and outputs.get("recommendation") is None and bool(reply)
+        from core.config import settings
+
+        if settings.ask_enabled:
+            ok = ok and reply != _ask_stub_reply()
+            # A KB-unanswerable question must land on the exact no-info fallback,
+            # never a fabricated answer.
+            if reference_outputs.get("expect_no_info"):
+                ok = ok and reply == _no_info_reply()
     elif mode == "no-data":
         ok = not onsens
     else:
@@ -389,6 +417,19 @@ def _ask_stub_reply() -> str:
     from agent.workflow import pipeline
 
     return pipeline._ASK_STUB_REPLY
+
+
+def _no_info_reply() -> str:
+    """The ask-mode no-info fallback, read from the ask node so they never drift."""
+    from agent.workflow.ask import NO_INFO_REPLY
+
+    return NO_INFO_REPLY
+
+
+# TODO(LLM-judge grounding for ask): add an evaluator that scores whether the ask
+# answer's claims are supported by the retrieved KB chunks (the prose analogue of
+# the onsen `grounding` evaluator). Deferred to keep this PR tight; the strict
+# grounding prompt + the no-data fallback example are the interim guard.
 
 
 def cost_budget(outputs: dict, reference_outputs: dict) -> dict:
@@ -454,7 +495,13 @@ def run_evaluation() -> int:
     from core.config import settings
 
     prior_analyze_enabled = settings.analyze_enabled
+    # ask mode also needs its gate ON so ask examples exercise the real
+    # answer_question RAG node (not the stub). Flipped here and RESTORED in the
+    # same finally as analyze_enabled, so a long-lived process never leaks either
+    # global even if evaluate() raises.
+    prior_ask_enabled = settings.ask_enabled
     settings.analyze_enabled = True
+    settings.ask_enabled = True
     try:
         # Tag the experiment with the analyze model so two runs that differ only
         # by ANALYZE_MODEL (the model-comparison use case) are distinguishable in
@@ -475,6 +522,7 @@ def run_evaluation() -> int:
         )
     finally:
         settings.analyze_enabled = prior_analyze_enabled
+        settings.ask_enabled = prior_ask_enabled
 
     return _report(results)
 
