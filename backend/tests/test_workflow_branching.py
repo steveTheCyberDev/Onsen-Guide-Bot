@@ -171,7 +171,9 @@ async def test_ask_mode_gate_on_calls_answer_question_and_returns_its_reply():
             result = await pipeline.run_workflow("do onsen allow tattoos?", "s1")
     # Assert — real answer in reply; empty onsens/hotels; recommendation None.
     answer_mock.assert_awaited_once()
-    assert answer_mock.await_args.args[0] == "tattoo policy"  # the Intent.query
+    # Ask retrieval uses the ORIGINAL message, not the lossy/non-deterministic
+    # Intent.query reformulation.
+    assert answer_mock.await_args.args[0] == "do onsen allow tattoos?"
     assert result["reply"] == "General tattoo guidance: ..."
     assert result["reply"] != pipeline._ASK_STUB_REPLY
     assert result["onsens"] == []

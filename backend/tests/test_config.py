@@ -30,7 +30,7 @@ def test_ask_top_k_default():
 
 
 def test_ask_max_distance_default():
-    assert settings.ask_max_distance == 0.55
+    assert settings.ask_max_distance == 0.85
 
 
 def test_ask_model_default_empty_for_callsite_fallback():

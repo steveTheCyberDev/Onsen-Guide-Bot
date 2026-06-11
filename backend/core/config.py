@@ -77,10 +77,15 @@ class Settings(BaseSettings):
     ask_enabled: bool = False
     # Top-k KB chunks retrieved for an ask answer. Override via ASK_TOP_K.
     ask_top_k: int = 4
-    # Cosine-DISTANCE ceiling for KB chunks (Chroma returns distance, lower = closer).
-    # Chunks above this are dropped; if nothing survives → the "I don't know" path.
-    # Override via ASK_MAX_DISTANCE.
-    ask_max_distance: float = 0.55
+    # DISTANCE ceiling for KB chunks (Chroma returns distance, lower = closer).
+    # A LOOSE coarse guard, not the primary relevance gate: measured in-KB vs
+    # off-KB distances overlap (a real "can I wear a swimsuit?" ~0.65 sits above an
+    # off-topic "wifi password?" ~0.47), so distance alone can't separate them.
+    # The grounding PROMPT is the real no-fabrication guard — it returns the "I
+    # don't know" fallback when the retrieved chunks don't answer the question.
+    # Keep this high enough to admit legit-but-distant questions; if nothing
+    # survives at all → the deterministic no-info path. Override via ASK_MAX_DISTANCE.
+    ask_max_distance: float = 0.85
     # LLM that writes the grounded ask answer. Reuse intent_model by DEFAULT (cheap;
     # the answer is short and fully grounded), env-overridable to a stronger model.
     # "" → fall back to settings.intent_model at the call site. Override via ASK_MODEL.
