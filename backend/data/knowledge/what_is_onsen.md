@@ -4,12 +4,23 @@ source_lang: en
 source_ja: ""
 sources:
   - "Japan Secret Hot Springs Association (日本秘湯を守る会) — onsen guide (overview): https://www.hitou.or.jp/static/spa_guide_main"
+  - "JAL (Japan Airlines) — Top Etiquette Tips When Visiting Onsens of Japan: https://www.jal.co.jp/cn/en/guide-to-japan/plan-your-trip/tips/things-to-know-before-onsen-visit.html"
 ---
 
 ## What counts as an onsen
-Under Japanese law, water is defined as an onsen (hot spring) if it meets either of two conditions: it emerges from the ground at 25°C or higher, or it contains specified mineral components in regulated amounts. This means a spring can legally be an "onsen" even if it is not hot, as long as it has the required mineral content. The definition is about temperature or chemistry at the source, not about how warm the bath ultimately feels.
+Under Japanese law, water is defined as an onsen (hot spring) if it meets either of two conditions: it emerges from the ground at 25°C or higher, or it contains at least one of nineteen officially designated mineral components (such as lithium, sulfur, sodium chloride, or iron) in regulated amounts. This means a spring can legally be an "onsen" even if it is not hot, as long as it has the required mineral content. The definition is about temperature or chemistry at the source, not about how warm the bath ultimately feels.
 
-**Source:** Japan Secret Hot Springs Association — https://www.hitou.or.jp/static/spa_guide_main
+**Source:** Japan Secret Hot Springs Association — https://www.hitou.or.jp/static/spa_guide_main ; JAL — https://www.jal.co.jp/cn/en/guide-to-japan/plan-your-trip/tips/things-to-know-before-onsen-visit.html
+
+## Natural and man-made onsen (tennen and jinko)
+When a spring meets the legal conditions with naturally, geothermally heated water, it is called a tennen onsen (天然温泉), or "natural" onsen. A jinko onsen (人工温泉), or "man-made" onsen, meets the mineral or temperature conditions artificially rather than from a natural geothermal source. Both can offer a genuine onsen experience; the distinction is about how the qualifying water is produced.
+
+**Source:** JAL — https://www.jal.co.jp/cn/en/guide-to-japan/plan-your-trip/tips/things-to-know-before-onsen-visit.html
+
+## Onsen vs. sento
+An onsen is not the same as a sento. A sento is a public Japanese bathhouse that uses heated tap water rather than mineral-rich spring water, so it does not meet the onsen definition. Sento are especially common in major cities and are a relaxed, local place to bathe, while onsen are prized for their natural mineral waters.
+
+**Source:** JAL — https://www.jal.co.jp/cn/en/guide-to-japan/plan-your-trip/tips/things-to-know-before-onsen-visit.html
 
 ## Volcanic and non-volcanic springs
 Japan has an abundance of hot springs because of its volcanic geography. Onsen fall into two broad groups by origin: volcanic springs, heated by volcanic activity underground, and non-volcanic springs, which draw on sources such as deep groundwater or ancient "fossil" seawater trapped underground. Both can qualify as onsen under the legal definition above.
