@@ -241,7 +241,12 @@ async def run_workflow(message: str, session_id: str) -> dict:
     # response shape is identical: empty onsens/hotels, recommendation=None.
     if intent.mode == "ask":
         if settings.ask_enabled:
-            reply = await answer_question(intent.query, callbacks=callbacks)
+            # Retrieve with the ORIGINAL message, not intent.query: parse_intent's
+            # reformulation is lossy and non-deterministic for prose Q&A (it was
+            # designed to extract structured SEARCH terms), and a weaker phrasing
+            # can push every KB match past the distance threshold. The raw question
+            # is the most reliable semantic-RAG signal.
+            reply = await answer_question(message, callbacks=callbacks)
         else:
             reply = _ASK_STUB_REPLY
         onsens: list[OnsenResult] = []
