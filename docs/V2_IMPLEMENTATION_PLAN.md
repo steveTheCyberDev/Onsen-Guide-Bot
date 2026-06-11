@@ -242,4 +242,4 @@ the serialization cost + fabrication). So:
 ## First concrete builds
 1. ✅ **Router** — `parse_intent` returns `mode: search|recommend|ask`; pipeline branches on it. **Shipped.**
 2. ✅ **Analytic agent** — `analyze_onsen` over candidates -> recommendation + pros/cons (single LLM call, compact projection). **Shipped & enabled in prod.**
-3. ⬜ **Layer 2 knowledge** — author the markdown docs (Claude-drafted), ingest into a SEPARATE collection, wire the **ask** branch (semantic RAG). **← NEXT.**
+3. ⬜ **Layer 2 knowledge** — author the markdown docs (Claude-drafted), ingest into a SEPARATE collection, wire the **ask** branch (semantic RAG). **← NEXT.** Build-ready plan: **[`ask-mode-plan.md`](ask-mode-plan.md)** (Steps A–H, JA-source→translate-at-ingest→embed-English approach, gated behind `ASK_ENABLED`).
