@@ -4,6 +4,7 @@ source_lang: en
 source_ja: ""
 sources:
   - "Japan National Tourism Organization (JNTO) — Onsen Etiquette: https://www.japan.travel/en/ph/story/onsen-etiquette/"
+  - "JAL (Japan Airlines) — Top Etiquette Tips When Visiting Onsens of Japan: https://www.jal.co.jp/cn/en/guide-to-japan/plan-your-trip/tips/things-to-know-before-onsen-visit.html"
 ---
 
 ## Before you enter the bath
@@ -17,12 +18,16 @@ The communal bath is for relaxing, not for cleaning — "shower first, dip later
 **Source:** Japan National Tourism Organization (JNTO) — https://www.japan.travel/en/ph/story/onsen-etiquette/
 
 ## Conduct in the bathing area
-Keep your small towel out of the water — most people fold it and balance it on their head, or set it on the side of the bath; never leave towels lying by the showers or let them touch the spring water. Do not swim, splash, dive, or put your head underwater. Enter the bath quietly and keep conversation low; onsen are calm, restful spaces, so avoid behaviour that would disturb others. Do not wring your towel or wash your body inside the bath. Walk slowly, as wet stone and tile are slippery.
+Keep your small towel out of the water — most people fold it and balance it on their head, or set it on the side of the bath; never leave towels lying by the showers or let them touch the spring water. Do not swim, splash, dive, or put your head underwater. You may chat quietly with companions, but keep the noise down and avoid behaviour that would disturb others — onsen are calm, restful spaces. Do not wring your towel or wash your body inside the bath. Walk slowly, as some onsen minerals make the floor slippery. If a facility has several baths of different mineral compositions, you are welcome to try them; you do not need to wash again between baths.
 
-**Source:** Japan National Tourism Organization (JNTO) — https://www.japan.travel/en/ph/story/onsen-etiquette/
+**Source:** Japan National Tourism Organization (JNTO) — https://www.japan.travel/en/ph/story/onsen-etiquette/ ; JAL — https://www.jal.co.jp/cn/en/guide-to-japan/plan-your-trip/tips/things-to-know-before-onsen-visit.html
 
 ## Privacy and phones
-Photography is not permitted in the changing room or bathing area, and phones should be left in your locker. This protects everyone's privacy. If you want photos, take them in permitted public areas only, such as the entrance or lounge.
+Photography is not allowed in most onsen, in either the changing room or the bathing area, and phones should be left in your locker. This protects everyone's privacy. If you want photos, take them only in permitted public areas, such as the entrance or lounge.
+
+**Source:** JAL — https://www.jal.co.jp/cn/en/guide-to-japan/plan-your-trip/tips/things-to-know-before-onsen-visit.html
 
 ## Hygiene and consideration
-Do not let your hair, towel, or anything soapy enter the water. If you sweat heavily in a sauna, rinse before re-entering the bath. Drink water before and after bathing to stay hydrated, and rest if you feel light-headed from the heat. Leave the space as clean as you found it for the next bather.
+Drink plenty of water before and after bathing to stay hydrated, and afterwards favour water, tea, or a sports drink over alcohol, which dehydrates you further. It is best not to eat right before bathing. Keep each soak fairly short, as staying in too long can leave you dehydrated, and as a general guide do not bathe more than about three times a day. Do not let your hair, towel, or anything soapy enter the water, and if you sweat heavily in a sauna, rinse before re-entering the bath. Rest if you feel light-headed from the heat, and leave the space as clean as you found it for the next bather.
+
+**Source:** JAL — https://www.jal.co.jp/cn/en/guide-to-japan/plan-your-trip/tips/things-to-know-before-onsen-visit.html
