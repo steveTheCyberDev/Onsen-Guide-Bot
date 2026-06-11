@@ -278,7 +278,8 @@ async def answer_question(query: str, callbacks: list | None = None) -> str:
 ```python
 if intent.mode == "ask":
     if settings.ask_enabled:
-        reply = await answer_question(intent.query, callbacks=callbacks)
+        # retrieve with the ORIGINAL message, not intent.query (see fix below)
+        reply = await answer_question(message, callbacks=callbacks)
     else:
         reply = _ASK_STUB_REPLY        # keep the safe stub when gate is off
     onsens, hotels = [], []
@@ -351,22 +352,23 @@ Contract:
 
 ## Rollout
 
-Mirrors the `analyze_enabled` rollout (`V2_IMPLEMENTATION_PLAN.md`):
+Mirrors the `analyze_enabled` rollout (`V2_IMPLEMENTATION_PLAN.md`). **Steps A–H +
+the retrieval fix are merged to `develop`; local ingest/smoke/eval all green.**
 1. Land Steps A–H behind `ask_enabled=False` (default). Prod behavior unchanged —
-   ask still returns the stub. Dead/safe until flipped.
-2. **Ingest the KB** into the new collection: run `scripts/ingest_knowledge.py`
-   locally (writes to `settings.chroma_path` via `get_kb_collection()`), and **on
-   Railway re-run the ingest gate** so the `onsen_knowledge` collection exists in
-   the prod Chroma volume. **Railway re-ingest gate consideration:** the prod
-   Chroma volume is populated by the deploy-time ingest; adding a second
-   collection means the ingest gate must also invoke `ingest_knowledge.py` (and
-   `KB_DATA_PATH=/app/data/knowledge` must be set, or the `kb_data_dir` default
-   resolves it). Without this, flipping `ASK_ENABLED=true` against a Chroma volume
-   that has no `onsen_knowledge` collection yields an empty collection → every ask
-   hits the "I don't know" fallback. So: **ingest first, flip second.**
+   ask still returns the stub. Dead/safe until flipped. ✅ done.
+2. **Ingest the KB.** The deploy ingest job is now a single combined entrypoint —
+   **`python -m scripts.ingest_all`** — which runs the onsen regions ingest
+   (`ingest_regions`) **and** `ingest_knowledge` in order, so the KB is never
+   forgotten. Both are idempotent (upsert). The KB docs ship at
+   `/app/data/knowledge` (via `COPY data/` + `DATA_PATH=/app/data`), and
+   `settings.kb_data_dir` resolves there automatically — **no `KB_DATA_PATH` env
+   needed** (it exists only as an optional override). Run `ingest_all` on Railway
+   as the one-off post-deploy job. Without the KB ingest, flipping
+   `ASK_ENABLED=true` answers against an empty `onsen_knowledge` collection → every
+   ask hits the "I don't know" fallback. So: **ingest first, flip second.**
 3. Staging: set `ASK_ENABLED=true`, fire the eval (`eval_flow.py`) and a manual ask
    smoke; confirm grounding + the no-info fallback + cost within the `ask: 0.01`
-   budget.
+   budget. ✅ done locally (eval 7/7; smoke 7/7).
 4. Cutover: `ASK_ENABLED=true` in Railway env. Keep the stub path one release for
    rollback (just flip the env back).
 
