@@ -107,15 +107,17 @@ def query_onsen_structured(
     return records
 
 
-def query_knowledge(
+def query_knowledge_with_diagnostics(
     query: str, n_results: int, max_distance: float | None = None
-) -> list[dict]:
-    """Semantic search over the Layer 2 KB collection (etiquette, bathing, etc.).
+) -> tuple[list[dict], dict]:
+    """Semantic search over the Layer 2 KB collection, with retrieval diagnostics.
 
-    Sibling of query_onsen_structured, but hits the SEPARATE KB collection
-    (get_kb_collection) so onsen and KB never cross-contaminate. Stays
-    LangChain-agnostic (no agent/ imports). Drives ask-mode's grounded answer
-    and its "I don't know" fallback via the distance threshold.
+    Same query + threshold behaviour as ``query_knowledge``, but ALSO returns a
+    diagnostics dict alongside the records so callers (ask-mode) can later
+    distinguish a TRUE coverage gap (nothing relevant retrieved → high
+    min_distance / nothing retrieved) from a FALSE refusal (a relevant chunk WAS
+    retrieved but the grounding prompt declined → low min_distance). Stays
+    LangChain-agnostic (no agent/ imports).
 
     Args:
         query: Free-text question (e.g. "do I wash before entering the bath?").
@@ -125,10 +127,15 @@ def query_knowledge(
             When None, no distance filtering is applied.
 
     Returns:
-        A list of structured chunk records, each shaped:
-        {text, doc_type, source_filename, heading, source_ja, source_lang,
-        sources, distance}. Metadata may be absent (the KB isn't ingested yet),
-        so missing keys default to "". Empty or all-filtered → [].
+        ``(records, diagnostics)`` where ``records`` is the SAME list[dict]
+        ``query_knowledge`` returns (each: {text, doc_type, source_filename,
+        heading, source_ja, source_lang, sources, distance}; missing metadata
+        defaults to ""), and ``diagnostics`` is:
+          - ``min_distance``: smallest distance among ALL retrieved results
+            BEFORE the max_distance filter, or None if nothing was retrieved
+            (empty collection) or distances were absent.
+          - ``retrieved``: count Chroma returned pre-filter.
+          - ``kept``: count surviving the max_distance threshold.
     """
     collection = get_kb_collection()
     results = collection.query(
@@ -139,6 +146,13 @@ def query_knowledge(
     docs = results.get("documents", [[]])[0]
     metadatas = results.get("metadatas", [[]])[0]
     distances = results.get("distances", [[]])[0]
+
+    # min_distance is captured over ALL retrieved distances BEFORE the threshold
+    # filter, so it remains meaningful even when everything is filtered out (the
+    # "did we retrieve anything relevant at all?" signal). None when nothing was
+    # retrieved or distances are entirely absent.
+    valid_distances = [d for d in distances if d is not None]
+    min_distance = min(valid_distances) if valid_distances else None
 
     records: list[dict] = []
     for doc, meta, distance in zip(docs, metadatas, distances):
@@ -160,4 +174,41 @@ def query_knowledge(
                 "distance": distance,
             }
         )
+
+    diagnostics = {
+        "min_distance": min_distance,
+        "retrieved": len(docs),
+        "kept": len(records),
+    }
+    return records, diagnostics
+
+
+def query_knowledge(
+    query: str, n_results: int, max_distance: float | None = None
+) -> list[dict]:
+    """Semantic search over the Layer 2 KB collection (etiquette, bathing, etc.).
+
+    Sibling of query_onsen_structured, but hits the SEPARATE KB collection
+    (get_kb_collection) so onsen and KB never cross-contaminate. Stays
+    LangChain-agnostic (no agent/ imports). Drives ask-mode's grounded answer
+    and its "I don't know" fallback via the distance threshold.
+
+    Thin wrapper over ``query_knowledge_with_diagnostics`` that drops the
+    diagnostics, preserving the original ``list[dict]`` contract for existing
+    callers/tests.
+
+    Args:
+        query: Free-text question (e.g. "do I wash before entering the bath?").
+        n_results: Maximum number of KB chunks to retrieve.
+        max_distance: Optional cosine-DISTANCE ceiling (Chroma returns distance,
+            lower = closer). Chunks with distance > max_distance are dropped.
+            When None, no distance filtering is applied.
+
+    Returns:
+        A list of structured chunk records, each shaped:
+        {text, doc_type, source_filename, heading, source_ja, source_lang,
+        sources, distance}. Metadata may be absent (the KB isn't ingested yet),
+        so missing keys default to "". Empty or all-filtered → [].
+    """
+    records, _ = query_knowledge_with_diagnostics(query, n_results, max_distance)
     return records
