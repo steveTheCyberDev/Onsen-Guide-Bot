@@ -163,16 +163,62 @@ def test_structure_search_with_recommendation_fails():
     assert eval_flow.structure(outputs=outputs, reference_outputs={"expected_mode": "search"})["score"] == 0
 
 
-def test_structure_ask_good():
+def test_structure_ask_gate_off_accepts_any_nonempty_reply():
+    # ask_enabled defaults False in pytest: structure only requires empty onsens,
+    # no recommendation, and a non-empty reply (the stub satisfies this).
     stub = eval_flow._ask_stub_reply()
     outputs = {"onsens": [], "recommendation": None, "reply": stub}
     assert eval_flow.structure(outputs=outputs, reference_outputs={"expected_mode": "ask"})["score"] == 1
 
 
-def test_structure_ask_with_onsens_fails():
-    stub = eval_flow._ask_stub_reply()
-    outputs = {"onsens": [_onsen("Yamada Onsen")], "recommendation": None, "reply": stub}
+def test_structure_ask_empty_reply_fails():
+    outputs = {"onsens": [], "recommendation": None, "reply": ""}
     assert eval_flow.structure(outputs=outputs, reference_outputs={"expected_mode": "ask"})["score"] == 0
+
+
+def test_structure_ask_with_onsens_fails():
+    outputs = {"onsens": [_onsen("Yamada Onsen")], "recommendation": None, "reply": "answer"}
+    assert eval_flow.structure(outputs=outputs, reference_outputs={"expected_mode": "ask"})["score"] == 0
+
+
+def test_structure_ask_with_recommendation_fails():
+    outputs = {"onsens": [], "recommendation": "pick X", "reply": "answer"}
+    assert eval_flow.structure(outputs=outputs, reference_outputs={"expected_mode": "ask"})["score"] == 0
+
+
+def test_structure_ask_gate_on_rejects_stub():
+    # When ask_enabled is ON, the stub showing through means the answer node never
+    # ran — that must FAIL; a real answer PASSES.
+    from core.config import settings
+
+    stub = eval_flow._ask_stub_reply()
+    prior = settings.ask_enabled
+    settings.ask_enabled = True
+    try:
+        stubbed = {"onsens": [], "recommendation": None, "reply": stub}
+        real = {"onsens": [], "recommendation": None, "reply": "Wash before entering."}
+        assert eval_flow.structure(outputs=stubbed, reference_outputs={"expected_mode": "ask"})["score"] == 0
+        assert eval_flow.structure(outputs=real, reference_outputs={"expected_mode": "ask"})["score"] == 1
+    finally:
+        settings.ask_enabled = prior
+
+
+def test_structure_ask_gate_on_no_info_example_requires_fallback():
+    # An expect_no_info ask example must land on the EXACT no-info fallback; any
+    # other (even non-stub) answer is a fabrication and must fail.
+    from core.config import settings
+
+    fallback = eval_flow._no_info_reply()
+    prior = settings.ask_enabled
+    settings.ask_enabled = True
+    try:
+        ref = {"expected_mode": "ask", "expect_no_info": True}
+        good = {"onsens": [], "recommendation": None, "reply": fallback}
+        bad = {"onsens": [], "recommendation": None, "reply": "The wifi password is 1234."}
+        assert eval_flow.structure(outputs=good, reference_outputs=ref)["score"] == 1
+        assert eval_flow.structure(outputs=bad, reference_outputs=ref)["score"] == 0
+    finally:
+        settings.ask_enabled = prior
 
 
 def test_structure_no_data_good_and_bad():
@@ -266,6 +312,42 @@ def test_run_evaluation_restores_analyze_enabled_on_success():
         assert settings.analyze_enabled is False  # restored, no leak
     finally:
         settings.analyze_enabled = original
+
+
+def test_run_evaluation_flips_and_restores_ask_enabled():
+    """run_evaluation flips ask_enabled ON for the run, then restores it."""
+    from core.config import settings
+
+    original = settings.ask_enabled
+    settings.ask_enabled = False  # start from a known prior value
+    seen = {}
+
+    def _capture(*args, **kwargs):
+        seen["ask_enabled"] = settings.ask_enabled
+        return MagicMock()
+
+    try:
+        _run_evaluation_with_no_paid_calls(evaluate_side_effect=_capture)
+        assert seen["ask_enabled"] is True  # ON during the run
+        assert settings.ask_enabled is False  # restored, no leak
+    finally:
+        settings.ask_enabled = original
+
+
+def test_run_evaluation_restores_ask_enabled_even_if_evaluate_raises():
+    """The ask_enabled restore lives in the same finally — a raise must not leak."""
+    from core.config import settings
+
+    original = settings.ask_enabled
+    settings.ask_enabled = False
+    try:
+        with pytest.raises(RuntimeError, match="boom"):
+            _run_evaluation_with_no_paid_calls(
+                evaluate_side_effect=RuntimeError("boom")
+            )
+        assert settings.ask_enabled is False  # restored despite the raise
+    finally:
+        settings.ask_enabled = original
 
 
 def test_run_evaluation_restores_analyze_enabled_even_if_evaluate_raises():

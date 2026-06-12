@@ -29,6 +29,7 @@ from langchain_core.callbacks import UsageMetadataCallbackHandler
 
 from agent.agent import AgentResponse, HotelResult, OnsenResult
 from agent.workflow.analyze import analyze_onsen
+from agent.workflow.ask import answer_question
 from agent.workflow.cost import summarize_usage
 from agent.workflow.intent import parse_intent
 from core.config import settings
@@ -180,7 +181,7 @@ def _log_cost(
     """Emit one structured cost/token line per /chat from the workflow.
 
     Summarizes the request's token usage (captured by ``usage_cb`` across the
-    intent + analyze LLM calls) into models used, token totals, estimated USD
+    intent + analyze, or intent + ask, LLM calls) into models used, token totals, estimated USD
     cost, and end-to-end latency. Also attaches mode/cost/tokens to the active
     LangSmith run so cost is sliceable by mode in the trace UI.
     """
@@ -216,10 +217,12 @@ async def run_workflow(message: str, session_id: str) -> dict:
     """
     logger.info("run_workflow | session_id=%s", session_id)
 
-    # One usage callback spans every LLM call in this request (intent + analyze).
-    # The intent/analyze calls use .with_structured_output, so usage is NOT on
-    # their return values — the callback is the reliable capture point. Cost
-    # accounting lives here in the workflow layer, keeping services/ LLM-agnostic.
+    # One usage callback spans every LLM call in this request (intent + analyze,
+    # or intent + ask in ask-mode). The intent/analyze calls use
+    # .with_structured_output and the ask call returns a plain string, so usage is
+    # NOT on their return values — the callback is the reliable capture point.
+    # Cost accounting lives here in the workflow layer, keeping services/
+    # LLM-agnostic.
     usage_cb = UsageMetadataCallbackHandler()
     callbacks = [usage_cb]
     started = time.monotonic()
@@ -230,11 +233,22 @@ async def run_workflow(message: str, session_id: str) -> dict:
 
     recommendation: str | None = None
 
-    # ask-mode: STUB. Layer 2 semantic RAG over knowledge docs is a later chunk.
-    # TODO(V2.5 Layer 2): semantic RAG over knowledge docs — replace this stub
-    # with a retrieval+answer call over a separate knowledge collection.
+    # ask-mode: Layer 2 semantic RAG over the knowledge docs, gated by
+    # ask_enabled (A/B + instant rollback, mirrors analyze_enabled below). When
+    # the gate is OFF (default) ask returns the safe stub — prod behavior is
+    # exactly as before. When ON, answer_question retrieves KB chunks and writes a
+    # grounded answer (or the deterministic no-info fallback). Either way the
+    # response shape is identical: empty onsens/hotels, recommendation=None.
     if intent.mode == "ask":
-        reply = _ASK_STUB_REPLY
+        if settings.ask_enabled:
+            # Retrieve with the ORIGINAL message, not intent.query: parse_intent's
+            # reformulation is lossy and non-deterministic for prose Q&A (it was
+            # designed to extract structured SEARCH terms), and a weaker phrasing
+            # can push every KB match past the distance threshold. The raw question
+            # is the most reliable semantic-RAG signal.
+            reply = await answer_question(message, callbacks=callbacks)
+        else:
+            reply = _ASK_STUB_REPLY
         onsens: list[OnsenResult] = []
         hotels: list[HotelResult] = []
         _log_cost(session_id, intent.mode, usage_cb, started)

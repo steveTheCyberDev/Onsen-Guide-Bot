@@ -63,6 +63,33 @@ class Settings(BaseSettings):
     # until flipped) — this is the A/B rollout seam, mirroring chat_engine above.
     # Override via env var ANALYZE_ENABLED.
     analyze_enabled: bool = False
+    # Separate ChromaDB collection for Layer 2 KB prose (etiquette, spring-type
+    # benefits, …). Kept apart from the onsen_springs collection so an onsen search
+    # never retrieves an etiquette chunk and vice-versa. Override via KB_COLLECTION.
+    kb_collection: str = "onsen_knowledge"
+    # Directory holding the Layer 2 markdown docs. Default "" → computed local
+    # default data_dir/knowledge (CWD-independent, from __file__). Override via
+    # KB_DATA_PATH in prod (Railway ships them under /app/data/knowledge).
+    kb_data_path: str = ""
+    # Gate for ask mode (Layer 2 semantic RAG). False (default) → ask returns the
+    # safe "coming soon" stub; True → real grounded RAG answer. A/B + instant
+    # rollback seam, mirrors analyze_enabled above. Override via ASK_ENABLED.
+    ask_enabled: bool = False
+    # Top-k KB chunks retrieved for an ask answer. Override via ASK_TOP_K.
+    ask_top_k: int = 4
+    # DISTANCE ceiling for KB chunks (Chroma returns distance, lower = closer).
+    # A LOOSE coarse guard, not the primary relevance gate: measured in-KB vs
+    # off-KB distances overlap (a real "can I wear a swimsuit?" ~0.65 sits above an
+    # off-topic "wifi password?" ~0.47), so distance alone can't separate them.
+    # The grounding PROMPT is the real no-fabrication guard — it returns the "I
+    # don't know" fallback when the retrieved chunks don't answer the question.
+    # Keep this high enough to admit legit-but-distant questions; if nothing
+    # survives at all → the deterministic no-info path. Override via ASK_MAX_DISTANCE.
+    ask_max_distance: float = 0.85
+    # LLM that writes the grounded ask answer. Reuse intent_model by DEFAULT (cheap;
+    # the answer is short and fully grounded), env-overridable to a stronger model.
+    # "" → fall back to settings.intent_model at the call site. Override via ASK_MODEL.
+    ask_model: str = ""
     # Bounded retry count for outbound LLM calls (ChatOpenAI). Passed as
     # `max_retries` to every ChatOpenAI instance (the ReAct llm in agent/agent.py
     # and the intent llm in agent/workflow/intent.py) so transient OpenAI errors
@@ -139,6 +166,19 @@ class Settings(BaseSettings):
         if self.data_path:
             return Path(self.data_path)
         return Path(__file__).resolve().parent.parent / "data"
+
+    @property
+    def kb_data_dir(self) -> Path:
+        """Resolved Layer 2 knowledge-base markdown directory.
+
+        Returns ``Path(kb_data_path)`` when KB_DATA_PATH is set (prod override),
+        else ``data_dir / "knowledge"`` — a sibling of the onsen data dir, so the
+        existing data_dir env-split (and the Railway COPY data/ layout) cover it
+        for free. Mirrors the data_dir property above.
+        """
+        if self.kb_data_path:
+            return Path(self.kb_data_path)
+        return self.data_dir / "knowledge"
 
     model_config = {
         "env_file": ".env",

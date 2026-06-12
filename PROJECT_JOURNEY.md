@@ -115,6 +115,13 @@ This is the part I'm most proud of — most of these were *correctness* and *pro
 
 **Result:** ~**10× faster**, and #9's prediction held. The win isn't only speed: removing the LLM from the data-assembly path kills the fabrication surface *structurally* — the model can't invent onsen it never assembles. Shipped flag-gated, validated in prod via the A/B, then **cut over to `workflow` as the live engine** (ReAct retained behind the flag for rollback). The next LLM call to earn its place back is the `analyze_onsen` judgment layer — the one step where weighing trade-offs is genuinely a model's job.
 
+### 11. A smoke test caught a flaky RAG bug that unit tests couldn't — and the fix was a retrieval-design decision
+**Problem:** After building the `ask`-mode knowledge base (semantic RAG over prose docs), the unit suite was fully green (269 passing), but the first real smoke test was alarming: in-KB questions like *"Do onsen allow tattoos?"* **intermittently** returned the "I don't have that information" fallback. Re-running the *same* question gave **1 success in 5** — a flake, which mocked tests can't surface because they stub out retrieval and the LLM.
+**How I debugged it:** Treated the path as a pipeline and binary-searched it. Checked raw Chroma distances (0.22–0.27 — fine, hypothesis "threshold too tight" rejected); called `query_knowledge` and `answer_question` in isolation (both correct); so the bug was *above* the node. Instrumenting the full path showed the workflow calls `parse_intent` — an LLM — *internally*, and feeds its **reformulated** query to retrieval. Measuring distances across six reformulations of one question exposed the variance: most landed ~0.25, but a weaker phrasing (`'onsen tattoo policy'`) hit **0.49–0.58**, tipping past the `0.55` cutoff and filtering everything out. The **original message** retrieved reliably at ~0.22.
+**The deeper finding:** a distance threshold *cannot* cleanly gate relevance here — measured in-KB vs off-KB distances **overlap** (a legitimate *"Can I wear a swimsuit?"* sits at ~0.65, while off-topic *"what's the wifi password?"* is ~0.47, i.e. *closer*). So distance is the wrong tool for "is this answerable"; the **grounding prompt** is — the LLM reads the top-k chunks and itself returns the fallback when they don't answer the question.
+**Solution:** Retrieve with the **original message** (the truest semantic-RAG signal; reformulation was built for *structured search*, not prose Q&A), and demote the distance ceiling to a loose coarse guard (0.55 → 0.85), letting the grounded prompt make the no-info call.
+**Result:** Deterministic — 5/5 on the previously-flaky question, 7/7 across an in-KB/off-KB smoke (real questions answered, "wifi"/"stock price" correctly refused), unit suite 269 green, and the LangSmith eval 7/7 on grounding/structure/cost/latency. The lesson: **green unit tests prove the wiring, not the behavior** — RAG quality is an empirical property you only see by running real queries against real data, and "how should retrieval decide it doesn't know?" is a design decision, not a threshold to tune.
+
 ---
 
 ## What I learned
@@ -188,6 +195,93 @@ Each addition is self-contained: a new external API is a new `services/{name}`, 
 
 ---
 
+## Next direction — from workflow to *agent* (design captured 2026-06-10; not yet built)
+
+A design discussion on where the system goes next. **Reconciled with progress 2026-06-11:** the `analyze_onsen` recommend brain and the LangSmith eval harness have since shipped — `recommend` is now live in prod (`ANALYZE_ENABLED=true`) with the frontend rendering pros/cons + recommendation — so the V2 roadmap above is largely done. The one capability still unbuilt is the `ask`-mode knowledge base (the agreed next build). The autonomy-ladder discussion below sharpens *when* this graduates from workflow to agent.
+
+### Target shape — KB feeds both `ask` and `recommend`
+
+```mermaid
+flowchart TD
+    U["User input"] --> R{"LLM router<br/>search · recommend · ask"}
+
+    R -->|search| S["DB search<br/>deterministic · Python assembly"]
+    R -->|recommend| REC["recommend<br/>retrieve candidates → analyze (LLM)<br/>→ grounded pros/cons + recommendation"]
+    R -->|ask| ASK["ask<br/>semantic RAG over KB"]
+
+    ONS[("ONSEN collection (Vector DB)<br/>name · spring_type · lat/lng<br/>description · ratings/reviews")]
+    KB[("KB collection — prose (Vector DB)<br/>etiquette · tattoo policy<br/>spring-type benefits")]
+
+    S --> ONS
+    REC ==>|"FACTS — may assert per-onsen claims"| ONS
+    REC -. "REASONING — interpret need, never assert facts" .-> KB
+    ASK --> KB
+
+    OD["Onsen data<br/>+ geocode + EN translation<br/>+ ratings (Google Places)"] -->|ingest + enrich| ONS
+    MD["Markdown knowledge docs"] -->|ingest| KB
+
+    S --> OUT["reply / answer"]
+    REC --> OUT
+    ASK --> OUT
+```
+
+The diagram encodes the **grounding boundary**: `recommend` draws two kinds of edge — a **solid (FACTS)** edge from the onsen collection (the only source allowed to assert claims about a *specific* onsen) and a **dotted (REASONING)** edge from the KB (domain knowledge to interpret the user's need, e.g. "skin → sulfur", but never to introduce a new fact about a specific onsen). Note also the **two separate Vector DB collections**, **ratings enrichment at ingest**, and that the spring-type→benefit reasoning is a small lookup table alongside the KB, not embeddings.
+
+### Reframe: capabilities vs. orchestration
+The instinct was "add a knowledge base + an external ratings API to *make it an agent*." The clarifying distinction: a knowledge base and a ratings API are **capabilities** (`services/` + `tools/`); **agent vs. workflow** is the *orchestration* on top — does code decide the path (workflow) or does an LLM decide which tools to call, and when, in a loop (agent)? Adding a capability does **not** by itself make it an agent. So: **build the capabilities now as workflow steps** (reliable, cheap, testable), and treat "become an agent" as a *separate, later* decision — the same conclusion reached for V1/V2. Because `services/` are framework-agnostic and `tools/` are thin wrappers, whatever I build now is reusable by a workflow **or** a future agent unchanged.
+
+### Capability 1 — Knowledge base (the `ask` mode / V2.5 Layer 2)
+Author markdown domain docs (etiquette, tattoo policy, bathing steps, spring-type benefits) and serve the currently-stubbed `ask` branch via semantic RAG.
+
+### Capability 2 — Real ratings/reviews, to *ground* pros/cons
+Today's pros/cons are **LLM-inferred from each onsen's own description** — the unmeasured groundedness gap the eval flagged. A ratings/reviews source replaces inference with real signal. Two refinements over the first instinct (TripAdvisor):
+- **Provider:** prefer **Google Places** (already integrated for geocoding; a `place_id` can be captured at the same ingest step; better coverage of small Japanese onsen; simpler attribution) over TripAdvisor. Build a `ratings_service` seam so the provider is swappable.
+- **Ingest-time enrichment, not per-request** — the proven pattern (geocoding, translation): pull rating + a few review snippets once at ingest, store in Chroma metadata. Grounds pros/cons with **zero per-request latency/cost**. A per-request tool only earns its place once freshness matters or the system is genuinely agentic.
+
+### The key insight: the KB should feed `recommend`, not just `ask`
+A KB-grounded recommendation **is** more accurate — but there are **two kinds of knowledge → two kinds of accuracy**:
+- **Per-onsen signal** (description, ratings, reviews) **differentiates** candidates — the biggest lever for "which of these is best" (= Capability 2).
+- **General domain knowledge** (the KB) improves the **reasoning**: it's the same for every candidate, so it doesn't pick A over B, but it lets the LLM map a **need → attribute**. *E.g. user says "skin problems" → KB knows "sulfur springs help skin" → recommend ranks toward `spring_type = sulfur` and explains why.*
+
+**Grounding discipline (critical):** keep the layers doing different jobs or fabrication returns — **onsen records ground the FACTS** (any claim about a specific onsen must come from its own data), **the KB grounds the REASONING** (domain knowledge used to interpret the need, never to assert new facts about a specific onsen). The recommend brain gets three clearly-labelled inputs: candidate onsen, user preferences, relevant KB snippets. The eval's grounding evaluator + the planned LLM-judge keep it honest.
+
+### Do we store the KB in a vector DB? Only the prose.
+Match storage to **size + structure + access pattern** — don't reach for vectors by reflex:
+- **Long-form prose** (etiquette, tattoo policy) → open-ended semantic Q&A → **vector DB**, in a **separate Chroma collection** (not mixed with onsen records — different shape; mixing muddies both). This is the `ask`-mode showcase.
+- **Structured domain facts** (spring-type → benefit) → a **small table/dict or prompt injection**, *not* embeddings. You look these up, you don't semantically search them; embedding a 15-row table and hoping similarity returns the right row is strictly worse than a dict. (Mirrors the earlier rule: structured facts stay queryable lookups/metadata; only prose goes into a semantic RAG pool.)
+- It's a **hybrid** — and that's correct. Caveat: if the prose KB starts tiny, prompt-stuff it and graduate to the vector collection only once it outgrows cheap context.
+
+### When it actually *becomes* an agent
+Once `recommend` wants to consult **two retrieval sources** (onsen DB + KB) and an **enrichment tool** (ratings), and *which* it needs depends on the query, deciding that dynamically is precisely a **LangGraph agent's** job — and the cleanest reason the system graduates from workflow to agent. That's the V3 upgrade, arriving when query complexity (not the résumé) demands it.
+
+### The autonomy ladder — and the case that defines the agent boundary (discussion 2026-06-11)
+
+Working through routing examples surfaced the cleanest framing for the whole roadmap: the system is walking **up an autonomy ladder**, one rung at a time —
+
+> **rules → pipeline → workflow → agent → multi-agent**
+
+The discipline is to use the **least autonomy that solves the task**, and to climb a rung only when a *concrete* case can't be served by the rung below — not because "agent" sounds more advanced. This is also the honest narrative arc of the project: V1 jumped straight to a ReAct **agent** (the right bootstrapping move while query shapes were unknown); I then **measured** it was over-reach for known shapes and graduated *down* to a deterministic **workflow** (challenge #10, ~10× faster); and now I climb back *up* to an agent **only for the one case that genuinely needs it.** "I measured my agent was the wrong altitude and graduated down, then back up for a real reason" is a far stronger story than "I built an agent."
+
+**The case that defines the boundary** came from a real test query: *"I'd like a 3-day onsen trip — what's your suggestion?"* This is the first query where the tool sequence **isn't knowable up front** — how many onsen, which regions, hotels per night, transport between them, re-plan if one's full. That dynamic, looping, re-planning shape is the textbook definition of when autonomy earns its cost. Everything below it stays a workflow:
+
+| Query | Mode | Rung |
+|---|---|---|
+| "Onsen in Shizuoka" | **search** | workflow (deterministic list) |
+| "Somewhere relaxing with outdoor baths" | **recommend** | workflow (candidates → analyze) |
+| "Do they allow tattoos? What do I bring?" | **ask** | workflow (semantic RAG over KB) |
+| **"3-day onsen trip, suggestions?"** | recommend (partial) | **agent** — a real itinerary (sequencing, transport, re-planning) is V3 |
+
+So `search` / `recommend` / `ask` are all correctly **pre-wired workflows**; the trip-planner is the concrete scenario that becomes the **V3 agent** (and then multi-agent for "compare these regions and plan"). The agent comes back when *query complexity* demands it — not the résumé.
+
+**Where slot-filling fits (it's not a separate agent).** Slot-filling — asking "Which prefecture?" when a required slot is missing — is an **upgrade to the router**, not a new component. The router (`parse_intent`) already *extracts* slots (prefecture, query, wants_hotels); slot-filling just adds a **gate + follow-up branch**: *required slot missing → ask → end the turn → re-enter on the next message.* Its real cost is **multi-turn state** (remember the pending question, merge the reply), which is why it's parked behind the in-memory-history limitation. It's orthogonal to `ask` mode — `ask` is a *destination* the router branches to; slot-filling is *how the router elicits* before branching.
+
+### Recommended build sequence
+1. **Knowledge base / `ask` mode** (Layer 2) — separate vector collection for prose + a small spring-type→benefit table for reasoning. *(workflow)*
+2. **`ratings_service` + ingest-time enrichment** (Google Places) — grounds pros/cons in real ratings; pair with an **LLM-as-judge evaluator** so pros/cons groundedness becomes *measurable* (and the gpt-4o → gpt-4o-mini switch can be re-decided on data). *(workflow)*
+3. **Then** wrap these as agent tools under a LangGraph orchestrator for multi-step queries. *(agent — the real V3 upgrade)*
+
+---
+
 ## Status
 
-V1 is **live in production and feature-complete** for its scope. V2's performance headline has since shipped and is **live in prod**: ingest-time geocoding plus the ReAct→workflow redesign (challenge #10) — ~10× faster and now the default `/chat` engine, flag-gated for rollback. Next in V2: the `analyze_onsen` "guide" judgment layer and the V2.5 knowledge-base / recommendation work.
+V1 is **live in production and feature-complete** for its scope. V2's performance headline shipped and is **live in prod**: ingest-time geocoding plus the ReAct→workflow redesign (challenge #10) — ~10× faster and now the default `/chat` engine, flag-gated for rollback. V2.5's **3-mode router** and the **`analyze_onsen` "guide" judgment layer** have also shipped and are **live** (`recommend` enabled via `ANALYZE_ENABLED=true`, frontend renders pros/cons + recommendation). The one capability left in V2.5 is the **`ask`-mode knowledge base** — the agreed next build. The **trip-planning agent** is the deliberately-deferred V3 boundary (see the autonomy-ladder discussion above).

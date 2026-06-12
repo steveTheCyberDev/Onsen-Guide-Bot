@@ -1,7 +1,18 @@
 # V2 Backend Redesign — Implementation Plan
 
-Status: **planned** (2026-06-06). Builds on the measured baseline in
-`PROJECT_JOURNEY.md` challenge #9.
+Status: **SHIPPED & live in prod** (planned 2026-06-06, cutover complete by
+2026-06-11). Steps 1–5 landed; the workflow is the production `/chat` engine on
+Railway (`CHAT_ENGINE=workflow`) and the measured react→workflow A/B (~10x
+latency win) is recorded in `PROJECT_JOURNEY.md`. Builds on the measured
+baseline in `PROJECT_JOURNEY.md` challenge #9.
+
+> **What's live now (2026-06-11):** the deterministic workflow, the 3-mode router
+> (search/recommend/ask routing), and the **recommend** brain (`analyze_onsen`)
+> are in prod with `ANALYZE_ENABLED=true` on Railway, and the frontend renders the
+> recommendation + per-onsen pros/cons. Code defaults stay local-friendly
+> (`chat_engine="react"`, `analyze_enabled=false`); prod overrides via env. The
+> one remaining V2.5 piece NOT built is **ask mode + the Layer 2 knowledge base**
+> — that is the next build.
 
 > **Resequenced 2026-06-06:** analyze (Step 3/⑤) is deferred to the END of the
 > pipeline. `run_workflow` (Step 4) ships with analyze as a gated seam (a
@@ -52,7 +63,16 @@ run_workflow(message)
 
 ## Steps (each a small, green PR into `develop`)
 
-### Step 1 — `query_onsen_structured()` (pure Python, no LLM)
+> **Status: Steps 1–5 SHIPPED.** Modules live on `develop`/prod:
+> `services/retrieval/retrieval_service.py::query_onsen_structured` (Step 1),
+> `agent/workflow/intent.py` (Step 2, extended with the `mode` router),
+> `agent/workflow/analyze.py` (Step 3, the recommend brain),
+> `agent/workflow/pipeline.py::run_workflow` (Step 4), and the `chat_engine`
+> dispatcher flag (Step 5). Step 6 (translation service) remains a
+> **passthrough seam** — not yet backed by an LLM+cache impl (still deferred so
+> it never blocks anything).
+
+### Step 1 — `query_onsen_structured()` (pure Python, no LLM)  ✅ shipped
 `services/retrieval/retrieval_service.py`. Sibling of `query_onsen` returning
 `list[dict]` built from Chroma metadata: `name` (name_en→name), `location`
 (`"{city_en}, {prefecture_en}"`), `spring_type`/`spa_quality` (spa_quality_en),
@@ -60,13 +80,13 @@ run_workflow(message)
 `detail_url`, `lat`/`lng` (both-or-neither guard, else None). Empty → `[]`.
 Keep `query_onsen` (string) untouched. Tests in `test_retrieval_service.py`.
 
-### Step 2 — `parse_intent()` (small LLM, structured output)
+### Step 2 — `parse_intent()` (small LLM, structured output)  ✅ shipped (now also returns `mode`)
 `agent/workflow/intent.py`. `ChatOpenAI(model=settings.intent_model)
 .with_structured_output(Intent)` where `Intent = {prefecture: str|None, query:
 str, wants_hotels: bool}`. Replaces ReAct LLM #1 + #2. Add `intent_model`
 (env `INTENT_MODEL`, default `gpt-4o-mini`) to `core/config.py`.
 
-### Step 3 — `analyze_onsen()` (the guide layer; the one LLM call that earns its place)
+### Step 3 — `analyze_onsen()` (the guide layer; the one LLM call that earns its place)  ✅ shipped & ENABLED in prod (`ANALYZE_ENABLED=true`)
 `agent/workflow/analyze.py`. LLM over a **compact projection** (name,
 spring_type, location, short spa_quality — NOT description/coords/urls) →
 `GuideResult{analyses:[{index, pros[], cons[]}], recommendation}`. Merge
@@ -75,25 +95,31 @@ Add `pros: list[str]=[]`, `cons: list[str]=[]` to `OnsenResult`; add
 `recommendation: str|None=None` to `AgentResponse`. Add `analyze_model`
 (default `gpt-4o`) + `analyze_enabled` (default `false`) to config.
 
-### Step 4 — `run_workflow()` pipeline
+### Step 4 — `run_workflow()` pipeline  ✅ shipped (prod engine)
 `agent/workflow/pipeline.py`. Wires ①②⑤③④ (see diagram). `search_hotels` is
 sync → call via `asyncio.to_thread`. Template reply with "none found" branch.
 Emits LangSmith `run_name="chat-workflow"`, `metadata.version="v2-workflow"`
 for A/B vs `v1-baseline`. Returns the same dict shape as `run_agent`.
 
-### Step 5 — `chat_engine` feature flag (keep ReAct runnable)
+### Step 5 — `chat_engine` feature flag (keep ReAct runnable)  ✅ shipped; prod set to `workflow`
 Add `chat_engine` (env `CHAT_ENGINE`, `react`|`workflow`, default `react`).
 Rename current `run_agent` internals → `run_react_agent`; new `run_agent`
 dispatches on the flag. `api/routes/chat.py` stays **unchanged**. This is the
 A/B + instant-rollback seam.
 
-### Step 6 — `translation_service` seam
+### Step 6 — `translation_service` seam  ⏸ passthrough only (LLM+cache impl deferred)
 `services/translation/translation_service.py` (LangChain-agnostic, cache by
 Rakuten hotel id). `agent/workflow/hotels.py::translate_hotels`. Ship
 **passthrough first** (Japanese in → out, behaves like today); LLM+cache impl
 is a follow-up so it never blocks the latency win.
 
-## Rollout
+## Rollout  ✅ complete (A/B run, cutover live)
+
+> Executed as planned: A/B #1 confirmed the retrieval win (~10x, recorded in
+> `PROJECT_JOURNEY.md`), A/B #2 enabled the guide call, and prod cut over to
+> `CHAT_ENGINE=workflow` + `ANALYZE_ENABLED=true` on Railway. ReAct remains
+> behind the flag for rollback; the final ReAct-removal cleanup PR is still
+> outstanding (see below).
 
 1. Land Steps 1–6 behind `chat_engine="react"` (dead code in prod, no API change).
 2. A/B #1: staging `CHAT_ENGINE=workflow`, `ANALYZE_ENABLED=false`; fire the
@@ -123,13 +149,19 @@ is a follow-up so it never blocks the latency win.
 
 ---
 
-# V2.5 — Knowledge Base + Recommendation Agent (design, 2026-06-07)
+# V2.5 — Knowledge Base + Recommendation Agent (2026-06-07)
 
-Status: **design captured, not built.** Direction set by Steve; pending a
-structure diagram + discussion before implementation. Step 5 (translation) and
-the multi-turn elicitation flow are intentionally PAUSED — build the **split
-(router)** and the **analytic agent** first, reasoning over existing data, with
-hand-crafted test messages (no preference elicitation yet).
+Status: **partially shipped (2026-06-11).** The **router** (search/recommend/ask
+classification via `parse_intent`'s `mode`) and the **analytic agent**
+(`analyze_onsen`, the recommend brain) are BUILT and live in prod, and the
+frontend renders recommend output (recommendation + per-onsen pros/cons). What
+remains is the **ask** branch and its **Layer 2 knowledge base** — the next
+build. Multi-turn preference elicitation stays PAUSED (still hand-crafted test
+messages, no elicitation yet).
+
+**Shipped:** router (mode), analytic/recommend agent, frontend recommend rendering.
+**Next:** Layer 2 knowledge docs + the **ask** semantic-RAG branch.
+**Deferred:** Layer 1 enrichment fields, Layer 3 web crawl, preference elicitation.
 
 ## The shift: from one search path to a 3-mode router
 The deterministic search workflow stays as-is. Two new intents join it. A
@@ -207,7 +239,7 @@ the serialization cost + fabrication). So:
   multi-region — enrichment fields are NOT present today; acquiring them is real
   work (LLM extraction pass and/or re-scrape).
 
-## First concrete builds (pick after the diagram discussion)
-1. **Router** — extend `parse_intent` -> `mode: search|recommend|ask`; branch the pipeline.
-2. **Analytic agent** — `analyze_onsen` over candidates + preferences -> recommendation + pros/cons (single LLM call, compact projection).
-3. **Layer 2 knowledge** — author the markdown docs (Claude-drafted), ingest into a SEPARATE collection, wire the **ask** branch (semantic RAG).
+## First concrete builds
+1. ✅ **Router** — `parse_intent` returns `mode: search|recommend|ask`; pipeline branches on it. **Shipped.**
+2. ✅ **Analytic agent** — `analyze_onsen` over candidates -> recommendation + pros/cons (single LLM call, compact projection). **Shipped & enabled in prod.**
+3. ⬜ **Layer 2 knowledge** — author the markdown docs (Claude-drafted), ingest into a SEPARATE collection, wire the **ask** branch (semantic RAG). **← NEXT.** Build-ready plan: **[`ask-mode-plan.md`](ask-mode-plan.md)** (Steps A–H, JA-source→translate-at-ingest→embed-English approach, gated behind `ASK_ENABLED`).
