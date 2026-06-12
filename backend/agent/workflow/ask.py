@@ -29,9 +29,83 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_openai import ChatOpenAI
 
 from core.config import settings
-from services.retrieval.retrieval_service import query_knowledge
+from services.retrieval.retrieval_service import query_knowledge_with_diagnostics
 
 logger = logging.getLogger(__name__)
+
+# Current-run accessor, guarded exactly like agent/workflow/pipeline.py: when
+# langsmith is absent (or tracing disabled) the name resolves to a no-op
+# returning None, so the no-info tagging path below is inert rather than raising.
+try:
+    from langsmith import get_current_run_tree
+except Exception:  # pragma: no cover - langsmith always present in this project
+
+    def get_current_run_tree():
+        return None
+
+
+# How many chars of the question to carry into logs/trace metadata. Bounded so a
+# long question can't bloat the log line or the run-tree payload; full questions
+# are deliberately not logged in production (privacy + noise).
+_QUESTION_LOG_CHARS = 200
+
+
+def _instrument_no_info(path: str, query: str, diagnostics: dict) -> None:
+    """Make an ask-mode no-info outcome queryable for the KB-coverage governor.
+
+    Emits a structured log line AND, when a LangSmith run tree is available,
+    attaches metadata + an ``ask_no_info`` tag to the live run so every no-info
+    reply can later be sliced into a TRUE coverage gap (high ``min_distance`` /
+    nothing retrieved) vs a FALSE refusal (low ``min_distance`` — a relevant
+    chunk WAS retrieved but the grounding prompt declined).
+
+    Args:
+        path: Which no-info path fired — "empty_retrieval" (deterministic
+            short-circuit, no LLM call) or "llm_refusal" (grounding prompt
+            returned NO_INFO_REPLY).
+        query: The user's question (truncated before it reaches logs/trace).
+        diagnostics: The dict from ``query_knowledge_with_diagnostics`` —
+            ``min_distance`` / ``retrieved`` / ``kept``.
+
+    FULLY fail-safe: mirrors pipeline._attach_cost_to_trace. Any error in
+    logging/tagging is swallowed so instrumentation never leaks into the request
+    path. Does NOT change the reply string or the /chat contract.
+    """
+    min_distance = diagnostics.get("min_distance")
+    retrieved = diagnostics.get("retrieved")
+    kept = diagnostics.get("kept")
+    question = query[:_QUESTION_LOG_CHARS]
+
+    # Structured log line first — this must fire even if the run-tree tagging
+    # below is unavailable, so the no-info outcome is queryable in logs alone.
+    logger.info(
+        "ask_no_info | path=%s | min_distance=%s | retrieved=%s | kept=%s | question=%r",
+        path,
+        min_distance,
+        retrieved,
+        kept,
+        question,
+    )
+
+    # Best-effort: attach to the active LangSmith run so no-info outcomes are
+    # sliceable in the trace UI. Inert when tracing is off / no active run.
+    try:
+        rt = get_current_run_tree()
+        if rt is None:
+            return
+        rt.metadata.update(
+            {
+                "ask_no_info": True,
+                "ask_no_info_path": path,
+                "ask_min_distance": min_distance,
+                "ask_retrieved": retrieved,
+                "ask_kept": kept,
+                "ask_question": question,
+            }
+        )
+        rt.tags = (rt.tags or []) + ["ask_no_info", f"ask_no_info_path:{path}"]
+    except Exception:  # pragma: no cover - defensive; trace must never break /chat
+        logger.debug("failed to attach ask no-info metadata to langsmith run", exc_info=True)
 
 # The single canonical "I don't have that" reply. SHARED by the deterministic
 # no-retrieval short-circuit below AND quoted verbatim into the grounding prompt
@@ -101,12 +175,15 @@ async def answer_question(query: str, callbacks: list | None = None) -> str:
         nothing usable (deterministic, no LLM call) or the model determines the
         passages don't answer the question.
     """
-    records = query_knowledge(query, settings.ask_top_k, settings.ask_max_distance)
+    records, diagnostics = query_knowledge_with_diagnostics(
+        query, settings.ask_top_k, settings.ask_max_distance
+    )
     if not records:
         # Deterministic no-info path: no chunk survived retrieval/threshold, so
         # there is nothing to ground on. Return the canonical fallback WITHOUT an
-        # LLM call — cheap and structurally incapable of fabricating.
-        logger.info("answer_question | no KB chunks retrieved — returning no-info reply")
+        # LLM call — cheap and structurally incapable of fabricating. Instrument
+        # this no-info outcome (empty_retrieval) before returning.
+        _instrument_no_info("empty_retrieval", query, diagnostics)
         return NO_INFO_REPLY
 
     # TODO(spring-type injection): when the question is reliably detectable as
@@ -142,5 +219,12 @@ async def answer_question(query: str, callbacks: list | None = None) -> str:
     # the no-info fallback must match NO_INFO_REPLY exactly, and a stray
     # trailing newline would otherwise flap the eval's exact-equality check.
     answer = (content if isinstance(content, str) else str(content)).strip()
+    if answer == NO_INFO_REPLY:
+        # LLM-refusal no-info path: chunks WERE retrieved (low min_distance) but
+        # the grounding prompt judged they don't answer the question and replied
+        # with the canonical fallback verbatim. Instrument so this FALSE refusal
+        # can be told apart from a TRUE coverage gap via the captured diagnostics.
+        _instrument_no_info("llm_refusal", query, diagnostics)
+        return answer
     logger.info("answer_question | answered from chunks=%d", len(records))
     return answer

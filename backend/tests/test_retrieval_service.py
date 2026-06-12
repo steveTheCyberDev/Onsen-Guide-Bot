@@ -542,3 +542,84 @@ def test_query_knowledge_returns_empty_when_all_filtered_out():
         records = retrieval_service.query_knowledge("q", n_results=4, max_distance=0.55)
     # Assert
     assert records == []
+
+
+# ---------------------------------------------------------------------------
+# query_knowledge_with_diagnostics — records + (min_distance/retrieved/kept)
+# powers the ask-mode no-info coverage governor (TRUE gap vs FALSE refusal)
+# ---------------------------------------------------------------------------
+
+
+def test_diagnostics_reports_min_distance_retrieved_kept_when_some_filtered():
+    # Arrange — one close chunk kept, one beyond the ceiling dropped. min_distance
+    # is over ALL retrieved distances BEFORE the filter, so it reflects the
+    # closest passage even when that passage is later dropped.
+    docs = ["close chunk", "far chunk"]
+    metas = [{"doc_type": "etiquette"}, {"doc_type": "etiquette"}]
+    dists = [0.30, 0.80]
+    # Act
+    with patch.object(retrieval_service, "get_kb_collection", return_value=_fake_kb_collection(docs, metas, dists)):
+        records, diag = retrieval_service.query_knowledge_with_diagnostics(
+            "q", n_results=4, max_distance=0.55
+        )
+    # Assert — one record survives; diagnostics describe the full retrieval.
+    assert len(records) == 1 and records[0]["text"] == "close chunk"
+    assert diag == {"min_distance": 0.30, "retrieved": 2, "kept": 1}
+
+
+def test_diagnostics_min_distance_captured_even_when_all_filtered_out():
+    # Arrange — every chunk beyond the ceiling (TRUE-gap candidate): records empty
+    # but min_distance must still surface the closest distance retrieved so the
+    # governor can tell "nothing relevant" (high) from a borderline miss.
+    docs = ["far one", "far two"]
+    metas = [{}, {}]
+    dists = [0.72, 0.90]
+    # Act
+    with patch.object(retrieval_service, "get_kb_collection", return_value=_fake_kb_collection(docs, metas, dists)):
+        records, diag = retrieval_service.query_knowledge_with_diagnostics(
+            "q", n_results=4, max_distance=0.55
+        )
+    # Assert
+    assert records == []
+    assert diag == {"min_distance": 0.72, "retrieved": 2, "kept": 0}
+
+
+def test_diagnostics_min_distance_none_when_nothing_retrieved():
+    # Arrange — empty collection: no distances at all → min_distance is None.
+    # Act
+    with patch.object(retrieval_service, "get_kb_collection", return_value=_fake_kb_collection([], [], [])):
+        records, diag = retrieval_service.query_knowledge_with_diagnostics(
+            "nothing", n_results=4
+        )
+    # Assert
+    assert records == []
+    assert diag == {"min_distance": None, "retrieved": 0, "kept": 0}
+
+
+def test_diagnostics_keeps_all_when_no_threshold():
+    # Arrange — no ceiling → every chunk kept; min_distance is the closest.
+    docs = ["a", "b"]
+    metas = [{}, {}]
+    dists = [0.40, 0.10]
+    # Act
+    with patch.object(retrieval_service, "get_kb_collection", return_value=_fake_kb_collection(docs, metas, dists)):
+        records, diag = retrieval_service.query_knowledge_with_diagnostics(
+            "q", n_results=4, max_distance=None
+        )
+    # Assert — min over all distances (0.10), nothing dropped.
+    assert len(records) == 2
+    assert diag == {"min_distance": 0.10, "retrieved": 2, "kept": 2}
+
+
+def test_query_knowledge_delegates_to_diagnostics_variant():
+    # Arrange — query_knowledge must be a thin wrapper that drops diagnostics,
+    # preserving its list[dict] contract for existing callers.
+    docs = ["close chunk"]
+    metas = [{"doc_type": "etiquette"}]
+    dists = [0.30]
+    # Act
+    with patch.object(retrieval_service, "get_kb_collection", return_value=_fake_kb_collection(docs, metas, dists)):
+        records = retrieval_service.query_knowledge("q", n_results=4)
+    # Assert — same record shape as the diagnostics variant's records, no tuple.
+    assert isinstance(records, list)
+    assert records[0]["text"] == "close chunk" and records[0]["distance"] == 0.30
