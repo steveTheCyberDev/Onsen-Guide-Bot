@@ -7,95 +7,55 @@ AI agent that helps English-speaking travellers find Japanese hot spring (onsen)
 
 ## Project Status
 
-Data collection is complete. Build is now in progress.
+V1 is **live in production** and feature-complete. V2's performance redesign (ingest-time
+geocoding + ReAct→workflow, ~10× faster) and V2.5's 3-mode router + `analyze_onsen` guide
+layer are **live**. Current build target: flip on the `ask`-mode knowledge base (built,
+gated behind `ASK_ENABLED=False`). See Version Roadmap below and `PROJECT_JOURNEY.md`.
 
 ---
 
 ## Folder Structure
 
-```
-Onsen-Guide-Bot/
-├── backend/
-│   ├── api/
-│   │   ├── __init__.py
-│   │   ├── main.py              # FastAPI entry point
-│   │   └── routes/
-│   │       ├── __init__.py
-│   │       └── chat.py          # POST /chat endpoint
-│   │
-│   ├── agent/
-│   │   ├── __init__.py
-│   │   ├── agent.py             # LangChain agent setup
-│   │   └── tools/
-│   │       ├── __init__.py
-│   │       ├── geocoding_tool.py   # wraps geocoding service
-│   │       ├── rakuten_tool.py     # wraps rakuten service
-│   │       └── retrieval_tool.py   # wraps retrieval service
-│   │
-│   ├── services/
-│   │   ├── __init__.py
-│   │   ├── chat/
-│   │   │   ├── __init__.py
-│   │   │   └── chat_service.py     # conversation history, context
-│   │   ├── retrieval/
-│   │   │   ├── __init__.py
-│   │   │   └── retrieval_service.py  # ChromaDB RAG queries
-│   │   ├── geocoding/
-│   │   │   ├── __init__.py
-│   │   │   └── geocoding_service.py  # Google Maps API
-│   │   └── rakuten/
-│   │       ├── __init__.py
-│   │       └── rakuten_service.py    # Rakuten Travel API
-│   │
-│   ├── vectorstore/
-│   │   ├── __init__.py
-│   │   └── store.py             # ChromaDB setup + ingestion
-│   │
-│   ├── data/
-│   │   └── okinawa_onsen.jsonl  # onsen dataset
-│   │
-│   ├── core/
-│   │   ├── __init__.py
-│   │   ├── config.py            # env vars, settings
-│   │   └── exceptions.py        # custom exceptions
-│   │
-│   ├── .env                     # API keys (never commit!)
-│   ├── .gitignore
-│   └── requirements.txt
-│
-├── frontend/
-│   ├── src/
-│   │   ├── components/
-│   │   │   ├── Chat.jsx         # chat interface
-│   │   │   ├── Message.jsx      # individual message bubble
-│   │   │   └── SearchBar.jsx    # user input
-│   │   ├── App.jsx
-│   │   └── main.jsx
-│   ├── package.json
-│   └── .env                     # VITE_API_URL (never commit!)
-│
-└── README.md
-```
+The full folder/file map lives in **`docs/PROJECT_STRUCTURE.md`** (kept separate so it can grow
+without bloating this file). Read it for orientation instead of scanning the tree.
 
 ---
 
-## Data Flow
+## Architecture
+
+`POST /chat` runs the deterministic **workflow** engine (`agent/workflow/pipeline.py`). One small
+LLM call (`parse_intent`) classifies the query into one of **3 modes** and branches:
 
 ```
-frontend/Chat.jsx
-    ↓ HTTP POST /chat
-api/routes/chat.py
-    ↓
-agent/agent.py
-    ↓                    ↓
-agent/tools/        vectorstore/store.py
-    ↓
-services/
-    geocoding_service.py  → Google Maps API
-    rakuten_service.py    → Rakuten Travel API
-    retrieval_service.py  → ChromaDB
-    chat_service.py       → conversation history
+                         POST /chat  (message)
+                                 |
+                      +----------+-----------+
+                      |  ROUTER (parse_intent + mode)  |   1 small LLM call
+                      +----------+-----------+
+          +----------------------+-----------------------+
+          v                      v                       v
+       SEARCH                RECOMMEND                  ASK
+   "onsen in Shizuoka"   "relaxing, mountains,    "what do I bring?
+                          outdoor"                 do they allow tattoos?"
+          |                      |                       |
+          v                      v                       v
+   query_onsen_structured   query_onsen_structured   semantic RAG over
+   -> assemble (Python)     (candidates)             KNOWLEDGE docs
+   -> template reply        -> ANALYTIC AGENT        -> grounded answer
+   [built OK]                  (LLM: rank + pros/cons  [Layer 2]
+                               grounded in prefs +
+                               Layer-2 knowledge)
+                             -> onsens + recommendation
+                             [analyze_onsen]
 ```
+
+- **search** — deterministic structured query + Python assembly (no LLM in the data path).
+- **recommend** — retrieve candidates, then `analyze_onsen` (one analytical LLM call over a compact
+  projection + prefs) returns a ranked recommendation + per-onsen `pros[]`/`cons[]`. Live via `ANALYZE_ENABLED=true`.
+- **ask** — semantic RAG over the knowledge-base markdown docs (separate Chroma collection). Gated `ASK_ENABLED=False`.
+
+Output: recommend/ask add `pros[]`/`cons[]` + a top-level `recommendation` string (additive); search leaves them empty.
+The legacy ReAct agent (`agent/agent.py`) is retained behind `CHAT_ENGINE=react` for rollback only.
 
 ---
 
@@ -105,7 +65,10 @@ services/
 - `agent/` never imports from `api/`
 - `tools/` never calls external APIs directly — always via `services/`
 - `api/` never calls `services/` directly — always via `agent/`
-- Data flows downward only: `api/` → `agent/` → `tools/` → `services/`
+- Data flows downward only — two paths under `agent/`:
+  - **Live workflow engine** (`CHAT_ENGINE=workflow`, default): `api/` → `agent/workflow/` → `services/` (no `tools/` hop).
+  - **Legacy ReAct engine** (`CHAT_ENGINE=react`, rollback only): `api/` → `agent/` → `tools/` → `services/`.
+  - `tools/` (thin LangChain wrappers) exist for the ReAct path only; the workflow calls `services/` directly.
 
 ### Exception: deterministic data endpoints
 
@@ -295,23 +258,12 @@ non-empty `reply` and no 5xx.
 Note: each `/chat` smoke makes real OpenAI (and tool) API calls — money per run.
 Run the smoke only when the suite is green and code changed, not on every tick.
 
-## Version Roadmap
+## Current State (full roadmap + measured results in `PROJECT_JOURNEY.md`)
 
-### V1 — Simple (current)
-- 2 tools: geocoding + rakuten
-- 1 agent, 1 FastAPI backend, 1 React frontend
-- Direct function calls between tools
-- LLM: OpenAI `text-embedding-3-small` (embeddings) + GPT-4o (chat, currently) → will migrate to Claude Sonnet (`claude-sonnet-4-6`) in a future iteration
-- Vectorstore: ChromaDB
-
-### V2 — Intermediate
-- Add: `booking_service`, `preferences_service`, `translation_service`
-- Add: map view, filters, user preference memory
-
-### V3 — Advanced
-- Multi-agent: orchestrator + search + rank + personalise agents
-- API-based or event-driven communication between agents
-- LangGraph for agent-to-agent orchestration
+- Live `/chat` engine is the deterministic **workflow**, not ReAct (`CHAT_ENGINE=workflow`; ReAct retained for rollback).
+- 3 router modes: `search` and `recommend` (live, `ANALYZE_ENABLED=true`) + `ask` (KB built, **gated** `ASK_ENABLED=False` — not yet flipped in prod).
+- Agent / multi-agent (trip-planner), API-driven agent comms, and the GPT-4o→Claude Sonnet (`claude-sonnet-4-6`) migration are all **V3** — don't reach for them early.
+- Guiding principle: the **autonomy ladder** (`rules → pipeline → workflow → agent → multi-agent`) — use the least autonomy that solves the task; climb a rung only when a concrete case can't be served below.
 
 ---
 
@@ -326,10 +278,5 @@ Run the smoke only when the suite is green and code changed, not on every tick.
 
 ## Key Decisions
 
-- `services/` stays LangChain-agnostic — swappable framework later
-- `agent/tools/` = thin wrappers only, no business logic
-- `core/config.py` = single source of truth for all settings
-- V1 communication = direct function calls (simple, fast, correct)
-- V3 communication = API or event-driven (when scale demands it)
-- No PostgreSQL in V1 — ChromaDB handles vectors and metadata
-- pgvector migration path kept open via `schema.sql`
+- `services/` stays LangChain-agnostic — no framework imports, so it's swappable.
+- Storage is ChromaDB (vectors + metadata); pgvector migration path kept open via `schema.sql`.
