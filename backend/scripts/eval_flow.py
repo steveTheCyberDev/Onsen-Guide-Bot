@@ -143,6 +143,16 @@ _EXAMPLES: list[dict] = [
         "wants_hotels": False,
     },
     {
+        # "top N" phrasing still routes to search (a location listing, not a
+        # preference-driven recommend) — verified against parse_intent. Gifu has
+        # data, so grounding checks the returned names against the Gifu set.
+        "message": "What's the top 5 onsens in Gifu?",
+        "expected_mode": "search",
+        "prefecture": "Gifu",
+        "has_data": True,
+        "wants_hotels": False,
+    },
+    {
         "message": (
             "Recommend an onsen in Okinawa for a couple wanting a quiet "
             "relaxing soak"
@@ -213,15 +223,55 @@ def reconcile_has_data(examples: list[dict], allowed: dict[str, set[str]]) -> li
     return out
 
 
-def get_or_create_dataset(client, allowed: dict[str, set[str]]):
-    """Idempotently get-or-create the ``onsen-flow-evals`` dataset.
+def _expectation(ex: dict) -> dict:
+    """Build the reference-output expectation dict for one example.
 
-    Creates the dataset if missing and (only then) populates it with the
-    reconciled examples. If it already exists, it is reused as-is so re-runs
-    don't duplicate examples; delete it in the LangSmith UI to re-seed.
+    Expectations go in the example's reference OUTPUTS (not metadata): the
+    LangSmith 0.8.x evaluator arg-binding injects ``reference_outputs`` by name
+    but NOT ``metadata``, so evaluators read expectations from reference_outputs.
+    They are ALSO duplicated into metadata purely for at-a-glance UI context.
     """
+    return {
+        "expected_mode": ex["expected_mode"],
+        "prefecture": ex["prefecture"],
+        "has_data": ex["has_data"],
+        "wants_hotels": ex["wants_hotels"],
+        # Optional flag (ask-mode only): the answer should be the no-info
+        # fallback because the KB cannot answer the question. Defaults False.
+        "expect_no_info": ex.get("expect_no_info", False),
+    }
+
+
+def get_or_create_dataset(client, allowed: dict[str, set[str]]):
+    """Idempotently get-or-create the ``onsen-flow-evals`` dataset, syncing new examples.
+
+    Creates and seeds the dataset if missing. If it already exists, it is reused
+    (so existing examples and their experiment history are preserved) and any
+    ``_EXAMPLES`` not already present — keyed by message text — are ADDED. This
+    lets new evals be appended to ``_EXAMPLES`` and picked up on the next run
+    without deleting/re-seeding the dataset (which would orphan past experiments).
+    """
+    examples = reconcile_has_data(_EXAMPLES, allowed)
+
     if client.has_dataset(dataset_name=DATASET_NAME):
-        return client.read_dataset(dataset_name=DATASET_NAME)
+        dataset = client.read_dataset(dataset_name=DATASET_NAME)
+        existing_msgs = {
+            (e.inputs or {}).get("message")
+            for e in client.list_examples(dataset_id=dataset.id)
+        }
+        missing = [ex for ex in examples if ex["message"] not in existing_msgs]
+        if missing:
+            client.create_examples(
+                dataset_id=dataset.id,
+                inputs=[{"message": ex["message"]} for ex in missing],
+                outputs=[_expectation(ex) for ex in missing],
+                metadata=[_expectation(ex) for ex in missing],
+            )
+            print(
+                f"Added {len(missing)} new example(s) to existing dataset: "
+                f"{[ex['message'] for ex in missing]}"
+            )
+        return dataset
 
     dataset = client.create_dataset(
         dataset_name=DATASET_NAME,
@@ -232,23 +282,7 @@ def get_or_create_dataset(client, allowed: dict[str, set[str]]):
             "(expected_mode / prefecture / has_data / wants_hotels)."
         ),
     )
-    examples = reconcile_has_data(_EXAMPLES, allowed)
-    # Expectations go in the example's reference OUTPUTS (not metadata): the
-    # LangSmith 0.8.x evaluator arg-binding injects `reference_outputs` by name
-    # but NOT `metadata`, so evaluators read expectations from reference_outputs.
-    # They are ALSO duplicated into metadata purely for at-a-glance UI context.
-    expectations = [
-        {
-            "expected_mode": ex["expected_mode"],
-            "prefecture": ex["prefecture"],
-            "has_data": ex["has_data"],
-            "wants_hotels": ex["wants_hotels"],
-            # Optional flag (ask-mode only): the answer should be the no-info
-            # fallback because the KB cannot answer the question. Defaults False.
-            "expect_no_info": ex.get("expect_no_info", False),
-        }
-        for ex in examples
-    ]
+    expectations = [_expectation(ex) for ex in examples]
     client.create_examples(
         dataset_id=dataset.id,
         inputs=[{"message": ex["message"]} for ex in examples],
