@@ -67,6 +67,14 @@ from vectorstore.store import get_collection
 
 DATASET_NAME = "onsen-flow-evals"
 
+# --- LLM-as-judge model (eval-local; deliberately NOT in core/config) ---------
+# The two groundedness judges (proscons_grounding / ask_grounding) are an
+# eval-time concern only — they never run in the app — so the model knob lives
+# here rather than in core/config.settings. Cheap default; override via
+# JUDGE_MODEL for a stronger/cheaper judge. Built once at module level (mirrors
+# the rest of the harness) and reused across every judged example.
+JUDGE_MODEL = os.getenv("JUDGE_MODEL", "gpt-4o-mini")
+
 # --- Per-mode budgets (constants, with headroom over measured baselines) ------
 # Measured baselines (2026-06): search ~ $0.0017 / recommend ~ $0.005 cost;
 # latency is LLM-bound. Thresholds are deliberately loose so a normal run passes
@@ -372,6 +380,50 @@ def _onsen_names(outputs: dict) -> list[str]:
     return [o.get("name", "") for o in (outputs.get("onsens") or [])]
 
 
+# --- LLM-as-judge --------------------------------------------------------------
+# Built once at module level like the rest of the harness (intent/analyze/ask all
+# construct their ChatOpenAI at import time). Reused across every judged example.
+# Kept lazy-imported so the module still imports in environments without the
+# OpenAI dep wired up (the unit tests mock _llm_judge, so they never build this).
+def _build_judge_llm():
+    """Construct the cheap judge ChatOpenAI once, reading the eval-local model knob."""
+    from core.config import settings
+    from langchain_openai import ChatOpenAI
+
+    return ChatOpenAI(
+        model=JUDGE_MODEL,
+        api_key=settings.openai_api_key,
+        temperature=0,  # deterministic-as-possible verdicts.
+    )
+
+
+_JUDGE_LLM = None
+
+
+def _llm_judge(system: str, user: str) -> int | None:
+    """Ask the judge a single yes/no groundedness question; return 1, 0, or None.
+
+    The judge is prompted to reply with a single token GROUNDED / UNGROUNDED; we
+    map that to 1/0. Fail-SAFE: any error (API failure, rate limit/timeout, bad
+    output, missing key) returns ``None`` = ABSTAIN, NOT a pass. For a measurement
+    tool this is the honest default — a flaky/broken judge surfaces as "no signal"
+    (rendered "-", uncounted) rather than masking as a green PASS. Callers treat
+    None as "couldn't judge this item" and skip it; the deterministic name-level
+    ``grounding`` evaluator remains the hard guard regardless.
+    """
+    global _JUDGE_LLM
+    try:
+        if _JUDGE_LLM is None:
+            _JUDGE_LLM = _build_judge_llm()
+        resp = _JUDGE_LLM.invoke(
+            [("system", system), ("human", user)]
+        )
+        text = (getattr(resp, "content", "") or "").strip().upper()
+        return 0 if text.startswith("UNGROUNDED") else 1
+    except Exception:  # noqa: BLE001 — fail-safe: abstain (None), never crash the eval.
+        return None
+
+
 def grounding(outputs: dict, reference_outputs: dict) -> dict:
     """Score 1 iff every returned onsen name is in the prefecture's ground truth.
 
@@ -379,9 +431,8 @@ def grounding(outputs: dict, reference_outputs: dict) -> dict:
     For ``has_data=True``, every returned name must be in the ChromaDB allowed set
     for the example's prefecture.
 
-    TODO(LLM-judge): pros/cons fabrication is fuzzy (free text derived from the
-    description) and is NOT checked here — only name-level grounding is. Add an
-    LLM-judge evaluator for pros/cons groundedness later.
+    Name-level grounding only. Pros/cons fabrication (fuzzy free text derived from
+    the description) is scored separately by the ``proscons_grounding`` LLM-judge.
     """
     has_data = bool(reference_outputs.get("has_data"))
     names = _onsen_names(outputs)
@@ -460,10 +511,157 @@ def _no_info_reply() -> str:
     return NO_INFO_REPLY
 
 
-# TODO(LLM-judge grounding for ask): add an evaluator that scores whether the ask
-# answer's claims are supported by the retrieved KB chunks (the prose analogue of
-# the onsen `grounding` evaluator). Deferred to keep this PR tight; the strict
-# grounding prompt + the no-data fallback example are the interim guard.
+# --- LLM-judge groundedness evaluators ----------------------------------------
+# Prose analogues of the deterministic name-level `grounding` evaluator: they
+# score whether GENERATED free text (per-onsen pros/cons, and the ask answer) is
+# supported by its source, closing the "measured not asserted" gap. Both make an
+# LLM call AT EVAL TIME ONLY (inside the evaluator, NOT the target), so they do
+# NOT count against the target's `_cost_usd` budget. Both ABSTAIN (score=None)
+# when they don't apply to the example — _report skips None scores.
+
+_PROSCONS_JUDGE_SYSTEM = (
+    "You are a strict grounding judge for an onsen (Japanese hot spring) guide. "
+    "You are given ONE onsen's factual fields and the pros and cons a system "
+    "generated for it. Decide whether EVERY pro and con is supported by — i.e. a "
+    "reasonable reading of — those facts alone, inventing no new facts (no claimed "
+    "amenities, prices, scenery, or qualities absent from the fields). Reply with "
+    "exactly one word: GROUNDED if all pros/cons are supported, otherwise UNGROUNDED."
+)
+
+_ASK_JUDGE_SYSTEM = (
+    "You are a strict grounding judge for an onsen knowledge-base assistant. You "
+    "are given retrieved source passages and an answer the assistant produced. "
+    "Decide whether every factual claim in the answer is supported by the "
+    "passages, with no invented facts. Reply with exactly one word: GROUNDED if "
+    "the answer is fully supported, otherwise UNGROUNDED."
+)
+
+
+def _onsen_facts_block(onsen: dict) -> str:
+    """Render the factual-only fields of one onsen for the proscons judge prompt.
+
+    Deliberately excludes pros/cons (those are what's being judged) and coords/URLs
+    (no judgement value), matching the fields the analyze brain derived them from.
+    """
+    return (
+        f"Name: {onsen.get('name', '')}\n"
+        f"Location: {onsen.get('location', '')}\n"
+        f"Spring type: {onsen.get('spring_type', '')}\n"
+        f"Description: {onsen.get('spa_quality', '')}"
+    )
+
+
+def proscons_grounding(outputs: dict, reference_outputs: dict) -> dict:
+    """Judge whether each onsen's pros/cons are grounded in that onsen's facts.
+
+    Applies to RECOMMEND examples only — detected structurally as "any returned
+    onsen carries pros or cons" (search/no-data leave them empty). ABSTAINS
+    (score=None) otherwise, so it never penalises modes that have no pros/cons.
+
+    Score 1 iff EVERY onsen with pros/cons is judged grounded; 0 if any onsen's
+    pros/cons invent facts not in its name/location/spring_type/description. A
+    judge error on an onsen returns None for that onsen and is SKIPPED (not a
+    pass, not a fail); if EVERY onsen errored, the example abstains (None).
+    """
+    onsens = outputs.get("onsens") or []
+    judged = [o for o in onsens if (o.get("pros") or o.get("cons"))]
+    if not judged:
+        return {"key": "proscons_grounding", "score": None, "comment": "n/a"}
+
+    verdicts: list[int | None] = []
+    for onsen in judged:
+        user = (
+            f"{_onsen_facts_block(onsen)}\n\n"
+            f"Pros: {onsen.get('pros') or []}\n"
+            f"Cons: {onsen.get('cons') or []}"
+        )
+        verdict = _llm_judge(_PROSCONS_JUDGE_SYSTEM, user)
+        if verdict == 0:
+            # Any ungrounded onsen fails the example immediately.
+            return {
+                "key": "proscons_grounding",
+                "score": 0,
+                "comment": f"ungrounded pros/cons for {onsen.get('name', '?')}",
+            }
+        verdicts.append(verdict)
+
+    # No explicit 0. If the judge errored on EVERY onsen (all None) there is no
+    # signal → abstain rather than report a false PASS.
+    if all(v is None for v in verdicts):
+        return {
+            "key": "proscons_grounding",
+            "score": None,
+            "comment": "n/a (judge unavailable)",
+        }
+    return {"key": "proscons_grounding", "score": 1}
+
+
+def _ask_question(outputs: dict, inputs: dict | None, example) -> str:
+    """Recover the ask question to re-retrieve against.
+
+    The AgentResponse `outputs` carries the one-line `reply`, not the original
+    question, so we read it from the LangSmith-injected `inputs` (preferred) or
+    fall back to the example's inputs. Both are injected by name by LangSmith 0.8.x.
+    """
+    if inputs and inputs.get("message"):
+        return inputs["message"]
+    if example is not None:
+        return (getattr(example, "inputs", None) or {}).get("message", "")
+    return ""
+
+
+def ask_grounding(
+    outputs: dict, reference_outputs: dict, inputs: dict | None = None, example=None
+) -> dict:
+    """Judge whether the ask answer's claims are supported by the retrieved KB chunks.
+
+    Applies to ASK examples only (expected_mode == "ask") AND only when the reply
+    is a REAL answer — i.e. NOT the no-info fallback and NOT the "coming soon"
+    stub. Refusing (the fallback) or the gate being off (the stub) is correct
+    behaviour, not a grounding question, so those ABSTAIN (score=None).
+
+    Re-retrieves the KB chunks for the question via the retrieval service (the
+    same call the ask node makes) and asks the judge whether the answer is
+    supported by them. Score 1/0; None when not applicable.
+    """
+    if reference_outputs.get("expected_mode") != "ask":
+        return {"key": "ask_grounding", "score": None, "comment": "n/a"}
+
+    reply = outputs.get("reply") or ""
+    # Abstain on the stub (gate off → answer node never ran) and the no-info
+    # fallback (a correct refusal, not a grounding claim).
+    if not reply or reply == _ask_stub_reply() or reply == _no_info_reply():
+        return {"key": "ask_grounding", "score": None, "comment": "n/a"}
+
+    question = _ask_question(outputs, inputs, example)
+    if not question:
+        return {"key": "ask_grounding", "score": None, "comment": "n/a (no question)"}
+
+    # Lazy import: keeps the heavy retrieval/Chroma deps out of module import.
+    from core.config import settings
+    from services.retrieval.retrieval_service import (
+        query_knowledge_with_diagnostics,
+    )
+
+    chunks, _diag = query_knowledge_with_diagnostics(
+        question, settings.ask_top_k, settings.ask_max_distance
+    )
+    if not chunks:
+        # No supporting chunks but a real (non-fallback) answer was produced →
+        # ungrounded by definition.
+        return {
+            "key": "ask_grounding",
+            "score": 0,
+            "comment": "no KB chunks retrieved for a non-fallback answer",
+        }
+
+    passages = "\n\n".join(f"- {c.get('text', '')}" for c in chunks)
+    user = f"PASSAGES:\n{passages}\n\nANSWER:\n{reply}"
+    verdict = _llm_judge(_ASK_JUDGE_SYSTEM, user)
+    if verdict is None:
+        # Judge errored → abstain (no signal), not a false PASS.
+        return {"key": "ask_grounding", "score": None, "comment": "n/a (judge unavailable)"}
+    return {"key": "ask_grounding", "score": verdict}
 
 
 def cost_budget(outputs: dict, reference_outputs: dict) -> dict:
@@ -482,7 +680,14 @@ def latency(outputs: dict, reference_outputs: dict) -> dict:
     return {"key": "latency", "score": 1 if measured <= budget else 0}
 
 
-EVALUATORS = [grounding, structure, cost_budget, latency]
+EVALUATORS = [
+    grounding,
+    proscons_grounding,
+    ask_grounding,
+    structure,
+    cost_budget,
+    latency,
+]
 
 
 # --- Runner -------------------------------------------------------------------
@@ -568,7 +773,10 @@ def _report(results) -> int:
     """
     eval_keys = [e.__name__ for e in EVALUATORS]
     # Map evaluator function name → the "key" it emits (they match here).
-    rows: list[tuple[str, str, dict[str, int]]] = []
+    # A None score = ABSTAIN (evaluator didn't apply to this example): it is
+    # SKIPPED — not counted toward the per-evaluator total, never a failure, and
+    # rendered as "-" in the table. Only an explicit 0 is a failure.
+    rows: list[tuple[str, str, dict[str, int | None]]] = []
     per_eval_pass: dict[str, int] = {k: 0 for k in eval_keys}
     per_eval_total: dict[str, int] = {k: 0 for k in eval_keys}
     failures = 0
@@ -580,11 +788,14 @@ def _report(results) -> int:
         mode = meta.get("expected_mode", "?")
         message = (example.inputs or {}).get("message", "")
 
-        scores: dict[str, int] = {}
+        scores: dict[str, int | None] = {}
         for er in res["evaluation_results"]["results"]:
             key = er.key
-            score = int(er.score) if er.score is not None else 0
+            # Preserve None (abstain) distinctly from 0 (fail).
+            score = None if er.score is None else int(er.score)
             scores[key] = score
+            if score is None:
+                continue  # abstain: not counted, not a failure.
             if key in per_eval_total:
                 per_eval_total[key] += 1
                 per_eval_pass[key] += score
@@ -593,9 +804,13 @@ def _report(results) -> int:
 
         rows.append((mode, message, scores))
 
-    # Print table.
+    # Print table. Column headers are shortened to keep the row width readable now
+    # that two LLM-judge columns are included. "-" = abstain (evaluator skipped).
     print("\n=== onsen-flow experiment results ===\n")
-    header = f"{'mode':<10} {'grounding':>9} {'structure':>9} {'cost':>6} {'latency':>8}  message"
+    header = (
+        f"{'mode':<10} {'ground':>6} {'pc-gnd':>6} {'ask-gnd':>7} "
+        f"{'struct':>6} {'cost':>6} {'latency':>7}  message"
+    )
     print(header)
     print("-" * len(header))
     for mode, message, scores in rows:
@@ -604,13 +819,21 @@ def _report(results) -> int:
             return "PASS" if v == 1 else ("FAIL" if v == 0 else "-")
 
         print(
-            f"{mode:<10} {cell('grounding'):>9} {cell('structure'):>9} "
-            f"{cell('cost_budget'):>6} {cell('latency'):>8}  {message[:50]}"
+            f"{mode:<10} {cell('grounding'):>6} {cell('proscons_grounding'):>6} "
+            f"{cell('ask_grounding'):>7} {cell('structure'):>6} "
+            f"{cell('cost_budget'):>6} {cell('latency'):>7}  {message[:50]}"
         )
     print("-" * len(header))
 
     print("\nPer-evaluator pass rate:")
-    for k in ["grounding", "structure", "cost_budget", "latency"]:
+    for k in [
+        "grounding",
+        "proscons_grounding",
+        "ask_grounding",
+        "structure",
+        "cost_budget",
+        "latency",
+    ]:
         total = per_eval_total.get(k, 0)
         passed = per_eval_pass.get(k, 0)
         rate = f"{passed}/{total}" if total else "0/0"

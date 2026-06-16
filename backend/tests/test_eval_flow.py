@@ -6,6 +6,7 @@ do NOT import/run ``run_workflow`` and do NOT touch LangSmith, so the suite stay
 free + fast. The live experiment (paid) lives in ``scripts/eval_flow.py``.
 """
 
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -364,3 +365,227 @@ def test_run_evaluation_restores_analyze_enabled_even_if_evaluate_raises():
         assert settings.analyze_enabled is False  # restored despite the raise
     finally:
         settings.analyze_enabled = original
+
+
+# --- proscons_grounding LLM-judge evaluator -----------------------------------
+def test_proscons_grounding_passes_when_pros_grounded():
+    """All onsens' pros/cons grounded → judge returns 1 → score 1."""
+    outputs = {
+        "onsens": [
+            _onsen("Yamada Onsen", pros=["quiet", "scenic"], cons=["remote"]),
+            _onsen("Naha Onsen", pros=["central"]),
+        ]
+    }
+    with patch.object(eval_flow, "_llm_judge", return_value=1) as judge:
+        result = eval_flow.proscons_grounding(outputs=outputs, reference_outputs={})
+    assert result["score"] == 1
+    # One judge call per onsen carrying pros/cons.
+    assert judge.call_count == 2
+
+
+def test_proscons_grounding_fails_when_a_fabricated_pro_injected():
+    """A single ungrounded onsen (judge returns 0) fails the whole example."""
+    outputs = {
+        "onsens": [
+            _onsen("Yamada Onsen", pros=["quiet"]),
+            _onsen("Naha Onsen", pros=["free helicopter rides"]),  # fabricated
+        ]
+    }
+
+    # Judge: grounded for the first onsen, ungrounded for the fabricated one.
+    def _fake_judge(system, user):
+        return 0 if "helicopter" in user else 1
+
+    with patch.object(eval_flow, "_llm_judge", side_effect=_fake_judge):
+        result = eval_flow.proscons_grounding(outputs=outputs, reference_outputs={})
+    assert result["score"] == 0
+    assert "Naha Onsen" in result["comment"]
+
+
+def test_proscons_grounding_abstains_on_search_example():
+    """No pros/cons (search/no-data) → abstain (None), judge never called."""
+    outputs = {"onsens": [_onsen("Yamada Onsen"), _onsen("Naha Onsen")]}
+    with patch.object(eval_flow, "_llm_judge") as judge:
+        result = eval_flow.proscons_grounding(
+            outputs=outputs, reference_outputs={"expected_mode": "search"}
+        )
+    assert result["score"] is None
+    assert result["comment"] == "n/a"
+    judge.assert_not_called()
+
+
+def test_proscons_grounding_abstains_when_judge_errors_on_every_onsen():
+    """If the judge errors (None) on EVERY onsen, the example abstains — not a false pass."""
+    outputs = {
+        "onsens": [
+            _onsen("Yamada Onsen", pros=["quiet"]),
+            _onsen("Naha Onsen", pros=["central"]),
+        ]
+    }
+    # _llm_judge returns None for every call (e.g. judge API down).
+    with patch.object(eval_flow, "_llm_judge", return_value=None):
+        result = eval_flow.proscons_grounding(outputs=outputs, reference_outputs={})
+    assert result["score"] is None
+    assert "judge unavailable" in result["comment"]
+
+
+# --- ask_grounding LLM-judge evaluator ----------------------------------------
+def test_ask_grounding_passes_against_supporting_chunks():
+    """Real ask answer + supporting chunks + judge=1 → score 1."""
+    outputs = {"onsens": [], "recommendation": None, "reply": "Wash before entering."}
+    ref = {"expected_mode": "ask"}
+    inputs = {"message": "Do I wash before entering the bath?"}
+
+    fake_chunks = ([{"text": "Bathers rinse off before entering the communal bath."}], {})
+    with patch(
+        "services.retrieval.retrieval_service.query_knowledge_with_diagnostics",
+        return_value=fake_chunks,
+    ) as q, patch.object(eval_flow, "_llm_judge", return_value=1):
+        result = eval_flow.ask_grounding(
+            outputs=outputs, reference_outputs=ref, inputs=inputs
+        )
+    assert result["score"] == 1
+    q.assert_called_once()
+
+
+def test_ask_grounding_fails_when_answer_unsupported():
+    """Real ask answer + chunks + judge=0 → score 0."""
+    outputs = {"onsens": [], "recommendation": None, "reply": "Tattoos are always fine."}
+    ref = {"expected_mode": "ask"}
+    inputs = {"message": "Can I enter with tattoos?"}
+
+    fake_chunks = ([{"text": "Many onsen prohibit visible tattoos."}], {})
+    with patch(
+        "services.retrieval.retrieval_service.query_knowledge_with_diagnostics",
+        return_value=fake_chunks,
+    ), patch.object(eval_flow, "_llm_judge", return_value=0):
+        result = eval_flow.ask_grounding(
+            outputs=outputs, reference_outputs=ref, inputs=inputs
+        )
+    assert result["score"] == 0
+
+
+def test_ask_grounding_abstains_on_no_info_fallback():
+    """The no-info fallback is a correct refusal, not a grounding claim → abstain."""
+    fallback = eval_flow._no_info_reply()
+    outputs = {"onsens": [], "recommendation": None, "reply": fallback}
+    with patch(
+        "services.retrieval.retrieval_service.query_knowledge_with_diagnostics"
+    ) as q, patch.object(eval_flow, "_llm_judge") as judge:
+        result = eval_flow.ask_grounding(
+            outputs=outputs,
+            reference_outputs={"expected_mode": "ask"},
+            inputs={"message": "wifi password?"},
+        )
+    assert result["score"] is None
+    q.assert_not_called()  # no retrieval on an abstain
+    judge.assert_not_called()
+
+
+def test_ask_grounding_abstains_on_stub_reply():
+    """The 'coming soon' stub means the answer node never ran → abstain."""
+    stub = eval_flow._ask_stub_reply()
+    outputs = {"onsens": [], "recommendation": None, "reply": stub}
+    with patch(
+        "services.retrieval.retrieval_service.query_knowledge_with_diagnostics"
+    ) as q, patch.object(eval_flow, "_llm_judge") as judge:
+        result = eval_flow.ask_grounding(
+            outputs=outputs,
+            reference_outputs={"expected_mode": "ask"},
+            inputs={"message": "etiquette?"},
+        )
+    assert result["score"] is None
+    q.assert_not_called()
+    judge.assert_not_called()
+
+
+def test_ask_grounding_abstains_on_non_ask_mode():
+    """A non-ask example never reaches the judge → abstain."""
+    outputs = {"onsens": [], "recommendation": None, "reply": "some answer"}
+    with patch.object(eval_flow, "_llm_judge") as judge:
+        result = eval_flow.ask_grounding(
+            outputs=outputs, reference_outputs={"expected_mode": "search"}
+        )
+    assert result["score"] is None
+    judge.assert_not_called()
+
+
+# --- _llm_judge fail-safe -----------------------------------------------------
+def test_llm_judge_fails_safe_to_abstain_on_error():
+    """A judge LLM error returns None (abstain), NOT a false pass, and never crashes."""
+    with patch.object(
+        eval_flow, "_build_judge_llm", side_effect=RuntimeError("api down")
+    ):
+        # Reset the cached singleton so the patched builder is exercised.
+        eval_flow._JUDGE_LLM = None
+        assert eval_flow._llm_judge("sys", "user") is None
+
+
+# --- _report None-score (abstain) handling ------------------------------------
+def _fake_result(mode: str, message: str, scores: dict[str, int | None]):
+    """Build a results-row stand-in matching what _report() reads.
+
+    _report iterates rows accessing res["example"], res["run"], and
+    res["evaluation_results"]["results"] (each with .key / .score).
+    """
+    eval_results = [
+        SimpleNamespace(key=k, score=v) for k, v in scores.items()
+    ]
+    return {
+        "example": SimpleNamespace(
+            metadata={"expected_mode": mode}, inputs={"message": message}
+        ),
+        "run": SimpleNamespace(),
+        "evaluation_results": {"results": eval_results},
+    }
+
+
+def test_report_skips_none_scores_no_false_failures(capsys):
+    """None (abstain) scores are skipped: not counted, not a failure, rendered '-'."""
+    results = [
+        # search: proscons/ask abstain (None), everything else passes.
+        _fake_result(
+            "search",
+            "Find onsen in Okinawa",
+            {
+                "grounding": 1,
+                "proscons_grounding": None,
+                "ask_grounding": None,
+                "structure": 1,
+                "cost_budget": 1,
+                "latency": 1,
+            },
+        ),
+    ]
+    failures = eval_flow._report(results)
+    assert failures == 0  # a None must NOT be counted as a failure
+
+    out = capsys.readouterr().out
+    # Abstained columns render as "-" in the per-evaluator pass rate (0/0).
+    assert "proscons_grounding 0/0" in out
+    assert "ask_grounding   0/0" in out or "ask_grounding  0/0" in out
+    # Applicable evaluators counted normally.
+    assert "grounding      1/1" in out
+
+
+def test_report_counts_explicit_zero_as_failure(capsys):
+    """An explicit 0 (not None) is still a failure and is counted."""
+    results = [
+        _fake_result(
+            "recommend",
+            "Recommend an onsen",
+            {
+                "grounding": 1,
+                "proscons_grounding": 0,  # judged ungrounded → fail
+                "ask_grounding": None,  # abstain
+                "structure": 1,
+                "cost_budget": 1,
+                "latency": 1,
+            },
+        ),
+    ]
+    failures = eval_flow._report(results)
+    assert failures == 1  # the explicit 0, not the None
+
+    out = capsys.readouterr().out
+    assert "proscons_grounding 0/1" in out  # counted toward total, 0 passed
