@@ -9,8 +9,8 @@ AI agent that helps English-speaking travellers find Japanese hot spring (onsen)
 
 V1 is **live in production** and feature-complete. V2's performance redesign (ingest-time
 geocoding + ReAct→workflow, ~10× faster) and V2.5's 3-mode router + `analyze_onsen` guide
-layer are **live**. Current build target: flip on the `ask`-mode knowledge base (built,
-gated behind `ASK_ENABLED=False`). See Version Roadmap below and `PROJECT_JOURNEY.md`.
+layer are **live**. The `ask`-mode knowledge base is also **live in production**
+(`ASK_ENABLED=True`). See Version Roadmap below and `PROJECT_JOURNEY.md`.
 
 ---
 
@@ -52,7 +52,7 @@ LLM call (`parse_intent`) classifies the query into one of **3 modes** and branc
 - **search** — deterministic structured query + Python assembly (no LLM in the data path).
 - **recommend** — retrieve candidates, then `analyze_onsen` (one analytical LLM call over a compact
   projection + prefs) returns a ranked recommendation + per-onsen `pros[]`/`cons[]`. Live via `ANALYZE_ENABLED=true`.
-- **ask** — semantic RAG over the knowledge-base markdown docs (separate Chroma collection). Gated `ASK_ENABLED=False`.
+- **ask** — semantic RAG over the knowledge-base markdown docs (separate Chroma collection). Live via `ASK_ENABLED=True`.
 
 Output: recommend/ask add `pros[]`/`cons[]` + a top-level `recommendation` string (additive); search leaves them empty.
 The legacy ReAct agent (`agent/agent.py`) is retained behind `CHAT_ENGINE=react` for rollback only.
@@ -261,7 +261,7 @@ Run the smoke only when the suite is green and code changed, not on every tick.
 ## Current State (full roadmap + measured results in `PROJECT_JOURNEY.md`)
 
 - Live `/chat` engine is the deterministic **workflow**, not ReAct (`CHAT_ENGINE=workflow`; ReAct retained for rollback).
-- 3 router modes: `search` and `recommend` (live, `ANALYZE_ENABLED=true`) + `ask` (KB built, **gated** `ASK_ENABLED=False` — not yet flipped in prod).
+- 3 router modes all **live in prod**: `search`, `recommend` (`ANALYZE_ENABLED=true`), and `ask` (`ASK_ENABLED=True`).
 - Agent / multi-agent (trip-planner), API-driven agent comms, and the GPT-4o→Claude Sonnet (`claude-sonnet-4-6`) migration are all **V3** — don't reach for them early.
 - Guiding principle: the **autonomy ladder** (`rules → pipeline → workflow → agent → multi-agent`) — use the least autonomy that solves the task; climb a rung only when a concrete case can't be served below.
 
