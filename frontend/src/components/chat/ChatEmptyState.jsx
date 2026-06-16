@@ -1,6 +1,7 @@
 const SUGGESTIONS = [
   'Find onsen in Okinawa',
-  'Find onsen in Shizuoka'
+  'Recommend a relaxing onsen with mountain views',
+  'Can I visit an onsen if I have tattoos?'
 ];
 
 export default function ChatEmptyState({ onSuggestionClick }) {
