@@ -404,11 +404,12 @@ def _llm_judge(system: str, user: str) -> int | None:
     """Ask the judge a single yes/no groundedness question; return 1, 0, or None.
 
     The judge is prompted to reply with a single token GROUNDED / UNGROUNDED; we
-    map that to 1/0. Fail-SAFE: any error (API failure, rate limit/timeout, bad
-    output, missing key) returns ``None`` = ABSTAIN, NOT a pass. For a measurement
-    tool this is the honest default — a flaky/broken judge surfaces as "no signal"
-    (rendered "-", uncounted) rather than masking as a green PASS. Callers treat
-    None as "couldn't judge this item" and skip it; the deterministic name-level
+    map ``UNGROUNDED``→0 and ``GROUNDED``→1. Fail-SAFE: any error (API failure,
+    rate limit/timeout, missing key) OR unrecognised output (neither token)
+    returns ``None`` = ABSTAIN, NOT a pass. For a measurement tool this is the
+    honest default — a flaky/broken judge surfaces as "no signal" (rendered "-",
+    uncounted) rather than masking as a green PASS. Callers treat None as
+    "couldn't judge this item" and skip it; the deterministic name-level
     ``grounding`` evaluator remains the hard guard regardless.
     """
     global _JUDGE_LLM
@@ -419,7 +420,11 @@ def _llm_judge(system: str, user: str) -> int | None:
             [("system", system), ("human", user)]
         )
         text = (getattr(resp, "content", "") or "").strip().upper()
-        return 0 if text.startswith("UNGROUNDED") else 1
+        if text.startswith("UNGROUNDED"):
+            return 0
+        if text.startswith("GROUNDED"):
+            return 1
+        return None  # unrecognised output → abstain, not a false PASS.
     except Exception:  # noqa: BLE001 — fail-safe: abstain (None), never crash the eval.
         return None
 
@@ -689,6 +694,19 @@ EVALUATORS = [
     latency,
 ]
 
+# Report-table display spec per evaluator key: (short column label, width).
+# The single source of truth for the _report() table — header, per-row cells, and
+# the per-evaluator pass-rate loop are ALL derived from EVALUATORS + this map, so
+# adding an evaluator means adding one entry here (not editing three places).
+_COLUMN_LABELS: dict[str, tuple[str, int]] = {
+    "grounding": ("ground", 6),
+    "proscons_grounding": ("pc-gnd", 6),
+    "ask_grounding": ("ask-gnd", 7),
+    "structure": ("struct", 6),
+    "cost_budget": ("cost", 6),
+    "latency": ("latency", 7),
+}
+
 
 # --- Runner -------------------------------------------------------------------
 def run_evaluation() -> int:
@@ -804,12 +822,15 @@ def _report(results) -> int:
 
         rows.append((mode, message, scores))
 
-    # Print table. Column headers are shortened to keep the row width readable now
+    # Print table. Columns are derived from EVALUATORS + _COLUMN_LABELS (single
+    # source of truth); labels are shortened to keep the row width readable now
     # that two LLM-judge columns are included. "-" = abstain (evaluator skipped).
+    columns = [(k, *_COLUMN_LABELS[k]) for k in eval_keys]
     print("\n=== onsen-flow experiment results ===\n")
     header = (
-        f"{'mode':<10} {'ground':>6} {'pc-gnd':>6} {'ask-gnd':>7} "
-        f"{'struct':>6} {'cost':>6} {'latency':>7}  message"
+        f"{'mode':<10} "
+        + " ".join(f"{label:>{width}}" for _k, label, width in columns)
+        + "  message"
     )
     print(header)
     print("-" * len(header))
@@ -818,22 +839,12 @@ def _report(results) -> int:
             v = scores.get(k)
             return "PASS" if v == 1 else ("FAIL" if v == 0 else "-")
 
-        print(
-            f"{mode:<10} {cell('grounding'):>6} {cell('proscons_grounding'):>6} "
-            f"{cell('ask_grounding'):>7} {cell('structure'):>6} "
-            f"{cell('cost_budget'):>6} {cell('latency'):>7}  {message[:50]}"
-        )
+        cells = " ".join(f"{cell(k):>{width}}" for k, _label, width in columns)
+        print(f"{mode:<10} {cells}  {message[:50]}")
     print("-" * len(header))
 
     print("\nPer-evaluator pass rate:")
-    for k in [
-        "grounding",
-        "proscons_grounding",
-        "ask_grounding",
-        "structure",
-        "cost_budget",
-        "latency",
-    ]:
+    for k, _label, _width in columns:
         total = per_eval_total.get(k, 0)
         passed = per_eval_pass.get(k, 0)
         rate = f"{passed}/{total}" if total else "0/0"

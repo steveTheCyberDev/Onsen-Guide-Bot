@@ -521,6 +521,32 @@ def test_llm_judge_fails_safe_to_abstain_on_error():
         assert eval_flow._llm_judge("sys", "user") is None
 
 
+def _judge_returning(content: str):
+    """A fake judge LLM whose .invoke() returns a response with the given content."""
+    llm = MagicMock()
+    llm.invoke.return_value = SimpleNamespace(content=content)
+    return llm
+
+
+@pytest.mark.parametrize(
+    "content,expected",
+    [
+        ("GROUNDED", 1),
+        ("grounded", 1),  # case-insensitive
+        ("UNGROUNDED", 0),
+        ("Ungrounded.", 0),
+        ("maybe?", None),  # unrecognised → abstain, NOT a false PASS
+        ("", None),  # empty → abstain
+        ("the answer is supported", None),  # prose without the token → abstain
+    ],
+)
+def test_llm_judge_maps_output_with_unrecognised_abstaining(content, expected):
+    """GROUNDED→1, UNGROUNDED→0, anything else→None (abstain)."""
+    with patch.object(eval_flow, "_build_judge_llm", return_value=_judge_returning(content)):
+        eval_flow._JUDGE_LLM = None  # reset cached singleton
+        assert eval_flow._llm_judge("sys", "user") is expected
+
+
 # --- _report None-score (abstain) handling ------------------------------------
 def _fake_result(mode: str, message: str, scores: dict[str, int | None]):
     """Build a results-row stand-in matching what _report() reads.
