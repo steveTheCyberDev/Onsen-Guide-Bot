@@ -446,8 +446,13 @@ def grounding(outputs: dict, reference_outputs: dict) -> dict:
     names = _onsen_names(outputs)
 
     if not has_data:
-        score = 1 if not names else 0
-        return {"key": "grounding", "score": score}
+        if not names:
+            return {"key": "grounding", "score": 1, "comment": "empty as required (no-data)"}
+        return {
+            "key": "grounding",
+            "score": 0,
+            "comment": f"fabricated for no-data prefecture: {names}",
+        }
 
     pref = reference_outputs.get("prefecture")
     allowed = _GROUND_TRUTH.get(pref, set())
@@ -455,9 +460,19 @@ def grounding(outputs: dict, reference_outputs: dict) -> dict:
         # Expected results but got none — not a grounding failure per se, but the
         # flow returned nothing where data exists. Treat as ungrounded=fail so it
         # surfaces; the structure evaluator also covers emptiness.
-        return {"key": "grounding", "score": 0}
+        return {
+            "key": "grounding",
+            "score": 0,
+            "comment": f"expected results for {pref}, got none",
+        }
     invented = [n for n in names if normalize(n) not in allowed]
-    return {"key": "grounding", "score": 0 if invented else 1}
+    if invented:
+        return {
+            "key": "grounding",
+            "score": 0,
+            "comment": f"not in {pref} ground truth: {invented}",
+        }
+    return {"key": "grounding", "score": 1, "comment": "all names grounded in DB"}
 
 
 def structure(outputs: dict, reference_outputs: dict) -> dict:
@@ -502,7 +517,11 @@ def structure(outputs: dict, reference_outputs: dict) -> dict:
     else:
         ok = False
 
-    return {"key": "structure", "score": 1 if ok else 0}
+    comment = (
+        f"mode={mode} recommendation={recommendation is not None} "
+        f"onsens={len(onsens)} reply={'yes' if reply else 'no'}"
+    )
+    return {"key": "structure", "score": 1 if ok else 0, "comment": comment}
 
 
 def _ask_stub_reply() -> str:
@@ -601,7 +620,11 @@ def proscons_grounding(outputs: dict, reference_outputs: dict) -> dict:
             "score": None,
             "comment": "n/a (judge unavailable)",
         }
-    return {"key": "proscons_grounding", "score": 1}
+    return {
+        "key": "proscons_grounding",
+        "score": 1,
+        "comment": "all pros/cons grounded in onsen facts",
+    }
 
 
 def _ask_question(outputs: dict, inputs: dict | None, example) -> str:
@@ -669,7 +692,12 @@ def ask_grounding(
     if verdict is None:
         # Judge errored → abstain (no signal), not a false PASS.
         return {"key": "ask_grounding", "score": None, "comment": "n/a (judge unavailable)"}
-    return {"key": "ask_grounding", "score": verdict}
+    comment = (
+        "answer grounded in retrieved chunks"
+        if verdict == 1
+        else "answer not supported by retrieved chunks"
+    )
+    return {"key": "ask_grounding", "score": verdict, "comment": comment}
 
 
 def cost_budget(outputs: dict, reference_outputs: dict) -> dict:
@@ -677,7 +705,11 @@ def cost_budget(outputs: dict, reference_outputs: dict) -> dict:
     mode = reference_outputs.get("expected_mode")
     budget = COST_BUDGET_USD.get(mode, COST_BUDGET_USD["search"])
     cost = float(outputs.get("_cost_usd", 0.0) or 0.0)
-    return {"key": "cost_budget", "score": 1 if cost <= budget else 0}
+    return {
+        "key": "cost_budget",
+        "score": 1 if cost <= budget else 0,
+        "comment": f"${cost:.4f} vs budget ${budget} ({mode})",
+    }
 
 
 def latency(outputs: dict, reference_outputs: dict) -> dict:
@@ -685,7 +717,11 @@ def latency(outputs: dict, reference_outputs: dict) -> dict:
     mode = reference_outputs.get("expected_mode")
     budget = LATENCY_BUDGET_MS.get(mode, LATENCY_BUDGET_MS["search"])
     measured = int(outputs.get("_latency_ms", 0) or 0)
-    return {"key": "latency", "score": 1 if measured <= budget else 0}
+    return {
+        "key": "latency",
+        "score": 1 if measured <= budget else 0,
+        "comment": f"{measured}ms vs budget {budget}ms ({mode})",
+    }
 
 
 EVALUATORS = [
@@ -797,7 +833,7 @@ def _report(results) -> int:
     # A None score = ABSTAIN (evaluator didn't apply to this example): it is
     # SKIPPED — not counted toward the per-evaluator total, never a failure, and
     # rendered as "-" in the table. Only an explicit 0 is a failure.
-    rows: list[tuple[str, str, dict[str, int | None]]] = []
+    rows: list[tuple[str, str, dict[str, int | None], dict[str, str | None]]] = []
     per_eval_pass: dict[str, int] = {k: 0 for k in eval_keys}
     per_eval_total: dict[str, int] = {k: 0 for k in eval_keys}
     failures = 0
@@ -810,11 +846,15 @@ def _report(results) -> int:
         message = (example.inputs or {}).get("message", "")
 
         scores: dict[str, int | None] = {}
+        comments: dict[str, str | None] = {}
         for er in res["evaluation_results"]["results"]:
             key = er.key
             # Preserve None (abstain) distinctly from 0 (fail).
             score = None if er.score is None else int(er.score)
             scores[key] = score
+            # Reason string the evaluator attached (for the per-FAIL line below).
+            # getattr keeps test stand-ins (which omit .comment) working.
+            comments[key] = getattr(er, "comment", None)
             if score is None:
                 continue  # abstain: not counted, not a failure.
             if key in per_eval_total:
@@ -823,7 +863,7 @@ def _report(results) -> int:
             if score == 0:
                 failures += 1
 
-        rows.append((mode, message, scores))
+        rows.append((mode, message, scores, comments))
 
     # Print table. Columns are derived from EVALUATORS + _COLUMN_LABELS (single
     # source of truth); labels are shortened to keep the row width readable now
@@ -837,13 +877,20 @@ def _report(results) -> int:
     )
     print(header)
     print("-" * len(header))
-    for mode, message, scores in rows:
+    for mode, message, scores, comments in rows:
         def cell(k: str) -> str:
             v = scores.get(k)
             return "PASS" if v == 1 else ("FAIL" if v == 0 else "-")
 
         cells = " ".join(f"{cell(k):>{width}}" for k, _label, width in columns)
         print(f"{mode:<10} {cells}  {message[:50]}")
+        # Under each row, explain every FAIL (score == 0) with the evaluator's
+        # reason so the table is self-diagnosing — no need to open LangSmith for
+        # the common case. Abstains ("-") and passes get no extra line.
+        for k, _label, _width in columns:
+            if scores.get(k) == 0:
+                reason = comments.get(k) or "(no reason provided)"
+                print(f"    └─ {k}: {reason}")
     print("-" * len(header))
 
     print("\nPer-evaluator pass rate:")
