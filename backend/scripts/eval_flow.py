@@ -31,6 +31,9 @@ default ``onsen-guide-bot-evals``) so eval runs do not pollute prod traffic.
 
 Exit code = number of failing (example, evaluator) pairs (0 = all pass), so it
 can gate CI later.
+
+For a reference of WHAT each evaluator judges (and against which source of truth),
+see ``docs/what-we-judge.md``.
 """
 
 import asyncio
