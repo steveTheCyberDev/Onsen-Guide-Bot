@@ -594,6 +594,62 @@ def test_report_skips_none_scores_no_false_failures(capsys):
     assert "grounding      1/1" in out
 
 
+def _fake_result_with_comments(
+    mode: str, message: str, scored: dict[str, tuple[int | None, str | None]]
+):
+    """results-row stand-in where each evaluator carries (score, comment)."""
+    eval_results = [
+        SimpleNamespace(key=k, score=s, comment=c) for k, (s, c) in scored.items()
+    ]
+    return {
+        "example": SimpleNamespace(
+            metadata={"expected_mode": mode}, inputs={"message": message}
+        ),
+        "run": SimpleNamespace(),
+        "evaluation_results": {"results": eval_results},
+    }
+
+
+def test_report_prints_reason_under_each_fail_row(capsys):
+    """Each FAIL (score 0) prints its evaluator's comment as a reason line."""
+    results = [
+        _fake_result_with_comments(
+            "recommend",
+            "Recommend an onsen in Okinawa",
+            {
+                "grounding": (0, "not in Okinawa ground truth: ['Phantom Onsen']"),
+                "proscons_grounding": (0, "ungrounded pros/cons for Naha Onsen"),
+                "ask_grounding": (None, "n/a"),
+                "structure": (1, "mode=recommend recommendation=True onsens=2 reply=yes"),
+                "cost_budget": (1, "$0.0050 vs budget $0.05 (recommend)"),
+                "latency": (1, "4200ms vs budget 20000ms (recommend)"),
+            },
+        ),
+    ]
+    failures = eval_flow._report(results)
+    assert failures == 2
+
+    out = capsys.readouterr().out
+    # Reason lines appear under the row for the two FAILs.
+    assert "└─ grounding: not in Okinawa ground truth" in out
+    assert "└─ proscons_grounding: ungrounded pros/cons for Naha Onsen" in out
+    # Passing and abstaining evaluators get NO reason line.
+    assert "└─ structure" not in out
+    assert "└─ ask_grounding" not in out
+
+
+def test_report_fail_without_comment_prints_placeholder(capsys):
+    """A FAIL whose evaluator omitted a comment still prints a reason line."""
+    results = [
+        _fake_result_with_comments(
+            "search", "Find onsen in X", {"structure": (0, None)}
+        ),
+    ]
+    eval_flow._report(results)
+    out = capsys.readouterr().out
+    assert "└─ structure: (no reason provided)" in out
+
+
 def test_report_counts_explicit_zero_as_failure(capsys):
     """An explicit 0 (not None) is still a failure and is counted."""
     results = [
