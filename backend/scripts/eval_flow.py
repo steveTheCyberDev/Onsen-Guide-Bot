@@ -76,6 +76,9 @@ DATASET_NAME = "onsen-flow-evals"
 # here rather than in core/config.settings. Cheap default; override via
 # JUDGE_MODEL for a stronger/cheaper judge. Built once at module level (mirrors
 # the rest of the harness) and reused across every judged example.
+# NOTE: both judges are currently PARKED (not in EVALUATORS) — see the note above
+# the EVALUATORS list. This config + the judge functions are kept for re-enabling
+# once the flow/agents and KB data have stabilised.
 JUDGE_MODEL = os.getenv("JUDGE_MODEL", "gpt-4o-mini")
 
 # --- Per-mode budgets (constants, with headroom over measured baselines) ------
@@ -740,13 +743,21 @@ def latency(outputs: dict, reference_outputs: dict) -> dict:
     }
 
 
+# The active gate is DETERMINISTIC only. The two LLM-as-judge evaluators
+# (proscons_grounding, ask_grounding) are intentionally PARKED — kept in the file
+# (with their unit tests) but removed from the gate while the flow/agents and the
+# KB data are still being consolidated. An LLM judging LLM-generated prose against
+# a moving target is non-deterministic: it false-failed a clean release on a
+# grounded onsen (Yanase), so at this stage it is noise, not actionable signal.
+# Re-add them to this list once the system + data have stabilised — they will
+# auto-reappear in the report (columns derive from EVALUATORS + _COLUMN_LABELS).
 EVALUATORS = [
     grounding,
-    proscons_grounding,
-    ask_grounding,
     structure,
     cost_budget,
     latency,
+    # proscons_grounding,   # PARKED — see note above
+    # ask_grounding,        # PARKED — see note above
 ]
 
 # Report-table display spec per evaluator key: (short column label, width).
