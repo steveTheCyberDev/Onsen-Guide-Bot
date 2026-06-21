@@ -157,11 +157,14 @@ _EXAMPLES: list[dict] = [
         # "top N" phrasing still routes to search (a location listing, not a
         # preference-driven recommend) — verified against parse_intent. Gifu has
         # data, so grounding checks the returned names against the Gifu set.
+        # expected_count asserts the requested count is HONOURED (Gifu has >5,
+        # so "top 5" must return exactly 5, not the default ceiling).
         "message": "What's the top 5 onsens in Gifu?",
         "expected_mode": "search",
         "prefecture": "Gifu",
         "has_data": True,
         "wants_hotels": False,
+        "expected_count": 5,
     },
     {
         "message": (
@@ -255,6 +258,10 @@ def _expectation(ex: dict) -> dict:
         # Optional flag (ask-mode only): the answer should be the no-info
         # fallback because the KB cannot answer the question. Defaults False.
         "expect_no_info": ex.get("expect_no_info", False),
+        # Optional (search-mode): when the user asked for an explicit count
+        # ('top 5'), the response must return exactly that many onsen. None when
+        # no count was requested, so the count is not asserted.
+        "expected_count": ex.get("expected_count"),
     }
 
 
@@ -503,6 +510,10 @@ def structure(outputs: dict, reference_outputs: dict) -> dict:
             not (o.get("pros") or []) and not (o.get("cons") or []) for o in onsens
         )
         ok = recommendation is None and no_proscons
+        # When the user asked for an explicit count ('top 5'), it must be honoured.
+        expected_count = reference_outputs.get("expected_count")
+        if expected_count is not None:
+            ok = ok and len(onsens) == expected_count
     elif mode == "ask":
         # The ask answer rides in `reply` (empty onsens, no recommendation). When
         # ask_enabled is ON the reply is a real grounded answer (or the no-info

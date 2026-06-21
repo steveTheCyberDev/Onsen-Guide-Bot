@@ -52,6 +52,10 @@ _ASK_STUB_REPLY = (
 # OnsenResult(**record) would raise. We project onto this allow-list instead.
 _ONSEN_FIELDS = ("name", "location", "spring_type", "spa_quality", "lat", "lng")
 
+# Default/ceiling for how many onsen retrieval returns. Used when the user names
+# no count, and as the upper clamp when they do (e.g. 'top 100' → _MAX_RESULTS).
+_MAX_RESULTS = 20
+
 # --- LangSmith tracing (import-guarded, no-op when disabled) ---
 # Wrap run_workflow with langsmith's @traceable so the V2 workflow run is
 # distinguishable from the v1-baseline ReAct run in the LangSmith UI. Tracing
@@ -258,9 +262,18 @@ async def run_workflow(message: str, session_id: str) -> dict:
         ).model_dump()
 
     # ② Retrieval — pure Python, no LLM, no fabrication (search + recommend).
-    records = query_onsen_structured(intent.query, prefecture=intent.prefecture)
+    # Honour an explicit count from the user ('top 5' → 5), clamped to a sane
+    # [1, _MAX_RESULTS] range; default to _MAX_RESULTS when no count was asked.
+    n_results = (
+        max(1, min(intent.limit, _MAX_RESULTS)) if intent.limit else _MAX_RESULTS
+    )
+    records = query_onsen_structured(
+        intent.query, prefecture=intent.prefecture, n_results=n_results
+    )
     onsens = _build_onsens(records)
-    logger.info("run_workflow | retrieved onsens=%d", len(onsens))
+    logger.info(
+        "run_workflow | retrieved onsens=%d (n_results=%d)", len(onsens), n_results
+    )
 
     # ⑤ Analyze — RECOMMEND brain. Runs ONLY in recommend mode AND only when the
     # analyze_enabled gate is on (A/B rollout seam). When off, recommend falls
