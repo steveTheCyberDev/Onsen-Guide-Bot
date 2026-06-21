@@ -188,6 +188,63 @@ async def test_hotels_path_calls_search_with_first_coord_onsen_and_maps_passthro
 
 
 @pytest.mark.asyncio
+async def test_hotel_lookup_failure_fails_soft_and_preserves_onsens_and_recommendation():
+    # Arrange — recommend query that wants hotels with a fully-coord onsen, so
+    # the pipeline WILL call search_hotels. Rakuten raises (outage/misconfig).
+    # The whole response must NOT 500: hotels fail soft to [] while onsens and
+    # the analyze recommendation survive.
+    intent = Intent(prefecture="Oita", query="relaxing onsen ryokan", wants_hotels=True)
+    records = [_record(name="Beppu Onsen", lat=33.2846, lng=131.4914)]
+
+    with _Patched(intent, records) as m, patch.object(
+        pipeline.settings, "analyze_enabled", True
+    ), patch.object(
+        pipeline,
+        "search_hotels",
+        new=MagicMock(side_effect=RuntimeError("Rakuten 503 — service unavailable")),
+    ) as search_mock, patch.object(
+        pipeline,
+        "analyze_onsen",
+        new=AsyncMock(
+            return_value=(
+                [
+                    pipeline.OnsenResult(
+                        name="Beppu Onsen",
+                        location="Beppu",
+                        spring_type="Sulfur",
+                        spa_quality="Sulfur spring",
+                        # analyze_onsen carries coords through; without them the
+                        # hotel coords lookup would skip search_hotels entirely.
+                        lat=33.2846,
+                        lng=131.4914,
+                    )
+                ],
+                "We recommend Beppu Onsen for its sulfur waters.",
+            )
+        ),
+    ) as analyze_mock:
+        # Intent.mode defaults to "search"; force recommend so analyze runs.
+        m["parse_intent"].return_value = Intent(
+            prefecture="Oita",
+            query="relaxing onsen ryokan",
+            wants_hotels=True,
+            mode="recommend",
+        )
+        # Act — must NOT raise even though Rakuten blew up.
+        result = await pipeline.run_workflow("relaxing onsen ryokan to stay at", "s-failsoft")
+
+    # Assert — the failing hotel lookup was attempted, then swallowed.
+    search_mock.assert_called_once_with(33.2846, 131.4914)
+    assert result["hotels"] == []
+    # The rest of the response survived the Rakuten failure.
+    analyze_mock.assert_awaited_once()
+    assert len(result["onsens"]) == 1
+    assert result["onsens"][0]["name"] == "Beppu Onsen"
+    assert result["recommendation"] == "We recommend Beppu Onsen for its sulfur waters."
+    assert isinstance(result["reply"], str) and result["reply"]
+
+
+@pytest.mark.asyncio
 async def test_hotels_path_uses_first_onsen_with_coords_when_earlier_ones_lack_them():
     # Arrange — wants_hotels; first onsen lacks coords, second has them. The
     # pipeline must pick the FIRST onsen that has BOTH lat and lng.

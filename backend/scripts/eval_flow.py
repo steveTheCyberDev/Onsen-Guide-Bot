@@ -174,11 +174,16 @@ _EXAMPLES: list[dict] = [
         "wants_hotels": False,
     },
     {
-        "message": "Recommend an onsen in Shizuoka and some nearby hotels",
+        # NOTE: deliberately does NOT request hotels. The recommend+hotels path
+        # calls the live Rakuten API (pipeline.py search_hotels), which the eval
+        # gate must not depend on — it is non-deterministic, rate-limited, and
+        # unscored here (no hotel evaluator). Keeping this recommend example
+        # hotel-free lets the gate run with dummy Rakuten creds in CI.
+        "message": "Recommend an onsen in Shizuoka for a relaxing weekend",
         "expected_mode": "recommend",
         "prefecture": "Shizuoka",
         "has_data": True,
-        "wants_hotels": True,
+        "wants_hotels": False,
     },
     {
         "message": "What is onsen etiquette if I have tattoos?",
