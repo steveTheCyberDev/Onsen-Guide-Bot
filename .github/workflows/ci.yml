@@ -6,11 +6,18 @@
 #                     changes, PRs, and pushes to any branch.
 #   frontend-tests  — Vitest 2.x + Node 20.16.0. Runs on frontend/**
 #                     changes, PRs, and pushes to any branch.
+#   eval-gate       — LangSmith eval harness (eval_flow.py). Runs ONLY on PRs
+#                     targeting main. Makes paid LLM calls — intentionally
+#                     scoped to release PRs to control cost.
 #
 # Branch-protection note: this file only DEFINES the jobs and runs them on
 # every PR. It cannot make them mandatory on its own — to require them before a
 # merge to main, mark both jobs as required status checks via branch protection
 # (GitHub → Settings → Branches → branch protection rule for main).
+#
+# For eval-gate specifically: it requires four GitHub secrets to be configured
+# before it can pass (OPENAI_API_KEY, LANGSMITH_API_KEY, LANGSMITH_ENDPOINT,
+# LANGSMITH_EVAL_PROJECT). See the eval-gate job comments below.
 # ─────────────────────────────────────────────────────────────────────────────
 
 name: CI
@@ -95,3 +102,119 @@ jobs:
           # don't exercise the API or Maps SDK.  Dummy values are fine here.
           VITE_API_URL: http://localhost:8000
           VITE_GOOGLE_MAPS_API_KEY: test-maps-key
+
+  # ── Eval release gate ────────────────────────────────────────────────────────
+  #
+  # Runs the full LangSmith eval harness (backend/scripts/eval_flow.py) against
+  # the workflow pipeline and scores it across 4 evaluators (grounding, structure,
+  # cost_budget, latency) plus 2 LLM-as-judge prose evaluators.
+  #
+  # COST CONTROL: this job runs ONLY on pull_request events targeting main
+  # (github.base_ref == 'main'). It does NOT run on pushes to feature branches
+  # or develop — only when a PR is opened/updated against main. This limits paid
+  # LLM calls (one full workflow run per example, ~9 examples) to genuine release
+  # candidates. workflow_dispatch is also allowed so you can trigger it manually
+  # for one-off model-comparison runs.
+  #
+  # CHROMADB IN CI: chroma_db/ is gitignored and not committed. The job rebuilds
+  # it from scratch by running ingest_all before the eval. This is safe because:
+  #   - All 220 JSONL records already have pre-translated _en fields (translation
+  #     is cached in the committed JSONL files). ingest_regions detects this via
+  #     is_translated() and skips LLM translation, using OPENAI_API_KEY only for
+  #     the text-embedding-3-small embedding step.
+  #   - knowledge/*.md docs are also committed. ingest_knowledge embeds them with
+  #     the same embeddings API.
+  #   - Both ingest scripts are idempotent upserts (deterministic IDs), so a
+  #     fresh DB on every run is safe and produces a consistent state.
+  #   - No Google Maps or Rakuten keys needed — ingest only uses embeddings.
+  #
+  # REQUIRED SECRETS (GitHub → Settings → Secrets and variables → Actions):
+  #   OPENAI_API_KEY         — embeddings (text-embedding-3-small) + workflow LLM
+  #                            calls (GPT-4o for intent/analyze, gpt-4o-mini for
+  #                            judge). Both ingest and eval consume this key.
+  #   LANGSMITH_API_KEY      — LangSmith experiment upload + dataset management.
+  #   LANGSMITH_ENDPOINT     — Must be https://apac.api.smith.langchain.com
+  #                            (the SDK 403s on the US default for this APAC
+  #                            workspace). Set this exactly; do NOT use the default.
+  #   LANGSMITH_EVAL_PROJECT — LangSmith project name for eval experiments.
+  #                            Recommended value: onsen-guide-bot-evals
+  #                            (keeps eval traffic separate from prod traces).
+  #
+  # EXIT CODE: eval_flow.py exits with the count of failing (example, evaluator)
+  # pairs. A non-zero exit naturally fails this CI step, blocking the merge.
+  # ─────────────────────────────────────────────────────────────────────────────
+  eval-gate:
+    name: Eval — LangSmith release gate
+    runs-on: ubuntu-latest
+
+    # Run only on PRs targeting main (not on pushes to feature/develop branches
+    # or PRs targeting develop). workflow_dispatch is also allowed for manual
+    # one-off runs (e.g. model comparison experiments).
+    # Note: the `on: pull_request` block above has path filters, so this job
+    # only triggers at all when backend/**, frontend/**, or ci.yml changed — that
+    # is the correct behaviour (no backend change = no eval needed).
+    if: >-
+      (github.event_name == 'pull_request' && github.base_ref == 'main') ||
+      github.event_name == 'workflow_dispatch'
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          # Share the pip cache with backend-tests to avoid re-downloading deps
+          # when both jobs run on the same runner (cache is keyed by requirements
+          # hash, so a requirements.txt change busts it automatically).
+          cache: "pip"
+          cache-dependency-path: backend/requirements.txt
+
+      - name: Install backend dependencies
+        run: pip install -r backend/requirements.txt
+
+      # Rebuild ChromaDB from the committed JSONL + knowledge markdown files.
+      # All JSONL records have pre-translated _en fields so no GPT translation
+      # calls fire — only text-embedding-3-small embeddings. Both scripts are
+      # idempotent upserts, so re-running on the same data is safe.
+      # ingest_all runs ingest_regions then ingest_knowledge in sequence (see
+      # backend/scripts/ingest_all.py).
+      - name: Populate ChromaDB (ingest regions + knowledge base)
+        working-directory: backend
+        run: python -m scripts.ingest_all
+        env:
+          # Real key required: embeddings are the only LLM call at ingest time
+          # (translation is cached in the committed JSONL files).
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          # Dummy values for non-ingest keys that core/config.py requires at
+          # import time. Ingest never calls Rakuten or Google Maps.
+          ANTHROPIC_API_KEY: dummy
+          GOOGLE_MAPS_API_KEY: dummy
+          RAKUTEN_APP_ID: dummy
+          RAKUTEN_ACCESS_KEY: dummy
+          # LangSmith tracing is opt-in (LANGSMITH_TRACING env var); without it
+          # the SDK is a no-op at import time. Leave unset here so ingest runs
+          # don't accidentally pollute the eval project with ingest traces.
+
+      # Run the standalone eval harness. It reads ChromaDB ground truth, creates
+      # or syncs the LangSmith dataset, runs the target (full workflow) for each
+      # example, scores with all evaluators, prints a per-example report, and
+      # exits with the failing-pair count. A non-zero exit fails this step.
+      - name: Run eval harness
+        working-directory: backend
+        run: python scripts/eval_flow.py
+        env:
+          # Real API keys — all four are required. See REQUIRED SECRETS above.
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          LANGSMITH_API_KEY: ${{ secrets.LANGSMITH_API_KEY }}
+          # APAC endpoint — without this the SDK returns 403 for this workspace.
+          LANGSMITH_ENDPOINT: ${{ secrets.LANGSMITH_ENDPOINT }}
+          # Dedicated eval project — keeps eval runs out of prod/dev trace history.
+          LANGSMITH_EVAL_PROJECT: ${{ secrets.LANGSMITH_EVAL_PROJECT }}
+          # Dummy values for keys that core/config.py requires at import time but
+          # the eval harness never actually calls (no Maps geocoding, no Rakuten).
+          ANTHROPIC_API_KEY: dummy
+          GOOGLE_MAPS_API_KEY: dummy
+          RAKUTEN_APP_ID: dummy
+          RAKUTEN_ACCESS_KEY: dummy
