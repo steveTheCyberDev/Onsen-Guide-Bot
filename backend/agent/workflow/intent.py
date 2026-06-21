@@ -46,6 +46,13 @@ class Intent(BaseModel):
         default=False,
         description="True if the user asks about hotels / lodging / where to stay",
     )
+    limit: int | None = Field(
+        default=None,
+        description=(
+            "The number of onsen the user explicitly asked for (e.g. 'top 5', "
+            "'show me 3') as a positive integer; null if the user named no count"
+        ),
+    )
 
 
 _INSTRUCTIONS = (
@@ -70,6 +77,9 @@ _INSTRUCTIONS = (
     "prefecture in the query.\n"
     "3. wants_hotels: true if the user asks about hotels, lodging, accommodation, "
     "or where to stay; otherwise false.\n"
+    "4. limit: if the user asks for a specific number of onsen (e.g. 'top 5', "
+    "'show me 3', 'list 10'), return that number as a positive integer; if the "
+    "user names no count, return null.\n"
     "Use the conversation history to resolve follow-up references."
 )
 
@@ -124,9 +134,10 @@ async def parse_intent(
         run_config["callbacks"] = callbacks
     intent: Intent = await _llm.ainvoke(messages, config=run_config)
     logger.info(
-        "parse_intent | mode=%s | prefecture=%s | wants_hotels=%s",
+        "parse_intent | mode=%s | prefecture=%s | wants_hotels=%s | limit=%s",
         intent.mode,
         intent.prefecture,
         intent.wants_hotels,
+        intent.limit,
     )
     return intent

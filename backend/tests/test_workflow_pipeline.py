@@ -330,3 +330,38 @@ async def test_history_from_get_history_is_passed_to_parse_intent():
     args = m["parse_intent"].await_args.args
     assert args[0] == "any onsen?"
     assert args[1] is history
+
+
+@pytest.mark.asyncio
+async def test_search_honours_explicit_limit_as_n_results():
+    # 'top 5' → Intent.limit=5 → retrieval is asked for exactly 5 onsen.
+    intent = Intent(prefecture="Gifu", query="onsen", wants_hotels=False, limit=5)
+    records = [_record(name=f"Onsen {i}") for i in range(5)]
+    with _Patched(intent, records) as m:
+        result = await pipeline.run_workflow("top 5 onsen in Gifu", "s-limit5")
+
+    m["query_onsen_structured"].assert_called_once()
+    assert m["query_onsen_structured"].call_args.kwargs["n_results"] == 5
+    assert len(result["onsens"]) == 5
+
+
+@pytest.mark.asyncio
+async def test_search_defaults_to_max_results_when_no_limit():
+    # No count requested (limit None) → fall back to the default ceiling.
+    intent = Intent(prefecture="Gifu", query="onsen", wants_hotels=False)
+    records = [_record(name="Onsen A")]
+    with _Patched(intent, records) as m:
+        await pipeline.run_workflow("onsen in Gifu", "s-nolimit")
+
+    assert m["query_onsen_structured"].call_args.kwargs["n_results"] == pipeline._MAX_RESULTS
+
+
+@pytest.mark.asyncio
+async def test_search_limit_is_clamped_to_max_results():
+    # A huge count is clamped to the ceiling rather than passed through verbatim.
+    intent = Intent(prefecture="Gifu", query="onsen", wants_hotels=False, limit=100)
+    records = [_record(name="Onsen A")]
+    with _Patched(intent, records) as m:
+        await pipeline.run_workflow("top 100 onsen in Gifu", "s-limit100")
+
+    assert m["query_onsen_structured"].call_args.kwargs["n_results"] == pipeline._MAX_RESULTS
