@@ -280,10 +280,24 @@ async def run_workflow(message: str, session_id: str) -> dict:
         )
         if coords is not None:
             lat, lng = coords
-            # search_hotels is sync (uses requests) — run off the event loop.
-            raw = await asyncio.to_thread(search_hotels, lat, lng)
-            hotels = [_to_hotel(h) for h in raw]
-            logger.info("run_workflow | hotels=%d (lat=%s lng=%s)", len(hotels), lat, lng)
+            # Fail soft — a Rakuten outage/misconfig must NOT 500 the whole
+            # response and lose the onsen recommendation already computed above.
+            # On any error, log it and leave hotels=[]; the reply builder
+            # handles an empty list. search_hotels is sync (uses requests) —
+            # run off the event loop.
+            try:
+                raw = await asyncio.to_thread(search_hotels, lat, lng)
+                hotels = [_to_hotel(h) for h in raw]
+                logger.info("run_workflow | hotels=%d (lat=%s lng=%s)", len(hotels), lat, lng)
+            except Exception as e:
+                logger.warning(
+                    "run_workflow | hotel lookup failed — returning onsens "
+                    "without hotels (lat=%s lng=%s): %s",
+                    lat,
+                    lng,
+                    e,
+                )
+                hotels = []
         else:
             logger.warning("run_workflow | wants_hotels but no onsen has coords — skipping hotels")
 
