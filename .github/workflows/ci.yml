@@ -198,6 +198,7 @@ jobs:
           GOOGLE_MAPS_API_KEY: dummy
           RAKUTEN_APP_ID: dummy
           RAKUTEN_ACCESS_KEY: dummy
+          RAKUTEN_HOTEL_URL: dummy
           # LangSmith tracing is opt-in (LANGSMITH_TRACING env var); without it
           # the SDK is a no-op at import time. Leave unset here so ingest runs
           # don't accidentally pollute the eval project with ingest traces.
@@ -225,3 +226,4 @@ jobs:
           GOOGLE_MAPS_API_KEY: dummy
           RAKUTEN_APP_ID: dummy
           RAKUTEN_ACCESS_KEY: dummy
+          RAKUTEN_HOTEL_URL: dummy
