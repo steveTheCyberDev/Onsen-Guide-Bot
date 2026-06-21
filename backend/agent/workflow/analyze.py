@@ -40,11 +40,17 @@ class _OnsenAnalysis(BaseModel):
     index: int = Field(description="0-based index of the onsen in the provided list.")
     pros: list[str] = Field(
         default=[],
-        description="Short grounded positives, derived ONLY from the provided fields.",
+        description=(
+            "Short positives supported by the LITERAL provided fields. Empty when "
+            "the fields (esp. an absent description) don't support any — do not infer."
+        ),
     )
     cons: list[str] = Field(
         default=[],
-        description="Short grounded caveats, derived ONLY from the provided fields.",
+        description=(
+            "Short caveats supported by the LITERAL provided fields. Empty when "
+            "the fields (esp. an absent description) don't support any — do not infer."
+        ),
     )
 
 
@@ -69,14 +75,21 @@ _INSTRUCTIONS = (
     "a short description) and the traveller's stated preference. For each onsen, "
     "give a few short pros and cons, and then recommend which one best fits the "
     "preference and why.\n"
-    "STRICT GROUNDING RULES:\n"
-    "- Use ONLY the fields provided for each onsen plus the user's stated "
-    "preference. Do NOT invent facilities, prices, opening hours, tattoo policies, "
-    "transport, or any fact not present in the data.\n"
-    "- If the data does not support a pro or con, omit it rather than guessing. It "
-    "is fine for an onsen to have few or no pros/cons.\n"
+    "STRICT GROUNDING RULES — these override any instinct to be more helpful:\n"
+    "- Every pro and con MUST be directly supported by the LITERAL text of that "
+    "onsen's provided fields (name, spring type, location, description). Do NOT "
+    "infer amenities, scenery, baths, views, atmosphere, crowds, or activities "
+    "from the onsen's NAME, from its LOCATION, or from general knowledge about "
+    "the area or the spring type.\n"
+    "- If an onsen's description is 'none provided', you usually cannot ground "
+    "any specific pro or con — return EMPTY pros and cons for that onsen rather "
+    "than guessing. It is correct and expected for an onsen to have no pros/cons.\n"
+    "- Never invent facilities, prices, opening hours, tattoo policies, transport, "
+    "baths, views, or any fact not present in the data.\n"
     "- Refer to each onsen by its given index so your analysis can be matched back.\n"
-    "- Keep pros/cons short (a few words each)."
+    "- Keep pros/cons short (a few words each).\n"
+    "- The recommendation paragraph may compare spring type and location against "
+    "the preference, but must not assert any fact absent from the data."
 )
 
 # Construct the analyze model once at import time. Uses the analyze_model knob
