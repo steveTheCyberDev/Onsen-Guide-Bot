@@ -569,15 +569,15 @@ def _fake_result(mode: str, message: str, scores: dict[str, int | None]):
 def test_report_skips_none_scores_no_false_failures(capsys):
     """None (abstain) scores are skipped: not counted, not a failure, rendered '-'."""
     results = [
-        # search: proscons/ask abstain (None), everything else passes.
+        # One evaluator abstains (None); everything else passes. The abstain path
+        # is dormant now the LLM-judges are parked, but _report still handles None
+        # generically — exercise it via an active evaluator key.
         _fake_result(
             "search",
             "Find onsen in Okinawa",
             {
                 "grounding": 1,
-                "proscons_grounding": None,
-                "ask_grounding": None,
-                "structure": 1,
+                "structure": None,  # abstain → skipped, not a failure
                 "cost_budget": 1,
                 "latency": 1,
             },
@@ -587,9 +587,8 @@ def test_report_skips_none_scores_no_false_failures(capsys):
     assert failures == 0  # a None must NOT be counted as a failure
 
     out = capsys.readouterr().out
-    # Abstained columns render as "-" in the per-evaluator pass rate (0/0).
-    assert "proscons_grounding 0/0" in out
-    assert "ask_grounding   0/0" in out or "ask_grounding  0/0" in out
+    # Abstained evaluator renders as 0/0 in the per-evaluator pass rate.
+    assert "structure      0/0" in out
     # Applicable evaluators counted normally.
     assert "grounding      1/1" in out
 
@@ -614,15 +613,13 @@ def test_report_prints_reason_under_each_fail_row(capsys):
     """Each FAIL (score 0) prints its evaluator's comment as a reason line."""
     results = [
         _fake_result_with_comments(
-            "recommend",
-            "Recommend an onsen in Okinawa",
+            "search",
+            "Find onsen in Okinawa",
             {
                 "grounding": (0, "not in Okinawa ground truth: ['Phantom Onsen']"),
-                "proscons_grounding": (0, "ungrounded pros/cons for Naha Onsen"),
-                "ask_grounding": (None, "n/a"),
-                "structure": (1, "mode=recommend recommendation=True onsens=2 reply=yes"),
-                "cost_budget": (1, "$0.0050 vs budget $0.05 (recommend)"),
-                "latency": (1, "4200ms vs budget 20000ms (recommend)"),
+                "structure": (0, "mode=search recommendation=True onsens=0 reply=no"),
+                "cost_budget": (1, "$0.0017 vs budget $0.05 (search)"),
+                "latency": (1, "1200ms vs budget 20000ms (search)"),
             },
         ),
     ]
@@ -632,10 +629,10 @@ def test_report_prints_reason_under_each_fail_row(capsys):
     out = capsys.readouterr().out
     # Reason lines appear under the row for the two FAILs.
     assert "└─ grounding: not in Okinawa ground truth" in out
-    assert "└─ proscons_grounding: ungrounded pros/cons for Naha Onsen" in out
-    # Passing and abstaining evaluators get NO reason line.
-    assert "└─ structure" not in out
-    assert "└─ ask_grounding" not in out
+    assert "└─ structure: mode=search recommendation=True onsens=0 reply=no" in out
+    # Passing evaluators get NO reason line.
+    assert "└─ cost_budget" not in out
+    assert "└─ latency" not in out
 
 
 def test_report_fail_without_comment_prints_placeholder(capsys):
@@ -654,12 +651,10 @@ def test_report_counts_explicit_zero_as_failure(capsys):
     """An explicit 0 (not None) is still a failure and is counted."""
     results = [
         _fake_result(
-            "recommend",
-            "Recommend an onsen",
+            "search",
+            "Find onsen in X",
             {
-                "grounding": 1,
-                "proscons_grounding": 0,  # judged ungrounded → fail
-                "ask_grounding": None,  # abstain
+                "grounding": 0,  # judged fail
                 "structure": 1,
                 "cost_budget": 1,
                 "latency": 1,
@@ -667,7 +662,7 @@ def test_report_counts_explicit_zero_as_failure(capsys):
         ),
     ]
     failures = eval_flow._report(results)
-    assert failures == 1  # the explicit 0, not the None
+    assert failures == 1  # the explicit 0 is counted
 
     out = capsys.readouterr().out
-    assert "proscons_grounding 0/1" in out  # counted toward total, 0 passed
+    assert "grounding      0/1" in out  # counted toward total, 0 passed
