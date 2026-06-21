@@ -39,7 +39,7 @@ The parts I'd bring up in an interview — the engineering, not the feature list
 - **~10× faster by removing the agent.** The V1 LangGraph **ReAct agent** averaged **~35 s** per `/chat`. I traced it, found two GPT-4o round-trips dominating the time, and redesigned it into a **deterministic workflow** — one small intent call + pure-Python assembly — landing at **~3.7 s**. Shipped behind a feature flag for an A/B and instant rollback.
 - **Hallucination prevented *structurally*, not by prompting.** Onsen results are assembled in Python from retrieved records; the LLM never invents facts. An **automated eval suite** (LangSmith) scores grounding so "is it honest?" has a number.
 - **Cost & latency are observed, not guessed.** Full LangSmith tracing in prod with **per-request cost/token attribution** (~$0.002 search · ~$0.005 recommend), and the expensive recommend LLM call sits behind a gated rollout flag.
-- **Production-grade, not a notebook.** Per-IP rate limiting, outbound retry/backoff, fail-closed API-key auth, **206 backend + 126 frontend tests**, CI test gates, and branch-protected releases to Railway + Vercel.
+- **Production-grade, not a notebook.** Per-IP rate limiting, outbound retry/backoff, fail-closed API-key auth, **312 backend + 126 frontend tests**, CI test gates (including a deterministic eval release gate), and branch-protected releases to Railway + Vercel.
 
 ---
 
@@ -145,15 +145,14 @@ In the Railway container, `/chat` returned zero results despite a "successful" i
 
 ## Status & limitations
 
-**V2.5 is live in production** — the deterministic workflow, guide-style recommendations, evals, and observability are all shipped and running. I'd rather name the remaining gaps than hide them:
+**V2.5 is live in production** — the deterministic workflow, guide-style recommendations, the `ask` knowledge base, evals, and observability are all shipped and running. **V3 (the trip-planner agent) is now kicking off** — see the [design plan](./docs/v3-trip-planner-plan.md). I'd rather name the remaining gaps than hide them:
 
-**Shipped since V1** (were the V1 limitations): ingest-time geocoding · LangSmith eval harness · tracing + per-request cost accounting · rate limiting + outbound resilience · the workflow redesign.
+**Shipped since V1** (were the V1 limitations): ingest-time geocoding · the `ask`-mode knowledge base · LangSmith eval harness, now a **deterministic CI release gate** · tracing + per-request cost accounting · rate limiting + outbound resilience · the workflow redesign.
 
 **Still open (conscious tradeoffs, with paths forward):**
-- **Chat history is in-memory** — lost on restart, not multi-instance safe. → persistent session store (Redis).
+- **Chat history is in-memory** — lost on restart, not multi-instance safe. → a persistent session store (SQLite local / Postgres prod) — this is **V3 Step 0**, the hard prerequisite for the trip-planner ([plan](./docs/v3-trip-planner-plan.md)).
 - **Map-click hotels surface in Japanese.** The Rakuten API returns Japanese-only data; the `/chat` path translates it, but the deterministic `/hotels` endpoint skips the agent for speed, so its hotels come back untranslated. → a `translation_service` that translates once and **caches by Rakuten hotel id**, so both paths get English cheaply.
-- **Pros/cons groundedness isn't eval-checked yet.** The eval suite scores *name* grounding; free-text pros/cons would need an LLM-as-judge evaluator. → on the eval roadmap.
-- **`ask` mode is a stub.** Knowledge questions ("tattoo etiquette?") aren't answered yet. → V2.5 Layer 2: a markdown knowledge base in a separate Chroma collection with semantic RAG.
+- **Pros/cons groundedness is not gated.** I built an **LLM-as-judge** evaluator for it, then **parked** it: judging LLM-written prose while the flow and data are still moving produced non-deterministic false-negatives that blocked clean releases. The release gate is **deterministic-only** for now (name-grounding, structure, cost, latency); the judge is kept for re-enable once V3 stabilises and real ratings (Google Places) ground the pros/cons.
 
 ---
 
@@ -161,16 +160,19 @@ In the Railway container, `/chat` returned zero results despite a "successful" i
 
 **V2 / V2.5 — done & live**
 - ReAct → deterministic workflow (measured ~10× latency win, flagged for A/B).
-- 3-mode router (search · recommend · ask) + the recommend brain (grounded pros/cons + recommendation).
-- LangSmith tracing + per-request cost accounting; a LangSmith eval harness.
+- 3-mode router (search · recommend · **ask**) + the recommend brain (grounded pros/cons + recommendation).
+- **`ask` knowledge base** — markdown onsen knowledge (etiquette, tattoo policy, spring-type benefits) in a separate Chroma collection, served by semantic RAG (live, `ASK_ENABLED=true`).
+- LangSmith tracing + per-request cost accounting; a LangSmith eval harness, now a **deterministic release gate** in CI (LLM-as-judge parked until the flow + data stabilise).
 - Hardening: rate limiting, outbound retries/backoff; CI test gates + branch-protected releases.
 
-**V3 — next**
-- **`ask` mode / knowledge base** — markdown onsen knowledge (etiquette, tattoo policy, spring-type benefits) in a separate Chroma collection.
-- **Multi-agent** — an orchestrator coordinating specialised search / rank / personalise agents via LangGraph (where true agency earns its place back).
-- Migrate chat from GPT-4o to **Claude Sonnet**; pgvector when scale demands it; an Azure (Azure OpenAI) deployment story.
+**V3 — kicking off: the trip-planner agent**
+The first true *agent* — dynamic tool sequencing + re-planning — for the one query the workflow can't serve: *"plan me a 3-day onsen trip."* **Single agent first; multi-agent only if it strains.**
+- **Step 0 — persistent session state** (the hard prerequisite): a bespoke session store, SQLite local / Postgres prod, replacing the in-memory single-worker history.
+- **Slot-filling** (regions · nights · dates · party · budget · prefs) + a LangGraph agent over **Google-API tools** — Places (reviews/ratings, to *ground* pros/cons in real signal), Distance Matrix/Directions (travel-time / re-planning), weather — plus the existing onsen/hotel/analyze tools.
+- **Multi-turn / trajectory agent evals**, measured against the workflow baseline.
+- Migrate chat GPT-4o → **Claude (Sonnet 4.6 / Opus 4.8)** with a provider fallback chain; pgvector when scale demands it.
 
-Design notes: [`docs/V2_IMPLEMENTATION_PLAN.md`](./docs/V2_IMPLEMENTATION_PLAN.md) · [`docs/v2-slot-filling-agent.md`](./docs/v2-slot-filling-agent.md) (the original V2 design that evolved into the workflow).
+Full design: [`docs/v3-trip-planner-plan.md`](./docs/v3-trip-planner-plan.md). Earlier notes: [`docs/V2_IMPLEMENTATION_PLAN.md`](./docs/V2_IMPLEMENTATION_PLAN.md) · [`docs/v2-slot-filling-agent.md`](./docs/v2-slot-filling-agent.md).
 
 ---
 
@@ -213,7 +215,7 @@ VITE_GOOGLE_MAPS_API_KEY=...
 VITE_API_KEY=...           # matches the backend API_KEY
 ```
 
-**Tests:** `pytest` in `backend/` (206 tests, external I/O mocked) · `npm test` in `frontend/` (126 Vitest + RTL tests).
+**Tests:** `pytest` in `backend/` (312 tests, external I/O mocked) · `npm test` in `frontend/` (126 Vitest + RTL tests).
 **Evals (paid):** `.venv/bin/python scripts/eval_flow.py` from `backend/` — runs the LangSmith flow-eval experiment (needs `LANGSMITH_API_KEY`).
 
 ---
