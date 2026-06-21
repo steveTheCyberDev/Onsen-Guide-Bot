@@ -128,11 +128,16 @@ jobs:
   #     fresh DB on every run is safe and produces a consistent state.
   #   - No Google Maps or Rakuten keys needed — ingest only uses embeddings.
   #
-  # REQUIRED SECRETS (GitHub → Settings → Secrets and variables → Actions):
+  # REQUIRED CONFIG (GitHub → Settings → Secrets and variables → Actions).
+  # Sensitive keys go on the Secrets tab; non-sensitive config on the Variables tab.
+  #
+  # Secrets tab (masked):
   #   OPENAI_API_KEY         — embeddings (text-embedding-3-small) + workflow LLM
   #                            calls (GPT-4o for intent/analyze, gpt-4o-mini for
   #                            judge). Both ingest and eval consume this key.
   #   LANGSMITH_API_KEY      — LangSmith experiment upload + dataset management.
+  #
+  # Variables tab (plain, auditable):
   #   LANGSMITH_ENDPOINT     — Must be https://apac.api.smith.langchain.com
   #                            (the SDK 403s on the US default for this APAC
   #                            workspace). Set this exactly; do NOT use the default.
@@ -209,9 +214,11 @@ jobs:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           LANGSMITH_API_KEY: ${{ secrets.LANGSMITH_API_KEY }}
           # APAC endpoint — without this the SDK returns 403 for this workspace.
-          LANGSMITH_ENDPOINT: ${{ secrets.LANGSMITH_ENDPOINT }}
+          # Non-sensitive, so it lives in the Variables tab (vars), not Secrets.
+          LANGSMITH_ENDPOINT: ${{ vars.LANGSMITH_ENDPOINT }}
           # Dedicated eval project — keeps eval runs out of prod/dev trace history.
-          LANGSMITH_EVAL_PROJECT: ${{ secrets.LANGSMITH_EVAL_PROJECT }}
+          # Non-sensitive name, so it lives in the Variables tab (vars), not Secrets.
+          LANGSMITH_EVAL_PROJECT: ${{ vars.LANGSMITH_EVAL_PROJECT }}
           # Dummy values for keys that core/config.py requires at import time but
           # the eval harness never actually calls (no Maps geocoding, no Rakuten).
           ANTHROPIC_API_KEY: dummy
