@@ -181,6 +181,18 @@ def test_query_onsen_omits_where_filter_when_prefecture_empty_string():
     assert "where" not in kwargs
 
 
+def test_query_onsen_substitutes_neutral_term_for_empty_query():
+    # Arrange — an empty/whitespace query would 400 the embeddings backend
+    # ("input cannot be an empty string"). It must be swapped for a neutral term.
+    collection = _fake_collection([], [])
+    # Act
+    with patch.object(retrieval_service, "get_collection", return_value=collection):
+        retrieval_service.query_onsen("   ", prefecture="Gifu")
+    # Assert — the embedding text is the fallback, never the empty string.
+    _, kwargs = collection.query.call_args
+    assert kwargs["query_texts"] == ["onsen"]
+
+
 # ---------------------------------------------------------------------------
 # query_onsen_structured — returns list[dict] (V2 deterministic assembly path)
 # ---------------------------------------------------------------------------
@@ -414,6 +426,20 @@ def test_structured_forwards_n_results_to_collection():
     assert kwargs["n_results"] == 7
 
 
+def test_structured_substitutes_neutral_term_for_empty_query():
+    # Arrange — pure location listings ("top 5 onsen in Gifu") can yield an empty
+    # semantic query from the parser; embedding "" 400s. The prefecture filter
+    # carries the search, so the empty query must fall back to a neutral term.
+    collection = _fake_collection([], [])
+    # Act
+    with patch.object(retrieval_service, "get_collection", return_value=collection):
+        retrieval_service.query_onsen_structured("", prefecture="Gifu", n_results=5)
+    # Assert
+    _, kwargs = collection.query.call_args
+    assert kwargs["query_texts"] == ["onsen"]
+    assert kwargs["n_results"] == 5
+
+
 # ---------------------------------------------------------------------------
 # query_knowledge — Layer 2 KB retrieval (ask mode)
 # ---------------------------------------------------------------------------
@@ -495,6 +521,17 @@ def test_query_knowledge_passes_query_n_results_and_include():
     assert kwargs["query_texts"] == ["etiquette"]
     assert kwargs["n_results"] == 4
     assert kwargs["include"] == ["documents", "metadatas", "distances"]
+
+
+def test_query_knowledge_substitutes_neutral_term_for_empty_query():
+    # Arrange — empty KB query would 400 the embeddings backend; guard it too.
+    collection = _fake_kb_collection([], [], [])
+    # Act
+    with patch.object(retrieval_service, "get_kb_collection", return_value=collection):
+        retrieval_service.query_knowledge("  ", n_results=4)
+    # Assert
+    _, kwargs = collection.query.call_args
+    assert kwargs["query_texts"] == ["onsen"]
 
 
 def test_query_knowledge_drops_chunks_over_max_distance():
