@@ -1,6 +1,18 @@
 from vectorstore.store import get_collection, get_kb_collection
 
 
+def _nonempty_query(query: str) -> str:
+    """Guard against an empty/whitespace query before embedding.
+
+    The embeddings backend 400s on an empty string ("input cannot be an empty
+    string"). The intent parser can emit an empty semantic query for pure
+    location listings ("top 5 onsen in Gifu"), where the prefecture `where`
+    filter does the real work — fall back to a neutral term so the embedding
+    call is always valid.
+    """
+    return (query or "").strip() or "onsen"
+
+
 def query_onsen(query: str, n_results: int = 20, prefecture: str | None = None) -> str:
     """Search the onsen vector store, optionally constrained to a prefecture.
 
@@ -17,6 +29,7 @@ def query_onsen(query: str, n_results: int = 20, prefecture: str | None = None) 
             requests. When omitted, no metadata filter is applied (the original
             pure-semantic behaviour).
     """
+    query = _nonempty_query(query)
     collection = get_collection()
     query_kwargs: dict = {"query_texts": [query], "n_results": n_results}
     if prefecture:
@@ -64,6 +77,7 @@ def query_onsen_structured(
         the V2 workflow can build OnsenResult(**record) and render results
         without an LLM round-trip. Empty result set returns [].
     """
+    query = _nonempty_query(query)
     collection = get_collection()
     query_kwargs: dict = {"query_texts": [query], "n_results": n_results}
     if prefecture:
@@ -137,6 +151,7 @@ def query_knowledge_with_diagnostics(
           - ``retrieved``: count Chroma returned pre-filter.
           - ``kept``: count surviving the max_distance threshold.
     """
+    query = _nonempty_query(query)
     collection = get_kb_collection()
     results = collection.query(
         query_texts=[query],

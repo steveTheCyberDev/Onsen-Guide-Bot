@@ -76,6 +76,9 @@ DATASET_NAME = "onsen-flow-evals"
 # here rather than in core/config.settings. Cheap default; override via
 # JUDGE_MODEL for a stronger/cheaper judge. Built once at module level (mirrors
 # the rest of the harness) and reused across every judged example.
+# NOTE: both judges are currently PARKED (not in EVALUATORS) — see the note above
+# the EVALUATORS list. This config + the judge functions are kept for re-enabling
+# once the flow/agents and KB data have stabilised.
 JUDGE_MODEL = os.getenv("JUDGE_MODEL", "gpt-4o-mini")
 
 # --- Per-mode budgets (constants, with headroom over measured baselines) ------
@@ -157,11 +160,14 @@ _EXAMPLES: list[dict] = [
         # "top N" phrasing still routes to search (a location listing, not a
         # preference-driven recommend) — verified against parse_intent. Gifu has
         # data, so grounding checks the returned names against the Gifu set.
+        # expected_count asserts the requested count is HONOURED (Gifu has >5,
+        # so "top 5" must return exactly 5, not the default ceiling).
         "message": "What's the top 5 onsens in Gifu?",
         "expected_mode": "search",
         "prefecture": "Gifu",
         "has_data": True,
         "wants_hotels": False,
+        "expected_count": 5,
     },
     {
         "message": (
@@ -255,6 +261,10 @@ def _expectation(ex: dict) -> dict:
         # Optional flag (ask-mode only): the answer should be the no-info
         # fallback because the KB cannot answer the question. Defaults False.
         "expect_no_info": ex.get("expect_no_info", False),
+        # Optional (search-mode): when the user asked for an explicit count
+        # ('top 5'), the response must return exactly that many onsen. None when
+        # no count was requested, so the count is not asserted.
+        "expected_count": ex.get("expected_count"),
     }
 
 
@@ -503,6 +513,10 @@ def structure(outputs: dict, reference_outputs: dict) -> dict:
             not (o.get("pros") or []) and not (o.get("cons") or []) for o in onsens
         )
         ok = recommendation is None and no_proscons
+        # When the user asked for an explicit count ('top 5'), it must be honoured.
+        expected_count = reference_outputs.get("expected_count")
+        if expected_count is not None:
+            ok = ok and len(onsens) == expected_count
     elif mode == "ask":
         # The ask answer rides in `reply` (empty onsens, no recommendation). When
         # ask_enabled is ON the reply is a real grounded answer (or the no-info
@@ -729,13 +743,21 @@ def latency(outputs: dict, reference_outputs: dict) -> dict:
     }
 
 
+# The active gate is DETERMINISTIC only. The two LLM-as-judge evaluators
+# (proscons_grounding, ask_grounding) are intentionally PARKED — kept in the file
+# (with their unit tests) but removed from the gate while the flow/agents and the
+# KB data are still being consolidated. An LLM judging LLM-generated prose against
+# a moving target is non-deterministic: it false-failed a clean release on a
+# grounded onsen (Yanase), so at this stage it is noise, not actionable signal.
+# Re-add them to this list once the system + data have stabilised — they will
+# auto-reappear in the report (columns derive from EVALUATORS + _COLUMN_LABELS).
 EVALUATORS = [
     grounding,
-    proscons_grounding,
-    ask_grounding,
     structure,
     cost_budget,
     latency,
+    # proscons_grounding,   # PARKED — see note above
+    # ask_grounding,        # PARKED — see note above
 ]
 
 # Report-table display spec per evaluator key: (short column label, width).
