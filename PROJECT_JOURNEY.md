@@ -184,11 +184,14 @@ The slot-filling migration is the headline of V2, but I'm deliberately doing the
 - **Data:** expand coverage beyond Okinawa + Tokai to more regions.
 - **Hardening:** rate limiting; consider real user auth (beyond the shared API key).
 
-### V3 — Advanced
-- **Multi-agent:** an orchestrator coordinating specialised search / rank / personalise agents, via LangGraph.
-- **Communication:** API-based or event-driven between agents (instead of V1's direct function calls).
-- **Model:** migrate chat from GPT-4o to Claude Sonnet (`claude-sonnet-4-6`).
-- **Storage:** keep a pgvector migration path open (a `schema.sql` already reserves it) for when scale demands it.
+### V3 — Advanced (kicking off)
+The trip-planner **agent** — the concrete query the workflow can't serve (*"plan a 3-day onsen trip"*): dynamic tool sequencing + re-planning. **Single agent first; multi-agent only if it strains.** Full design: [`docs/v3-trip-planner-plan.md`](./docs/v3-trip-planner-plan.md).
+- **Step 0 — persistent session state** (hard prerequisite): a bespoke session store, SQLite local / Postgres prod, behind a flag, replacing the in-memory single-worker history. The trip-planner's per-thread state later checkpoints to the **same Postgres** (LangGraph `PostgresSaver`).
+- **Slot-filling** (regions · nights · dates · party · budget · prefs) + a LangGraph agent over **Google-API tools** — **Places** (reviews/ratings, finally grounding pros/cons in real signal — this *is* the parked `ratings_service`), **Distance Matrix/Directions** (travel-time / re-planning), weather — plus the existing onsen/hotel/analyze tools.
+- **Multi-turn / trajectory agent evals**, measured against the workflow baseline (instrument → baseline → prove).
+- **Model:** migrate chat from GPT-4o to **Claude (Sonnet 4.6 / Opus 4.8)** with a provider fallback chain.
+- **Storage:** pgvector migration path kept open (`schema.sql`) for when scale demands it.
+- **Multi-agent:** only *later* — an orchestrator over specialised sub-agents — when a single agent visibly strains, not before.
 
 ### Guiding principle
 Each addition is self-contained: a new external API is a new `services/{name}`, a new agent capability is a new `tools/{name}`, a new endpoint is a new `routes/{name}`. The layering keeps it from collapsing under its own weight.
@@ -284,4 +287,6 @@ So `search` / `recommend` / `ask` are all correctly **pre-wired workflows**; the
 
 ## Status
 
-V1 is **live in production and feature-complete** for its scope. V2's performance headline shipped and is **live in prod**: ingest-time geocoding plus the ReAct→workflow redesign (challenge #10) — ~10× faster and now the default `/chat` engine, flag-gated for rollback. V2.5's **3-mode router** and the **`analyze_onsen` "guide" judgment layer** have also shipped and are **live** (`recommend` enabled via `ANALYZE_ENABLED=true`, frontend renders pros/cons + recommendation). The one capability left in V2.5 is the **`ask`-mode knowledge base** — the agreed next build. The **trip-planning agent** is the deliberately-deferred V3 boundary (see the autonomy-ladder discussion above).
+V1 is **live in production and feature-complete** for its scope. V2's performance headline shipped and is **live in prod**: ingest-time geocoding plus the ReAct→workflow redesign (challenge #10) — ~10× faster and now the default `/chat` engine, flag-gated for rollback. V2.5's **3-mode router**, the **`analyze_onsen` "guide" judgment layer**, AND the **`ask`-mode knowledge base** are all **live in prod** (`ANALYZE_ENABLED=true`, `ASK_ENABLED=true`; frontend renders pros/cons + recommendation). The LangSmith eval harness is now a **deterministic CI release gate** (name-grounding, structure, cost, latency); the **LLM-as-judge** evaluators are **parked** — judging LLM prose while the flow + data are still moving produced non-deterministic false-negatives that blocked clean releases, so they're kept for re-enable once V3 + real ratings stabilise the signal.
+
+**V3 — the trip-planner agent — is now kicking off**, starting with **Step 0 (persistent session state)**, the hard prerequisite that the in-memory/single-worker history blocks. Full design: [`docs/v3-trip-planner-plan.md`](./docs/v3-trip-planner-plan.md).
