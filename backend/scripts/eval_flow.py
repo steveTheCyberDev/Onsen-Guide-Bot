@@ -31,6 +31,9 @@ default ``onsen-guide-bot-evals``) so eval runs do not pollute prod traffic.
 
 Exit code = number of failing (example, evaluator) pairs (0 = all pass), so it
 can gate CI later.
+
+For a reference of WHAT each evaluator judges (and against which source of truth),
+see ``docs/what-we-judge.md``.
 """
 
 import asyncio
@@ -404,11 +407,12 @@ def _llm_judge(system: str, user: str) -> int | None:
     """Ask the judge a single yes/no groundedness question; return 1, 0, or None.
 
     The judge is prompted to reply with a single token GROUNDED / UNGROUNDED; we
-    map that to 1/0. Fail-SAFE: any error (API failure, rate limit/timeout, bad
-    output, missing key) returns ``None`` = ABSTAIN, NOT a pass. For a measurement
-    tool this is the honest default — a flaky/broken judge surfaces as "no signal"
-    (rendered "-", uncounted) rather than masking as a green PASS. Callers treat
-    None as "couldn't judge this item" and skip it; the deterministic name-level
+    map ``UNGROUNDED``→0 and ``GROUNDED``→1. Fail-SAFE: any error (API failure,
+    rate limit/timeout, missing key) OR unrecognised output (neither token)
+    returns ``None`` = ABSTAIN, NOT a pass. For a measurement tool this is the
+    honest default — a flaky/broken judge surfaces as "no signal" (rendered "-",
+    uncounted) rather than masking as a green PASS. Callers treat None as
+    "couldn't judge this item" and skip it; the deterministic name-level
     ``grounding`` evaluator remains the hard guard regardless.
     """
     global _JUDGE_LLM
@@ -419,7 +423,11 @@ def _llm_judge(system: str, user: str) -> int | None:
             [("system", system), ("human", user)]
         )
         text = (getattr(resp, "content", "") or "").strip().upper()
-        return 0 if text.startswith("UNGROUNDED") else 1
+        if text.startswith("UNGROUNDED"):
+            return 0
+        if text.startswith("GROUNDED"):
+            return 1
+        return None  # unrecognised output → abstain, not a false PASS.
     except Exception:  # noqa: BLE001 — fail-safe: abstain (None), never crash the eval.
         return None
 
@@ -438,8 +446,13 @@ def grounding(outputs: dict, reference_outputs: dict) -> dict:
     names = _onsen_names(outputs)
 
     if not has_data:
-        score = 1 if not names else 0
-        return {"key": "grounding", "score": score}
+        if not names:
+            return {"key": "grounding", "score": 1, "comment": "empty as required (no-data)"}
+        return {
+            "key": "grounding",
+            "score": 0,
+            "comment": f"fabricated for no-data prefecture: {names}",
+        }
 
     pref = reference_outputs.get("prefecture")
     allowed = _GROUND_TRUTH.get(pref, set())
@@ -447,9 +460,19 @@ def grounding(outputs: dict, reference_outputs: dict) -> dict:
         # Expected results but got none — not a grounding failure per se, but the
         # flow returned nothing where data exists. Treat as ungrounded=fail so it
         # surfaces; the structure evaluator also covers emptiness.
-        return {"key": "grounding", "score": 0}
+        return {
+            "key": "grounding",
+            "score": 0,
+            "comment": f"expected results for {pref}, got none",
+        }
     invented = [n for n in names if normalize(n) not in allowed]
-    return {"key": "grounding", "score": 0 if invented else 1}
+    if invented:
+        return {
+            "key": "grounding",
+            "score": 0,
+            "comment": f"not in {pref} ground truth: {invented}",
+        }
+    return {"key": "grounding", "score": 1, "comment": "all names grounded in DB"}
 
 
 def structure(outputs: dict, reference_outputs: dict) -> dict:
@@ -494,7 +517,11 @@ def structure(outputs: dict, reference_outputs: dict) -> dict:
     else:
         ok = False
 
-    return {"key": "structure", "score": 1 if ok else 0}
+    comment = (
+        f"mode={mode} recommendation={recommendation is not None} "
+        f"onsens={len(onsens)} reply={'yes' if reply else 'no'}"
+    )
+    return {"key": "structure", "score": 1 if ok else 0, "comment": comment}
 
 
 def _ask_stub_reply() -> str:
@@ -593,7 +620,11 @@ def proscons_grounding(outputs: dict, reference_outputs: dict) -> dict:
             "score": None,
             "comment": "n/a (judge unavailable)",
         }
-    return {"key": "proscons_grounding", "score": 1}
+    return {
+        "key": "proscons_grounding",
+        "score": 1,
+        "comment": "all pros/cons grounded in onsen facts",
+    }
 
 
 def _ask_question(outputs: dict, inputs: dict | None, example) -> str:
@@ -661,7 +692,12 @@ def ask_grounding(
     if verdict is None:
         # Judge errored → abstain (no signal), not a false PASS.
         return {"key": "ask_grounding", "score": None, "comment": "n/a (judge unavailable)"}
-    return {"key": "ask_grounding", "score": verdict}
+    comment = (
+        "answer grounded in retrieved chunks"
+        if verdict == 1
+        else "answer not supported by retrieved chunks"
+    )
+    return {"key": "ask_grounding", "score": verdict, "comment": comment}
 
 
 def cost_budget(outputs: dict, reference_outputs: dict) -> dict:
@@ -669,7 +705,11 @@ def cost_budget(outputs: dict, reference_outputs: dict) -> dict:
     mode = reference_outputs.get("expected_mode")
     budget = COST_BUDGET_USD.get(mode, COST_BUDGET_USD["search"])
     cost = float(outputs.get("_cost_usd", 0.0) or 0.0)
-    return {"key": "cost_budget", "score": 1 if cost <= budget else 0}
+    return {
+        "key": "cost_budget",
+        "score": 1 if cost <= budget else 0,
+        "comment": f"${cost:.4f} vs budget ${budget} ({mode})",
+    }
 
 
 def latency(outputs: dict, reference_outputs: dict) -> dict:
@@ -677,7 +717,11 @@ def latency(outputs: dict, reference_outputs: dict) -> dict:
     mode = reference_outputs.get("expected_mode")
     budget = LATENCY_BUDGET_MS.get(mode, LATENCY_BUDGET_MS["search"])
     measured = int(outputs.get("_latency_ms", 0) or 0)
-    return {"key": "latency", "score": 1 if measured <= budget else 0}
+    return {
+        "key": "latency",
+        "score": 1 if measured <= budget else 0,
+        "comment": f"{measured}ms vs budget {budget}ms ({mode})",
+    }
 
 
 EVALUATORS = [
@@ -688,6 +732,19 @@ EVALUATORS = [
     cost_budget,
     latency,
 ]
+
+# Report-table display spec per evaluator key: (short column label, width).
+# The single source of truth for the _report() table — header, per-row cells, and
+# the per-evaluator pass-rate loop are ALL derived from EVALUATORS + this map, so
+# adding an evaluator means adding one entry here (not editing three places).
+_COLUMN_LABELS: dict[str, tuple[str, int]] = {
+    "grounding": ("ground", 6),
+    "proscons_grounding": ("pc-gnd", 6),
+    "ask_grounding": ("ask-gnd", 7),
+    "structure": ("struct", 6),
+    "cost_budget": ("cost", 6),
+    "latency": ("latency", 7),
+}
 
 
 # --- Runner -------------------------------------------------------------------
@@ -776,7 +833,7 @@ def _report(results) -> int:
     # A None score = ABSTAIN (evaluator didn't apply to this example): it is
     # SKIPPED — not counted toward the per-evaluator total, never a failure, and
     # rendered as "-" in the table. Only an explicit 0 is a failure.
-    rows: list[tuple[str, str, dict[str, int | None]]] = []
+    rows: list[tuple[str, str, dict[str, int | None], dict[str, str | None]]] = []
     per_eval_pass: dict[str, int] = {k: 0 for k in eval_keys}
     per_eval_total: dict[str, int] = {k: 0 for k in eval_keys}
     failures = 0
@@ -789,11 +846,15 @@ def _report(results) -> int:
         message = (example.inputs or {}).get("message", "")
 
         scores: dict[str, int | None] = {}
+        comments: dict[str, str | None] = {}
         for er in res["evaluation_results"]["results"]:
             key = er.key
             # Preserve None (abstain) distinctly from 0 (fail).
             score = None if er.score is None else int(er.score)
             scores[key] = score
+            # Reason string the evaluator attached (for the per-FAIL line below).
+            # getattr keeps test stand-ins (which omit .comment) working.
+            comments[key] = getattr(er, "comment", None)
             if score is None:
                 continue  # abstain: not counted, not a failure.
             if key in per_eval_total:
@@ -802,38 +863,38 @@ def _report(results) -> int:
             if score == 0:
                 failures += 1
 
-        rows.append((mode, message, scores))
+        rows.append((mode, message, scores, comments))
 
-    # Print table. Column headers are shortened to keep the row width readable now
+    # Print table. Columns are derived from EVALUATORS + _COLUMN_LABELS (single
+    # source of truth); labels are shortened to keep the row width readable now
     # that two LLM-judge columns are included. "-" = abstain (evaluator skipped).
+    columns = [(k, *_COLUMN_LABELS[k]) for k in eval_keys]
     print("\n=== onsen-flow experiment results ===\n")
     header = (
-        f"{'mode':<10} {'ground':>6} {'pc-gnd':>6} {'ask-gnd':>7} "
-        f"{'struct':>6} {'cost':>6} {'latency':>7}  message"
+        f"{'mode':<10} "
+        + " ".join(f"{label:>{width}}" for _k, label, width in columns)
+        + "  message"
     )
     print(header)
     print("-" * len(header))
-    for mode, message, scores in rows:
+    for mode, message, scores, comments in rows:
         def cell(k: str) -> str:
             v = scores.get(k)
             return "PASS" if v == 1 else ("FAIL" if v == 0 else "-")
 
-        print(
-            f"{mode:<10} {cell('grounding'):>6} {cell('proscons_grounding'):>6} "
-            f"{cell('ask_grounding'):>7} {cell('structure'):>6} "
-            f"{cell('cost_budget'):>6} {cell('latency'):>7}  {message[:50]}"
-        )
+        cells = " ".join(f"{cell(k):>{width}}" for k, _label, width in columns)
+        print(f"{mode:<10} {cells}  {message[:50]}")
+        # Under each row, explain every FAIL (score == 0) with the evaluator's
+        # reason so the table is self-diagnosing — no need to open LangSmith for
+        # the common case. Abstains ("-") and passes get no extra line.
+        for k, _label, _width in columns:
+            if scores.get(k) == 0:
+                reason = comments.get(k) or "(no reason provided)"
+                print(f"    └─ {k}: {reason}")
     print("-" * len(header))
 
     print("\nPer-evaluator pass rate:")
-    for k in [
-        "grounding",
-        "proscons_grounding",
-        "ask_grounding",
-        "structure",
-        "cost_budget",
-        "latency",
-    ]:
+    for k, _label, _width in columns:
         total = per_eval_total.get(k, 0)
         passed = per_eval_pass.get(k, 0)
         rate = f"{passed}/{total}" if total else "0/0"

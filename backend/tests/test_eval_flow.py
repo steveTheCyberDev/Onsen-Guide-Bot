@@ -521,6 +521,32 @@ def test_llm_judge_fails_safe_to_abstain_on_error():
         assert eval_flow._llm_judge("sys", "user") is None
 
 
+def _judge_returning(content: str):
+    """A fake judge LLM whose .invoke() returns a response with the given content."""
+    llm = MagicMock()
+    llm.invoke.return_value = SimpleNamespace(content=content)
+    return llm
+
+
+@pytest.mark.parametrize(
+    "content,expected",
+    [
+        ("GROUNDED", 1),
+        ("grounded", 1),  # case-insensitive
+        ("UNGROUNDED", 0),
+        ("Ungrounded.", 0),
+        ("maybe?", None),  # unrecognised → abstain, NOT a false PASS
+        ("", None),  # empty → abstain
+        ("the answer is supported", None),  # prose without the token → abstain
+    ],
+)
+def test_llm_judge_maps_output_with_unrecognised_abstaining(content, expected):
+    """GROUNDED→1, UNGROUNDED→0, anything else→None (abstain)."""
+    with patch.object(eval_flow, "_build_judge_llm", return_value=_judge_returning(content)):
+        eval_flow._JUDGE_LLM = None  # reset cached singleton
+        assert eval_flow._llm_judge("sys", "user") is expected
+
+
 # --- _report None-score (abstain) handling ------------------------------------
 def _fake_result(mode: str, message: str, scores: dict[str, int | None]):
     """Build a results-row stand-in matching what _report() reads.
@@ -566,6 +592,62 @@ def test_report_skips_none_scores_no_false_failures(capsys):
     assert "ask_grounding   0/0" in out or "ask_grounding  0/0" in out
     # Applicable evaluators counted normally.
     assert "grounding      1/1" in out
+
+
+def _fake_result_with_comments(
+    mode: str, message: str, scored: dict[str, tuple[int | None, str | None]]
+):
+    """results-row stand-in where each evaluator carries (score, comment)."""
+    eval_results = [
+        SimpleNamespace(key=k, score=s, comment=c) for k, (s, c) in scored.items()
+    ]
+    return {
+        "example": SimpleNamespace(
+            metadata={"expected_mode": mode}, inputs={"message": message}
+        ),
+        "run": SimpleNamespace(),
+        "evaluation_results": {"results": eval_results},
+    }
+
+
+def test_report_prints_reason_under_each_fail_row(capsys):
+    """Each FAIL (score 0) prints its evaluator's comment as a reason line."""
+    results = [
+        _fake_result_with_comments(
+            "recommend",
+            "Recommend an onsen in Okinawa",
+            {
+                "grounding": (0, "not in Okinawa ground truth: ['Phantom Onsen']"),
+                "proscons_grounding": (0, "ungrounded pros/cons for Naha Onsen"),
+                "ask_grounding": (None, "n/a"),
+                "structure": (1, "mode=recommend recommendation=True onsens=2 reply=yes"),
+                "cost_budget": (1, "$0.0050 vs budget $0.05 (recommend)"),
+                "latency": (1, "4200ms vs budget 20000ms (recommend)"),
+            },
+        ),
+    ]
+    failures = eval_flow._report(results)
+    assert failures == 2
+
+    out = capsys.readouterr().out
+    # Reason lines appear under the row for the two FAILs.
+    assert "└─ grounding: not in Okinawa ground truth" in out
+    assert "└─ proscons_grounding: ungrounded pros/cons for Naha Onsen" in out
+    # Passing and abstaining evaluators get NO reason line.
+    assert "└─ structure" not in out
+    assert "└─ ask_grounding" not in out
+
+
+def test_report_fail_without_comment_prints_placeholder(capsys):
+    """A FAIL whose evaluator omitted a comment still prints a reason line."""
+    results = [
+        _fake_result_with_comments(
+            "search", "Find onsen in X", {"structure": (0, None)}
+        ),
+    ]
+    eval_flow._report(results)
+    out = capsys.readouterr().out
+    assert "└─ structure: (no reason provided)" in out
 
 
 def test_report_counts_explicit_zero_as_failure(capsys):
