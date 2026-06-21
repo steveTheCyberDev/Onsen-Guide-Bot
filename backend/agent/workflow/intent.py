@@ -90,6 +90,11 @@ _INSTRUCTIONS = (
 _llm = ChatOpenAI(
     model=settings.intent_model,
     api_key=settings.openai_api_key,
+    # Deterministic routing/extraction: temperature=0 removes the sampling
+    # variance that made parsing flaky (e.g. the same "top 5 onsen" message
+    # occasionally yielding an empty `query`). This is classification, not
+    # creative writing, so we want the most-likely parse every time.
+    temperature=0,
     stream_usage=True,
     # Bounded retries on transient OpenAI errors (timeouts, 429/5xx); the OpenAI
     # SDK handles the backoff. Same knob as the main chat llm in agent/agent.py.
