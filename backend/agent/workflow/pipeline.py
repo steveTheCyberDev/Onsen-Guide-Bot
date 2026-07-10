@@ -28,6 +28,7 @@ import time
 from langchain_core.callbacks import UsageMetadataCallbackHandler
 
 from agent.agent import AgentResponse, HotelResult, OnsenResult
+from agent.trip.agent import plan_trip
 from agent.workflow.analyze import analyze_onsen
 from agent.workflow.ask import answer_question
 from agent.workflow.cost import summarize_usage
@@ -260,6 +261,19 @@ async def run_workflow(message: str, session_id: str) -> dict:
         return AgentResponse(
             reply=reply, onsens=onsens, hotels=hotels, recommendation=recommendation
         ).model_dump()
+
+    # trip-mode: V3 multi-day trip-planner, gated by trip_enabled (A/B + instant
+    # rollback, mirrors ask_enabled above). IMPORTANT — unlike ask, the branch is
+    # taken ONLY when the gate is ON: `mode == "trip" AND settings.trip_enabled`.
+    # When the gate is OFF (prod default) we do NOT early-return; a trip-classified
+    # query FALLS THROUGH to the normal retrieval path below so it degrades to a
+    # regular onsen search rather than dead-ending. PR2 ships the plan_trip stub
+    # (no service/LLM calls); the real agent lands in later PRs.
+    if intent.mode == "trip" and settings.trip_enabled:
+        response = await plan_trip(message, session_id, callbacks=callbacks)
+        _log_cost(session_id, intent.mode, usage_cb, started)
+        save_message(session_id, message, response.reply)
+        return response.model_dump()
 
     # ② Retrieval — pure Python, no LLM, no fabrication (search + recommend).
     # Honour an explicit count from the user ('top 5' → 5), clamped to a sane
