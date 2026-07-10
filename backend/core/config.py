@@ -84,6 +84,12 @@ class Settings(BaseSettings):
     # safe "coming soon" stub; True → real grounded RAG answer. A/B + instant
     # rollback seam, mirrors analyze_enabled above. Override via ASK_ENABLED.
     ask_enabled: bool = False
+    # Gate for trip mode (V3 multi-day trip-planner agent). False (default) →
+    # a trip-classified query falls through to the normal search/recommend path
+    # (graceful degradation, no dead-end); True → the trip branch runs. A/B +
+    # instant rollback seam, mirrors ask_enabled/analyze_enabled above. Ships dead
+    # until flipped. Override via env var TRIP_ENABLED.
+    trip_enabled: bool = False
     # Top-k KB chunks retrieved for an ask answer. Override via ASK_TOP_K.
     ask_top_k: int = 4
     # DISTANCE ceiling for KB chunks (Chroma returns distance, lower = closer).
