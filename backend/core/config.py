@@ -30,6 +30,15 @@ class Settings(BaseSettings):
     # Override via env var CHROMA_PATH in production (Railway sets it to /app/chroma_db,
     # the mount point of the persistent volume) so the app and ingest job agree.
     chroma_path: str = "chroma_db"
+    # SQLAlchemy database URL for the durable chat session store (V3 Step 0:
+    # services/chat/chat_service.py). Default is "" which means "use the computed
+    # local default" — a SQLite file at backend/sessions.db, resolved from this
+    # config file's own location so it is CWD-independent AND survives restart (see
+    # resolved_session_db_url below). The URL string selects the dialect: the local
+    # default is sqlite:///..., and production overrides via env var SESSION_DB_URL
+    # to a Postgres URL (Railway: SESSION_DB_URL=postgresql+psycopg://...). One code
+    # path serves both engines; only the URL changes. Mirrors chroma_path/data_path.
+    session_db_url: str = ""
     # Filesystem path to the onsen data directory (the *_springs.jsonl files the
     # ingest scripts read). Default is "" which means "use the computed local
     # default" — backend/data, resolved from this file's own location so it is
@@ -166,6 +175,23 @@ class Settings(BaseSettings):
         if self.data_path:
             return Path(self.data_path)
         return Path(__file__).resolve().parent.parent / "data"
+
+    @property
+    def resolved_session_db_url(self) -> str:
+        """Resolved SQLAlchemy URL for the chat session store.
+
+        Returns ``session_db_url`` verbatim when SESSION_DB_URL is set (prod
+        override, typically ``postgresql+psycopg://...``), else a SQLite URL
+        pointing at ``backend/sessions.db`` resolved from this config file's own
+        location (config.py lives at backend/core/config.py, so parent.parent ==
+        backend/). Resolving from __file__ keeps the file path stable regardless of
+        the current working directory, so history survives a process restart.
+        Mirrors the data_path/data_dir split above.
+        """
+        if self.session_db_url:
+            return self.session_db_url
+        db_path = Path(__file__).resolve().parent.parent / "sessions.db"
+        return f"sqlite:///{db_path}"
 
     @property
     def kb_data_dir(self) -> Path:

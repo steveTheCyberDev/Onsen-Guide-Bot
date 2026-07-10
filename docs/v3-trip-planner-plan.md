@@ -23,6 +23,26 @@ module-level `_history: dict`). Step 0 (bespoke `chat_sessions`/`chat_messages`,
 prod, behind `session_store_backend`, preserving the `get_history`/`save_message` seam) MUST land first.
 See `docs/` Step-0 notes / memory `project_v3_readiness_plan`.
 
+### Step 0 — persistence library decision (2026-07-10)
+
+**Chosen: SQLAlchemy Core** for the session store (not raw `sqlite3`+`psycopg`, not an ORM like
+SQLModel). "Bespoke" above means *our own `chat_sessions`/`chat_messages` tables* (vs. reusing
+LangChain's message-history stores or the LangGraph checkpointer for conversation history) — it does
+**not** mandate hand-rolled SQL. SQLAlchemy Core still gives bespoke tables while generating the
+dialect-correct DDL/queries.
+
+Why: one query path serves **both** engines (local SQLite / prod Postgres), so (1) there is a single
+set of schema + queries + connection factory to maintain — not two hand-synced backends — and (2) a
+prod-only Postgres bug is reproducible locally by pointing the *same* code at a local Postgres, only
+changing the connection URL. Residual SQLite↔Postgres dialect gaps (types, timestamps, concurrent-write
+locking) are covered by that on-demand local-Postgres run, not assumed away.
+
+Env-split refinement: the switch is a **`session_db_url`** setting (a URL string that also selects the
+dialect — `sqlite:///…` local default, `postgresql://…` in prod via Railway env), which supersedes the
+`session_store_backend` flag named above. New deps: `sqlalchemy` + `psycopg`. Local default keeps the
+two-command "Running Locally" flow (SQLite file, zero setup); Railway overrides the URL. **STOP points
+unchanged:** Railway Postgres provisioning, and the frontend `session_id`→per-conversation UUID cutover.
+
 ---
 
 ## 1. Architecture
