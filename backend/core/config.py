@@ -90,6 +90,17 @@ class Settings(BaseSettings):
     # instant rollback seam, mirrors ask_enabled/analyze_enabled above. Ships dead
     # until flipped. Override via env var TRIP_ENABLED.
     trip_enabled: bool = False
+    # Which LangGraph checkpointer backs the trip-planner agent's working state
+    # (agent/trip/graph.py). The checkpointer persists the graph's TripState per
+    # thread_id=session_id (distinct from the Step-0 transcript store).
+    #   "memory"   → in-process MemorySaver (local default; state lives for the
+    #                process lifetime, resets on restart). Correct for local dev
+    #                and the single-worker Dockerfile.
+    #   "postgres" → PostgresSaver against the same DB as Step 0 — NOT YET
+    #                IMPLEMENTED. Deferred behind this flag until Railway Postgres
+    #                (PR1) exists; selecting it today raises NotImplementedError.
+    # Override via env var TRIP_CHECKPOINTER_BACKEND. Default MUST stay "memory".
+    trip_checkpointer_backend: str = "memory"
     # Top-k KB chunks retrieved for an ask answer. Override via ASK_TOP_K.
     ask_top_k: int = 4
     # DISTANCE ceiling for KB chunks (Chroma returns distance, lower = closer).
