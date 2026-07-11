@@ -43,6 +43,39 @@ dialect — `sqlite:///…` local default, `postgresql://…` in prod via Railwa
 two-command "Running Locally" flow (SQLite file, zero setup); Railway overrides the URL. **STOP points
 unchanged:** Railway Postgres provisioning, and the frontend `session_id`→per-conversation UUID cutover.
 
+### LangGraph adoption decision (2026-07-11)
+
+**Chosen: adopt a hand-built LangGraph `StateGraph` at PR3** (not deferred to PR7's re-planning).
+LangGraph is already a dependency (`backend/requirements.txt`, `langgraph>=0.2.0`), used today only by
+the legacy ReAct path (`agent/agent.py`, `create_react_agent`, behind `CHAT_ENGINE=react`); the live
+workflow path is LangGraph-free. PR3 is therefore the **first use of LangGraph in the production path**.
+
+Why adopt now rather than build PR3 in plain Python and convert later: the throwaway cost of deferring
+is narrow but real — a bespoke `TripSlots` persistence mechanism written for PR3 that PR7's checkpointer
+would subsume. Adopting the graph now means the elicit-loop lives in nodes and working state lives in
+the checkpointer from day one, so nothing is ripped out. This is consistent with — not a violation of —
+the incremental-slicing philosophy: adopt the framework on the *simple* flow (slots + naive itinerary),
+extend to the *hard* flow (re-planning) later. The agent's real purpose is **conversational elicitation**
+(helping a customer discover the trip they actually want), which is precisely the elicit-loop the graph
+carries.
+
+**Re-planning-readiness — PR3's graph MUST have these four properties so PR7 re-planning is purely
+additive (an edge + a node, not a reshape):**
+
+1. **Hand-built `StateGraph`, not `create_react_agent`.** The prebuilt is a throwaway; the hand-built
+   graph is the keeper PR7 extends.
+2. **Accumulating working state from day one** — state holds `TripSlots` *and* placeholders for
+   `candidates` / `itinerary` even though PR3 only fills slots. PR7 then adds `distance_cache` and
+   `replan_count` as new *fields*, not a new state concept.
+3. **A discrete `plan` node even for the naive itinerary**, so PR7's re-plan is "add a
+   `check_constraints` node + a conditional back-edge into the existing `plan` node."
+4. **Checkpointer wired from PR3** (`MemorySaver` local; `PostgresSaver` prod deferred behind
+   `trip_checkpointer_backend` until Railway Postgres from PR1 exists).
+
+This also resolves the "two persistence systems, is it redundant?" question: the Step-0 store holds the
+**transcript**, the checkpointer holds the **agent working state** — distinct roles, no hand-rolled
+overlap, because we never build the bespoke slot store.
+
 ---
 
 ## 1. Architecture
@@ -200,7 +233,11 @@ mechanism once the flow stabilises.
 
 1. **PR 1 — Step 0 persistence (prerequisite).** Bespoke tables; SQLite local + Postgres prod behind `session_store_backend`; preserve the seam. **STOP: Railway Postgres provisioning.**
 2. **PR 2 — routing seam + `trip` mode stub.** Add `"trip"` to `Intent.mode` + a `run_workflow` branch to `agent/trip/agent.py` placeholder, gated by `trip_enabled=False` (mirror `analyze_enabled`). Ships dead.
-3. **PR 3 — minimal trip-planner: slots + onsen tool only.** `TripSlots`, extraction call, elicit-loop, naive itinerary. `MemorySaver` local / `PostgresSaver` behind `trip_checkpointer_backend`. Prove the multi-turn flow.
+3. **PR 3 — minimal trip-planner: slots + onsen tool only.** Split into three reviewable slices, each into `develop`, so the framework lands on the simple flow before the hard one (see the LangGraph adoption decision in §0). Every slice must preserve the four re-planning-readiness properties.
+   - **PR 3a — LangGraph skeleton for `trip` mode.** Hand-built `StateGraph` with one stub node, checkpointer (`MemorySaver` local), `thread_id = session_id`; still behind `trip_enabled=False`. *First LangGraph in the live path.* **Done =** graph runs in the live engine and working state persists across two turns of the same session.
+   - **PR 3b — slots + elicit-loop.** `TripSlots`, extraction call (`with_structured_output`), elicit node (ask ONE follow-up, end the turn). **Done =** multi-turn slot-filling proven — a missing required slot yields one question; the next turn resumes with prior slots intact.
+   - **PR 3c — naive itinerary.** Assemble an itinerary from `query_onsen_structured` once required slots are complete; the discrete `plan` node becomes real (no re-plan yet). **Done =** end-to-end trip reply for a complete request, leaving the `plan` node PR7 hangs the re-plan back-edge on.
+   - `MemorySaver` local throughout; `PostgresSaver` prod stays behind `trip_checkpointer_backend` until Railway Postgres (PR1) lands.
 4. **PR 4 — agent eval (multi-turn).** Extend `eval_flow.py` to thread examples + the §5 deterministic evaluators. Baseline vs recommend mode. Gate before adding tools.
 5. **PR 5 — add hotels (`search_hotels`)** per lodging night; add "hotels exist" eval check.
 6. **PR 6 — Places enrichment (ingest-time).** `services/places/` + `scripts/enrich_places.py`. Surface + ground ratings. **STOP: Google Places billing/SKU.**
