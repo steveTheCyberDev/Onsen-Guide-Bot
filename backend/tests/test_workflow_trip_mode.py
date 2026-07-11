@@ -1,27 +1,38 @@
-"""Trip-mode branching tests for run_workflow (V3 PR2 — dead stub).
+"""Trip-mode branching tests for run_workflow (V3 PR2/PR3b).
 
 The trip branch is deliberately asymmetric with the ask branch: it is taken ONLY
 when `trip_enabled` is ON. With the gate OFF (prod default) a trip-classified
 query must FALL THROUGH to the normal retrieval path (graceful degradation), not
-dead-end on the stub. These tests pin both halves:
+dead-end. These tests pin both halves:
 
-  - trip_enabled=True  → plan_trip stub reply, empty onsens/hotels, no retrieval,
-                         cost logged + turn persisted.
+  - trip_enabled=True  → plan_trip runs the trip-planner graph (elicit/plan reply),
+                         empty onsens/hotels, no retrieval, cost logged + turn
+                         persisted.
   - trip_enabled=False → falls through: query_onsen_structured IS called, onsens
-                         populated, reply is NOT the trip stub.
+                         populated, reply comes from the search template.
 
 Dependencies are patched at the pipeline module namespace, mirroring
-test_workflow_branching.py. plan_trip runs for real in the gate-ON test (the stub
-makes no service/LLM calls), so we assert against its real reply.
+test_workflow_branching.py. In the gate-ON tests plan_trip runs for real, so we mock
+its ONE extraction LLM call (`agent.trip.slots._llm`) to keep the suite deterministic
+and free — the reply is then the elicit follow-up (no slots extracted → missing
+required).
 """
 
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from agent.trip.agent import _TRIP_STUB_REPLY
+from agent.trip import slots as slots_module
+from agent.trip.slots import SlotUpdate
 from agent.workflow import pipeline
 from agent.workflow.intent import Intent
+
+
+def _mock_slots_llm() -> MagicMock:
+    """Mock the trip-planner extraction LLM to return an empty delta (→ elicit)."""
+    llm = MagicMock()
+    llm.ainvoke = AsyncMock(return_value=SlotUpdate())
+    return llm
 
 
 def _record(name="Beppu Onsen"):
@@ -72,16 +83,20 @@ class _Enter:
 
 
 @pytest.mark.asyncio
-async def test_trip_mode_gate_on_returns_stub_and_skips_retrieval():
-    # Arrange — trip_enabled ON: the plan_trip stub answers; no retrieval/analyze.
+async def test_trip_mode_gate_on_returns_trip_reply_and_skips_retrieval():
+    # Arrange — trip_enabled ON: the trip-planner answers; no retrieval/analyze.
     intent = Intent(mode="trip", prefecture="Gifu", query="onsen trip", wants_hotels=False)
     cms = _patches(intent, [_record()])
     # Act
     with patch.object(pipeline.settings, "trip_enabled", True):
-        with _Enter(cms) as mocks:
-            result = await pipeline.run_workflow("plan a 3-day onsen trip in Gifu", "s1")
-    # Assert — canned stub reply, empty result set, retrieval + analyze skipped.
-    assert result["reply"] == _TRIP_STUB_REPLY
+        with patch.object(slots_module, "_llm", _mock_slots_llm()):
+            with _Enter(cms) as mocks:
+                result = await pipeline.run_workflow(
+                    "plan a 3-day onsen trip in Gifu", "s1"
+                )
+    # Assert — a non-empty trip-planner reply, empty result set, retrieval + analyze
+    # skipped (the trip branch makes no services/ calls in this slice).
+    assert isinstance(result["reply"], str) and result["reply"]
     assert result["onsens"] == []
     assert result["hotels"] == []
     assert result["recommendation"] is None
@@ -91,20 +106,23 @@ async def test_trip_mode_gate_on_returns_stub_and_skips_retrieval():
 
 @pytest.mark.asyncio
 async def test_trip_mode_gate_on_logs_cost_and_persists_turn():
-    # Arrange — even the stub must log cost once and persist the turn.
+    # Arrange — the trip branch must log cost once and persist the turn's reply.
     intent = Intent(mode="trip", prefecture=None, query="onsen trip", wants_hotels=False)
     cms = _patches(intent, [])
     # Act
     with patch.object(pipeline.settings, "trip_enabled", True):
-        with patch.object(pipeline, "_log_cost") as log_cost:
-            with _Enter(cms) as mocks:
-                await pipeline.run_workflow("plan a 5-night onsen trip", "s9")
+        with patch.object(slots_module, "_llm", _mock_slots_llm()):
+            with patch.object(pipeline, "_log_cost") as log_cost:
+                with _Enter(cms) as mocks:
+                    result = await pipeline.run_workflow(
+                        "plan a 5-night onsen trip", "s9"
+                    )
     # Assert
     log_cost.assert_called_once()
     mocks["save_message"].assert_called_once()
     assert mocks["save_message"].call_args.args[0] == "s9"
-    # The persisted AI turn is the stub reply.
-    assert mocks["save_message"].call_args.args[2] == _TRIP_STUB_REPLY
+    # The persisted AI turn is the trip-planner reply that was returned.
+    assert mocks["save_message"].call_args.args[2] == result["reply"]
 
 
 # --- trip mode, gate OFF (prod default) — must FALL THROUGH ------------------
@@ -120,9 +138,9 @@ async def test_trip_mode_gate_off_falls_through_to_retrieval():
     with patch.object(pipeline.settings, "trip_enabled", False):
         with _Enter(cms) as mocks:
             result = await pipeline.run_workflow("plan a 3-day onsen trip in Gifu", "s1")
-    # Assert — retrieval ran, onsens populated, and the reply is the SEARCH
-    # template, NOT the trip stub.
+    # Assert — retrieval ran and onsens populated, i.e. the query fell through to the
+    # normal SEARCH path instead of dead-ending on the (now gated-off) trip branch.
     mocks["query_onsen_structured"].assert_called_once()
     assert len(result["onsens"]) == 1
-    assert result["reply"] != _TRIP_STUB_REPLY
+    assert isinstance(result["reply"], str) and result["reply"]
     assert result["recommendation"] is None

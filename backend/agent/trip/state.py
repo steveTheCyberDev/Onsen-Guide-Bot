@@ -10,8 +10,10 @@ PR3a intentionally defines the fields the later slices FILL, so 3b/3c ADD logic 
 existing fields rather than introducing a new state concept (re-planning-readiness
 property #2 in §0):
 
-  * ``slots``      — placeholder for the ``TripSlots`` model that lands in PR3b.
-                     A plain dict/None is fine for 3a (no elicitation yet).
+  * ``slots``      — PR3b fills this with a serialised ``TripSlots``
+                     (``model_dump()``), merged + accumulated turn over turn. Stored
+                     as a plain dict (not the model) so the checkpointed state stays
+                     JSON-serialisable for the future PostgresSaver.
   * ``candidates`` — placeholder for onsen candidates that PR3c fills from
                      ``query_onsen_structured``.
   * ``itinerary``  — placeholder for the assembled plan that PR3c produces.
@@ -44,8 +46,9 @@ class TripState(TypedDict, total=False):
     # same thread_id. Later slices keep it as a cheap turn counter.
     turn_count: int
 
-    # --- forward-compatible placeholders (filled by later slices) ----------
-    # PR3b replaces `dict | None` with the real TripSlots model; 3a leaves it None.
+    # --- accumulating + forward-compatible fields --------------------------
+    # PR3b: a serialised TripSlots (model_dump()) merged across turns. Kept as a
+    # dict (not the model) so the checkpoint is JSON-serialisable for PostgresSaver.
     slots: dict[str, Any] | None
     # PR3c fills these from query_onsen_structured + itinerary assembly.
     candidates: list[Any]
