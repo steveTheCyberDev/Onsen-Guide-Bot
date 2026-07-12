@@ -660,3 +660,42 @@ def test_query_knowledge_delegates_to_diagnostics_variant():
     # Assert — same record shape as the diagnostics variant's records, no tuple.
     assert isinstance(records, list)
     assert records[0]["text"] == "close chunk" and records[0]["distance"] == 0.30
+
+
+# --- known_prefectures --------------------------------------------------------
+def _fake_meta_collection(metadatas):
+    """A fake onsen collection whose .get(...) yields canned metadatas."""
+    collection = MagicMock()
+    collection.get.return_value = {"metadatas": metadatas}
+    return collection
+
+
+def test_known_prefectures_returns_distinct_ingested_set():
+    """known_prefectures reads the onsen metadata and returns the distinct set."""
+    metas = [
+        {"prefecture_en": "Gifu", "name_en": "Gero Onsen"},
+        {"prefecture_en": "Gifu", "name_en": "Hirayu Onsen"},  # duplicate prefecture
+        {"prefecture_en": "Nagano", "name_en": "Nozawa Onsen"},
+        {"prefecture_en": "", "name_en": "No Prefecture Onsen"},  # empty → skipped
+        {"name_en": "Orphan Onsen"},  # missing key → skipped
+    ]
+    retrieval_service.known_prefectures.cache_clear()  # ignore any cached value
+    with patch.object(
+        retrieval_service, "get_collection", return_value=_fake_meta_collection(metas)
+    ):
+        result = retrieval_service.known_prefectures()
+    assert result == frozenset({"Gifu", "Nagano"})
+    retrieval_service.known_prefectures.cache_clear()  # don't leak into other tests
+
+
+def test_known_prefectures_is_cached():
+    """The result is memoised — a second call does not re-read the collection."""
+    metas = [{"prefecture_en": "Gifu", "name_en": "Gero Onsen"}]
+    retrieval_service.known_prefectures.cache_clear()
+    fake = _fake_meta_collection(metas)
+    with patch.object(retrieval_service, "get_collection", return_value=fake):
+        first = retrieval_service.known_prefectures()
+        second = retrieval_service.known_prefectures()
+    assert first == second == frozenset({"Gifu"})
+    fake.get.assert_called_once()  # cached: collection read exactly once
+    retrieval_service.known_prefectures.cache_clear()

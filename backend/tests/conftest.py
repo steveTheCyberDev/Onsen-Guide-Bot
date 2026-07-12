@@ -5,6 +5,7 @@ all imports are relative to that root, e.g. `from services.chat...`.
 """
 
 import os
+from unittest.mock import patch
 
 import pytest
 
@@ -21,6 +22,39 @@ os.environ.setdefault("API_KEY", "test-api-key")
 
 # The valid key for the test suite, kept in sync with the API_KEY env above.
 TEST_API_KEY = "test-api-key"
+
+# A realistic set of ingested Japanese prefectures for tests. The trip-planner
+# graph validates regions against services.retrieval.known_prefectures (the
+# ingested set) — see the region-validation feature (2026-07-12 "reject early").
+# We never want the graph to hit real Chroma for that in the suite, so the autouse
+# fixture below patches the name the graph imported to this fixed set. It INCLUDES
+# every prefecture the existing trip tests use (so their routing is unchanged) and
+# EXCLUDES non-Japan places (so region-validation tests can assert rejection).
+TEST_KNOWN_PREFECTURES = frozenset(
+    {"Gifu", "Nagano", "Shizuoka", "Oita", "Kyoto", "Hokkaido", "Okinawa"}
+)
+
+
+@pytest.fixture(autouse=True)
+def _patch_known_prefectures():
+    """Patch the trip graph's known-prefecture lookup to a fixed set (no Chroma).
+
+    Autouse so every test that drives the trip graph (directly or via plan_trip)
+    validates regions against ``TEST_KNOWN_PREFECTURES`` instead of the live
+    collection. Region-validation tests override this with their own ``patch`` when
+    they need a specific valid/invalid split. Patches the name bound INSIDE
+    ``agent.trip.graph`` (both the singleton graph and fresh ``build_trip_graph``
+    instances resolve it at call time), leaving the real service function — and its
+    own unit test — untouched.
+    """
+    from agent.trip import graph as trip_graph_module
+
+    with patch.object(
+        trip_graph_module,
+        "known_prefectures",
+        return_value=TEST_KNOWN_PREFECTURES,
+    ):
+        yield
 
 
 @pytest.fixture

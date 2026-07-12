@@ -18,9 +18,12 @@ for the four re-planning-readiness properties this module honours:
 
 Shape: ``START → gather → {elicit | plan} → END``. Each turn the ``gather`` node
 extracts slots from the message and merges them into the running ``TripSlots``; a
-conditional edge then routes to ``elicit`` (ask ONE follow-up for the first missing
-required slot, no tool/service calls) when a required slot is missing, or to the
-discrete ``plan`` node once all required slots are present. The ``plan`` node (PR3c)
+conditional edge then routes to ``elicit`` (ask ONE follow-up, no tool/LLM calls)
+when a required slot is missing OR when a named region is unknown/non-Japan
+(validated against the ingested-prefecture set — "reject early", 2026-07-12), or to
+the discrete ``plan`` node once all required slots are present AND valid. The mixed
+"Gifu and Texas" case therefore elicits (naming Texas) rather than quietly building
+a Gifu-only itinerary. The ``plan`` node (PR3c)
 retrieves onsen candidates per region via ``query_onsen_structured`` and assembles a
 naive itinerary in pure Python (no LLM in the plan path), populating ``candidates`` +
 ``itinerary`` in state. Slots are checkpointed per ``thread_id = session_id``, so a
@@ -36,12 +39,15 @@ from langgraph.graph import END, START, StateGraph
 from agent.trip.itinerary import assemble_trip
 from agent.trip.slots import (
     TripSlots,
+    elicit_message,
     extract_slots,
+    invalid_regions,
     missing_required,
-    next_question,
+    should_elicit,
 )
 from agent.trip.state import TripState
 from core.config import settings
+from services.retrieval.retrieval_service import known_prefectures
 
 logger = logging.getLogger(__name__)
 
@@ -67,29 +73,39 @@ async def _gather_node(state: TripState) -> dict:
 
 
 def _route_after_gather(state: TripState) -> str:
-    """Conditional edge: elicit if a required slot is missing, else plan.
+    """Conditional edge: elicit if a required slot is missing OR invalid, else plan.
 
     Runs on the state AFTER ``gather`` merged this turn's slots, so it sees the
-    freshest ``TripSlots``. Returns the name of the next node.
+    freshest ``TripSlots``. Routes to ``elicit`` when a required slot is missing OR
+    when the named regions include an unknown/non-Japan one — so a mixed
+    "Gifu and Texas" request never reaches ``plan`` (region validity is part of the
+    ``regions`` slot being satisfied). Returns the name of the next node.
     """
     slots = TripSlots(**(state.get("slots") or {}))
-    return "elicit" if missing_required(slots) else "plan"
+    return "elicit" if should_elicit(slots, known_prefectures()) else "plan"
 
 
 def _elicit_node(state: TripState) -> dict:
-    """Ask exactly ONE focused follow-up for the first missing required slot.
+    """Ask exactly ONE focused follow-up: a missing slot's question OR a bad region.
 
-    Cheap by design: no tool/service/LLM calls — just a canned question keyed off
-    the highest-priority missing slot (``regions → nights → dates_or_season``). Ends
-    the turn; the next turn re-enters ``gather`` with the prior slots loaded from the
-    checkpoint and merges the user's answer.
+    Cheap by design: no tool/LLM calls (only the cached ``known_prefectures`` set).
+    Precedence (via ``elicit_message``): regions present but invalid → the tailored
+    "I only plan Japanese onsen trips" message naming the bad region(s); otherwise
+    the first missing required slot's question. Ends the turn; the next turn
+    re-enters ``gather`` and merges the user's correction, so a valid replacement
+    (e.g. "just Gifu") lets the flow proceed to ``plan``.
     """
     slots = TripSlots(**(state.get("slots") or {}))
-    question = next_question(slots)
-    logger.info("trip.elicit node | asking for=%s", missing_required(slots)[:1])
-    # next_question is only reached on the elicit branch, so it is never None here;
+    known = known_prefectures()
+    message = elicit_message(slots, known)
+    logger.info(
+        "trip.elicit node | missing=%s | invalid_regions=%s",
+        missing_required(slots)[:1],
+        invalid_regions(slots, known),
+    )
+    # elicit_message is only reached on the elicit branch, so it is never None here;
     # fall back defensively to a generic prompt rather than surfacing an empty reply.
-    return {"reply": question or "Could you tell me a bit more about your trip?"}
+    return {"reply": message or "Could you tell me a bit more about your trip?"}
 
 
 def _plan_node(state: TripState) -> dict:
