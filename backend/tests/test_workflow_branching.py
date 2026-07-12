@@ -17,7 +17,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from agent.agent import OnsenResult
+from agent.schemas import OnsenResult
 from agent.workflow import pipeline
 from agent.workflow.intent import Intent
 

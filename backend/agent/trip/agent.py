@@ -23,7 +23,7 @@ the graph's plan node, ``services/`` retrieval) but never from ``api/``.
 
 import logging
 
-from agent.agent import AgentResponse
+from agent.schemas import AgentResponse
 from agent.trip.graph import trip_graph
 from agent.trip.itinerary import onsen_results_from_itinerary
 

@@ -8,7 +8,7 @@ The recommend feature adds fields that must NOT regress existing outputs:
 These are pure constructor/serialization checks — no mocking.
 """
 
-from agent.agent import AgentResponse, OnsenResult
+from agent.schemas import AgentResponse, OnsenResult
 
 
 def _onsen(**overrides):

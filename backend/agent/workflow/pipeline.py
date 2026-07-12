@@ -27,7 +27,7 @@ import time
 
 from langchain_core.callbacks import UsageMetadataCallbackHandler
 
-from agent.agent import AgentResponse, HotelResult, OnsenResult
+from agent.schemas import AgentResponse, HotelResult, OnsenResult
 from agent.trip.agent import plan_trip
 from agent.workflow.analyze import analyze_onsen
 from agent.workflow.ask import answer_question

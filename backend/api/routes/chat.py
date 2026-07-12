@@ -3,7 +3,8 @@ import logging
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
-from agent.agent import run_agent, HotelResult, OnsenResult
+from agent.agent import run_agent
+from agent.schemas import HotelResult, OnsenResult
 from api.limiter import limiter
 from core.config import settings
 from core.exceptions import OnsenBotError
