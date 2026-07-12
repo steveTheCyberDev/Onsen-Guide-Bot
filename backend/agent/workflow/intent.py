@@ -105,7 +105,8 @@ _llm = ChatOpenAI(
     temperature=0,
     stream_usage=True,
     # Bounded retries on transient OpenAI errors (timeouts, 429/5xx); the OpenAI
-    # SDK handles the backoff. Same knob as the main chat llm in agent/agent.py.
+    # SDK handles the backoff. Same knob (settings.llm_max_retries) as every
+    # other ChatOpenAI instance in the workflow.
     max_retries=settings.llm_max_retries,
 ).with_structured_output(Intent)
 

@@ -55,7 +55,7 @@ LLM call (`parse_intent`) classifies the query into one of **3 modes** and branc
 - **ask** — semantic RAG over the knowledge-base markdown docs (separate Chroma collection). Live via `ASK_ENABLED=True`.
 
 Output: recommend/ask add `pros[]`/`cons[]` + a top-level `recommendation` string (additive); search leaves them empty.
-The legacy ReAct agent (`agent/agent.py`) is retained behind `CHAT_ENGINE=react` for rollback only.
+The deterministic **workflow** (`agent/workflow/pipeline.py::run_workflow`) is the ONLY `/chat` engine.
 
 ---
 
@@ -63,18 +63,16 @@ The legacy ReAct agent (`agent/agent.py`) is retained behind `CHAT_ENGINE=react`
 
 - `services/` never imports from `agent/`
 - `agent/` never imports from `api/`
-- `tools/` never calls external APIs directly — always via `services/`
 - `api/` never calls `services/` directly — always via `agent/`
-- Data flows downward only — two paths under `agent/`:
-  - **Live workflow engine** (`CHAT_ENGINE=workflow`, default): `api/` → `agent/workflow/` → `services/` (no `tools/` hop).
-  - **Legacy ReAct engine** (`CHAT_ENGINE=react`, rollback only): `api/` → `agent/` → `tools/` → `services/`.
-  - `tools/` (thin LangChain wrappers) exist for the ReAct path only; the workflow calls `services/` directly.
+- Data flows downward only: `api/` → `agent/workflow/` (+ `agent/trip/`) → `services/`.
+  `api/routes/chat.py` calls `run_workflow` directly; the workflow calls `services/`
+  directly (no `tools/` wrapper layer).
 
 ### Exception: deterministic data endpoints
 
 The `api/ → agent/` rule exists for the **conversational `/chat` flow**, where the
-LLM agent reasons over the request and decides which tools to call. It does **not**
-apply to deterministic data endpoints that have no reasoning step.
+workflow parses intent, branches by mode, and (for trip) runs a multi-turn agent.
+It does **not** apply to deterministic data endpoints that have no reasoning step.
 
 `POST /hotels` is such an endpoint: clicking an onsen on the map is a plain
 coordinates-in → hotel-list-out lookup, so the route calls
@@ -101,16 +99,15 @@ settings.openai_api_key
 
 ---
 
-## How Tools Wrap Services
+## How the Workflow Calls Services
 
-Tools are thin LangChain wrappers around services — no business logic in tools.
+The workflow calls framework-agnostic services directly — no `tools/` wrapper layer.
+Business logic lives in `services/`; `agent/workflow/` orchestrates.
 
 ```python
-# agent/tools/rakuten_tool.py
-@tool
-def search_rakuten_onsen(latitude, longitude):
-    from services.rakuten.rakuten_service import search_hotels
-    return search_hotels(latitude, longitude)
+# agent/workflow/pipeline.py
+from services.retrieval.retrieval_service import query_onsen_structured
+from services.rakuten.rakuten_service import search_hotels
 ```
 
 ---
@@ -260,7 +257,7 @@ Run the smoke only when the suite is green and code changed, not on every tick.
 
 ## Current State (full roadmap + measured results in `PROJECT_JOURNEY.md`)
 
-- Live `/chat` engine is the deterministic **workflow**, not ReAct (`CHAT_ENGINE=workflow`; ReAct retained for rollback).
+- Live `/chat` engine is the deterministic **workflow** (`run_workflow`) — the only engine (the legacy ReAct agent and its engine-select flag were removed).
 - 3 router modes all **live in prod**: `search`, `recommend` (`ANALYZE_ENABLED=true`), and `ask` (`ASK_ENABLED=True`).
 - Agent / multi-agent (trip-planner), API-driven agent comms, and the GPT-4o→Claude Sonnet (`claude-sonnet-4-6`) migration are all **V3** — don't reach for them early.
 - Guiding principle: the **autonomy ladder** (`rules → pipeline → workflow → agent → multi-agent`) — use the least autonomy that solves the task; climb a rung only when a concrete case can't be served below.
@@ -270,7 +267,7 @@ Run the smoke only when the suite is green and code changed, not on every tick.
 ## Scaling Pattern
 
 - New external API → add `services/{name}/{name}_service.py`
-- New agent capability → add `agent/tools/{name}_tool.py`
+- New workflow capability → add a node/branch under `agent/workflow/` (or `agent/trip/`), calling `services/` directly
 - New API endpoint → add `api/routes/{name}.py`
 - Each addition is self-contained — nothing else breaks
 

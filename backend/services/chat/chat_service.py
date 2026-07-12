@@ -7,7 +7,7 @@ shared across workers/instances. The public seam is unchanged:
     get_history(session_id)          -> list[BaseMessage]  (chronological)
     save_message(session_id, human, ai) -> None            (one turn)
 
-so callers (``agent/workflow/pipeline.py``, ``agent/agent.py``) need no changes.
+so callers (``agent/workflow/pipeline.py``) need no changes.
 
 The dialect is selected entirely by the connection URL
 (``settings.resolved_session_db_url``): a local SQLite file by default, a Postgres

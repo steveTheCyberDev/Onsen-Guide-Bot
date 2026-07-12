@@ -111,10 +111,10 @@ class Settings(BaseSettings):
     # "" → fall back to settings.intent_model at the call site. Override via ASK_MODEL.
     ask_model: str = ""
     # Bounded retry count for outbound LLM calls (ChatOpenAI). Passed as
-    # `max_retries` to every ChatOpenAI instance (the ReAct llm in agent/agent.py
-    # and the intent llm in agent/workflow/intent.py) so transient OpenAI errors
-    # (timeouts, 429/5xx) are retried a few times instead of failing the request,
-    # without retrying forever. Override via env var LLM_MAX_RETRIES.
+    # `max_retries` to every ChatOpenAI instance (e.g. the intent llm in
+    # agent/workflow/intent.py) so transient OpenAI errors (timeouts, 429/5xx)
+    # are retried a few times instead of failing the request, without retrying
+    # forever. Override via env var LLM_MAX_RETRIES.
     llm_max_retries: int = 2
     # --- Inbound rate limiting (slowapi) ---
     # Per-client-IP limits applied to the PAID endpoints only (POST /chat and

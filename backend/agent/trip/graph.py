@@ -180,7 +180,7 @@ def build_trip_graph():
     return builder.compile(checkpointer=_build_checkpointer())
 
 
-# Module-level singleton, mirroring the ReAct ``graph`` in agent/agent.py. Compiling
-# once at import keeps the in-process MemorySaver alive for the whole process, so
-# slots accumulate across /chat requests keyed by thread_id=session_id.
+# Module-level singleton compiled once at import. This keeps the in-process
+# MemorySaver alive for the whole process, so slots accumulate across /chat
+# requests keyed by thread_id=session_id.
 trip_graph = build_trip_graph()
