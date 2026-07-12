@@ -172,6 +172,89 @@ def next_question(slots: TripSlots) -> str | None:
     return _ELICIT_QUESTIONS[missing[0]]
 
 
+# --- region validation (V3, 2026-07-12 "reject early") -----------------------
+# Unknown / non-Japan regions are rejected at slot-filling, BEFORE the plan node,
+# rather than surfacing as an itinerary "no onsen found for X" footnote. The source
+# of truth for a valid region is the set of prefectures actually INGESTED in Chroma
+# (services.retrieval.known_prefectures) — passed in as ``known`` so this layer
+# stays free of a services import at module scope and is trivially testable.
+
+
+def invalid_regions(slots: TripSlots, known: frozenset[str]) -> list[str]:
+    """Return the slot's regions that are NOT in the known ingested set (case-insensitive).
+
+    Empty when ``regions`` is empty (nothing to validate — that's a *missing*
+    regions case handled by :func:`missing_required`, not an *invalid* one). Order
+    preserves the user's stated regions so the elicit message names them naturally.
+    """
+    known_lower = {k.strip().lower() for k in known}
+    return [r for r in slots.regions if r.strip().lower() not in known_lower]
+
+
+def _join_and(names: list[str]) -> str:
+    """Join names with commas and a trailing 'and' ("A", "A and B", "A, B and C")."""
+    if len(names) == 1:
+        return names[0]
+    if len(names) == 2:
+        return f"{names[0]} and {names[1]}"
+    return ", ".join(names[:-1]) + f" and {names[-1]}"
+
+
+def _example_prefectures(known: frozenset[str], k: int = 3) -> list[str]:
+    """A few real ingested prefectures to suggest — never one we lack.
+
+    Drawn from ``known`` (sorted for determinism) so the hint can only ever
+    propose prefectures we actually have data for.
+    """
+    return sorted(known)[:k]
+
+
+def region_invalid_message(invalid: list[str], known: frozenset[str]) -> str:
+    """The tailored follow-up when the user named unknown/non-Japan region(s).
+
+    Names every invalid region ("Texas", "Texas and California"), explains we only
+    plan Japanese onsen trips, and suggests real ingested prefectures. Approved copy
+    (2026-07-12); the example prefectures come from :func:`_example_prefectures` so
+    we never suggest a prefecture we lack.
+    """
+    subject = _join_and(invalid)
+    verb = "isn't" if len(invalid) == 1 else "aren't"
+    examples = _example_prefectures(known)
+    hint = f" (e.g. {', '.join(examples)})" if examples else ""
+    return (
+        f"{subject} {verb} somewhere I cover — I only plan Japanese onsen trips. "
+        f"Which Japanese prefecture(s) would you like?{hint}"
+    )
+
+
+def should_elicit(slots: TripSlots, known: frozenset[str]) -> bool:
+    """Whether this turn must elicit rather than plan.
+
+    True when a required slot is missing OR when ``regions`` are present but any is
+    invalid. The region-validity check is what makes an otherwise-"complete" turn
+    (all three required slots filled) still elicit — so a mixed "Gifu and Texas"
+    request never reaches the plan node.
+    """
+    return bool(missing_required(slots)) or bool(invalid_regions(slots, known))
+
+
+def elicit_message(slots: TripSlots, known: frozenset[str]) -> str | None:
+    """The single message to return this turn, honouring region-validity precedence.
+
+    Precedence (matches ``REQUIRED_SLOTS`` order, regions first):
+      * regions present but invalid → the tailored region-invalid message;
+      * otherwise → the first missing required slot's question
+        (``next_question``: "Which area(s)?" when regions are missing entirely,
+        else nights/dates).
+    Returns ``None`` only when nothing is missing AND all regions are valid — i.e.
+    the caller should route to ``plan``.
+    """
+    invalid = invalid_regions(slots, known)
+    if slots.regions and invalid:
+        return region_invalid_message(invalid, known)
+    return next_question(slots)
+
+
 def merge_slots(current: TripSlots, update: SlotUpdate) -> TripSlots:
     """Merge a one-message ``SlotUpdate`` delta onto the running ``TripSlots``.
 

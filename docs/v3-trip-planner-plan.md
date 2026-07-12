@@ -141,7 +141,7 @@ slots refine with sensible defaults.
 
 | Slot | Type | Required? | How elicited | Default / null behavior |
 |---|---|---|---|---|
-| `regions` | `list[str]` (English prefectures) | **Required** | From message; else ask "Which area(s)?" | Validated against ingested prefectures (reuse `eval_flow.build_ground_truth` set logic) — don't plan where there's no data. |
+| `regions` | `list[str]` (English prefectures) | **Required** | From message; else ask "Which area(s)?"; if named but unknown/non-Japan → the region-invalid ask | Validated against the ingested-prefecture set at slot-fill (see "Region validation" below) — reject unknown regions early, don't plan where there's no data. |
 | `nights` | `int` | **Required** | From message ("5 nights"); else ask | Drives itinerary length / nights-add-up check. |
 | `dates_or_season` | ISO date range OR season label | **Required** | From message; else ask "When?" | Season fallback ("autumn") OK; needed for weather. |
 | `party` | `enum{solo,couple,family,friends}` | Optional | From message | Default `couple`. Feeds `analyze_onsen` prefs + hotel choice. |
@@ -160,6 +160,25 @@ why Step 0 is a hard prerequisite.
 **Where slot state lives (two tiers):** raw conversation → Step-0 session store (replayed via
 `get_history`); structured `TripSlots` + intermediate tool results → LangGraph **agent working state**,
 checkpointed per `thread_id = session_id` (`PostgresSaver` prod / `MemorySaver` local).
+
+**Region validation — enforced at slot-fill (decision 2026-07-12, "reject early").** A region is valid
+only if it is in the set of prefectures actually INGESTED in Chroma — the distinct `prefecture_en`
+values, exposed as `services/retrieval/retrieval_service.py::known_prefectures()` (a small `lru_cache`d
+helper; sourced from `services/` so `agent/` never imports the eval script). At slot-fill the graph
+routes to `elicit` whenever a required slot is missing **OR** any named region is unknown/non-Japan, so:
+
+- an unknown region (e.g. "California") is rejected with a tailored message — *"California isn't
+  somewhere I cover — I only plan Japanese onsen trips. Which Japanese prefecture(s)…"* — before the
+  plan node, and
+- a **mixed** request ("Gifu and Texas") does **NOT** silently build the Gifu-only itinerary; the whole
+  turn becomes a region-elicit turn naming Texas.
+
+Region validity is part of the `regions` required-slot being satisfied (precedence: missing regions →
+the generic "Which area(s)?" ask; present-but-invalid → the region-invalid ask; present-and-all-valid →
+satisfied). Correction terminates: because `merge_slots` REPLACES the regions list with the extraction's
+full intended list, a valid follow-up ("just Gifu") drops the stale invalid region and the flow proceeds
+to plan. The plan-node no-data guard in `itinerary.py` ("No onsen found for X") is KEPT as
+belt-and-suspenders now that validation is upstream.
 
 ---
 
