@@ -57,6 +57,23 @@ def _patch_known_prefectures():
         yield
 
 
+@pytest.fixture(autouse=True)
+def _patch_trip_search_hotels():
+    """Stub the trip plan node's hotel lookup so the suite never hits Rakuten.
+
+    PR5's ``plan`` node calls ``search_hotels`` (Rakuten) for each selected onsen
+    stop. Autouse-patch the name bound INSIDE ``agent.trip.itinerary`` to return no
+    hotels by default, so existing trip tests stay deterministic + free (no network)
+    and behave as "no hotels found nearby". PR5 hotel tests override this with their
+    own ``patch`` to return hotels or raise (fail-soft). Leaves the real Rakuten
+    service — and its own tests — untouched.
+    """
+    from agent.trip import itinerary as trip_itinerary
+
+    with patch.object(trip_itinerary, "search_hotels", return_value=[]):
+        yield
+
+
 @pytest.fixture
 def client():
     """FastAPI TestClient that authenticates by default.

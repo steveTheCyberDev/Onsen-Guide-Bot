@@ -265,19 +265,28 @@ _EXAMPLES: list[dict] = [
         "no_data_regions": [],
     },
     {
-        # (c) A region with NO ingested data (Hokkaido) → the itinerary must say
-        # "no onsen found for Hokkaido" explicitly and fabricate nothing; Gifu
-        # (has data) still yields real stops.
+        # (c) Complete-in-one-message MULTI-region trip (all valid, in-data).
+        # RECONCILED for PR5 (2026-07-12): this example used to pair Gifu with the
+        # uningested Hokkaido to exercise the plan node's "no onsen found for X"
+        # leg. But region-validation ("reject early") now rejects any region NOT in
+        # the ingested-prefecture set at slot-fill — a Japanese-but-uningested
+        # prefecture (Hokkaido) is rejected exactly like a non-Japan one — so the
+        # flow never reaches the plan node and the itinerary-level no-data leg is
+        # unreachable via slot-fill. So this example is now an all-valid multi-region
+        # trip (distinct trajectory from (a): complete-in-one vs. follow-up thread).
+        # A dedicated invalid-region "never planned" eval example is DEFERRED (the
+        # earmarked follow-up); it needs an "expected_never_planned" expectation the
+        # trip evaluators don't yet model.
         "messages": [
-            "Plan a 3-night onsen trip itinerary across Gifu and Hokkaido this winter"
+            "Plan a 3-night onsen trip itinerary across Gifu and Shizuoka this winter"
         ],
         "expected_mode": "trip",
         "prefecture": None,
         "has_data": True,
         "wants_hotels": False,
-        "regions": ["Gifu", "Hokkaido"],
+        "regions": ["Gifu", "Shizuoka"],
         "expected_nights": 3,
-        "no_data_regions": ["Hokkaido"],
+        "no_data_regions": [],
     },
 ]
 
@@ -866,13 +875,13 @@ def ask_grounding(
     return {"key": "ask_grounding", "score": verdict, "comment": comment}
 
 
-# --- Trip evaluators (V3 PR4 — deterministic, structure + trajectory) ---------
-# The trip flow is multi-turn and produces an itinerary, so it is scored by three
+# --- Trip evaluators (V3 PR4/PR5 — deterministic, structure + trajectory) -----
+# The trip flow is multi-turn and produces an itinerary, so it is scored by
 # DEDICATED deterministic evaluators reading the target's returned AgentResponse +
 # the checkpointed TripState signals (_trajectory / _final_slots / _itinerary /
 # _retrieval_prefectures) — NOT LangSmith run-trees, and NO LLM judge. Each ABSTAINS
-# (score=None) on non-trip examples. Appropriate to the CURRENT state (pre-hotels/
-# routing): NO hotel-exists or re-plan checks — those arrive with PR5/PR7.
+# (score=None) on non-trip examples. PR5 adds `hotels_exist` (every stop looked up,
+# no fabricated hotels). Still NO re-plan check — that arrives with PR7.
 
 
 def _elicit_question_values() -> set[str]:
@@ -1056,6 +1065,59 @@ def plan_validity(outputs: dict, reference_outputs: dict) -> dict:
     return {"key": "plan_validity", "score": 1, "comment": "itinerary valid + grounded"}
 
 
+def hotels_exist(outputs: dict, reference_outputs: dict) -> dict:
+    """PR5 hotels check: every onsen stop went through the hotel step, no fabrication.
+
+    For each lodging stop (a real in-region onsen), the plan node must have looked
+    up nearby hotels — so the stop carries a ``hotels`` list (present, possibly
+    empty). An empty list is the honest "none found" case and PASSES (hotels are
+    fail-soft; a Rakuten outage yields none). What must NEVER happen is a surfaced
+    hotel that came from nowhere: every hotel in ``AgentResponse.hotels`` must trace
+    back to some stop's ``hotels`` lookup.
+
+    ABSTAINS on non-trip examples. Deterministic — reads the itinerary state + the
+    returned hotels; no Rakuten call, no run-tree parsing.
+    """
+    if reference_outputs.get("expected_mode") != "trip":
+        return {"key": "hotels_exist", "score": None, "comment": "n/a"}
+
+    itinerary = outputs.get("_itinerary")
+    if not itinerary:
+        return {"key": "hotels_exist", "score": 0, "comment": "no itinerary produced"}
+
+    # Every planned stop must have run the hotel step (a `hotels` list present).
+    stop_hotel_names: set[str] = set()
+    for leg in itinerary.get("regions") or []:
+        if leg.get("no_data"):
+            continue
+        for onsen in leg.get("onsens") or []:
+            hotels = onsen.get("hotels")
+            if not isinstance(hotels, list):
+                return {
+                    "key": "hotels_exist",
+                    "score": 0,
+                    "comment": f"stop {onsen.get('name')!r} missing hotels lookup",
+                }
+            for h in hotels:
+                stop_hotel_names.add(normalize(h.get("name", "")))
+
+    # Anti-fabrication: every surfaced hotel must come from a stop's lookup.
+    surfaced = [h.get("name", "") for h in (outputs.get("hotels") or [])]
+    fabricated = [n for n in surfaced if normalize(n) not in stop_hotel_names]
+    if fabricated:
+        return {
+            "key": "hotels_exist",
+            "score": 0,
+            "comment": f"surfaced hotels not from any stop lookup: {fabricated}",
+        }
+
+    return {
+        "key": "hotels_exist",
+        "score": 1,
+        "comment": f"all stops looked up; {len(surfaced)} hotel(s) surfaced, none fabricated",
+    }
+
+
 def cost_budget(outputs: dict, reference_outputs: dict) -> dict:
     """Score 1 iff the run's measured cost is within the per-mode budget."""
     mode = reference_outputs.get("expected_mode")
@@ -1095,6 +1157,7 @@ EVALUATORS = [
     slot_filling_completeness,
     tool_selection_presence,
     plan_validity,
+    hotels_exist,  # V3 PR5
     cost_budget,
     latency,
     # proscons_grounding,   # PARKED — see note above
@@ -1113,6 +1176,7 @@ _COLUMN_LABELS: dict[str, tuple[str, int]] = {
     "slot_filling_completeness": ("slots", 6),
     "tool_selection_presence": ("tools", 6),
     "plan_validity": ("plan", 6),
+    "hotels_exist": ("hotels", 6),
     "cost_budget": ("cost", 6),
     "latency": ("latency", 7),
 }

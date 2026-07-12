@@ -112,19 +112,20 @@ def _plan_node(state: TripState) -> dict:
     """The discrete ``plan`` node — PR3c naive itinerary builder.
 
     Reached only when every required slot is present. Retrieves onsen candidates
-    per region (the first ``services/`` call from ``agent/trip/``) and assembles a
-    naive itinerary DETERMINISTICALLY in Python — no LLM call here — mirroring the
-    ``search`` mode's no-fabrication discipline. Writes ``candidates`` + ``itinerary``
-    back into working state and surfaces a template ``reply``. Regions with no
-    ingested data are recorded explicitly ("no onsen found for X"), never invented.
+    per region, assembles a naive itinerary DETERMINISTICALLY in Python — no LLM
+    call here — and (PR5) looks up nearby hotels per selected onsen stop (fail-soft),
+    mirroring the ``search`` mode's no-fabrication discipline. Writes ``candidates`` +
+    ``itinerary`` back into working state and surfaces a template ``reply``. Regions
+    with no ingested data are recorded explicitly ("no onsen found for X"), and stops
+    with no nearby lodging say "no hotels found nearby" — never invented.
 
     The node's identity/name is load-bearing (re-planning-readiness property #3):
     PR7 hangs a ``check_constraints`` node + conditional back-edge INTO this same
-    node without reshaping. No re-planning, hotels, routing, or Places here (PR5/6/7).
+    node without reshaping. No routing, Places, or re-planning here (PR6/7).
 
-    Sync by design: ``query_onsen_structured`` is a blocking Chroma call, so
-    LangGraph runs this node in its executor under ``ainvoke`` — the event loop is
-    not blocked (same trade-off the workflow makes for retrieval).
+    Sync by design: ``query_onsen_structured`` (Chroma) and ``search_hotels``
+    (Rakuten) are blocking calls, so LangGraph runs this node in its executor under
+    ``ainvoke`` — the event loop is not blocked (same trade-off the workflow makes).
     """
     slots = state.get("slots") or {}
     logger.info("trip.plan node | slots complete | regions=%s", slots.get("regions"))

@@ -482,6 +482,79 @@ def test_plan_validity_fails_on_surfaced_onsen_out_of_region():
     assert "out of region" in r["comment"]
 
 
+# -- hotels_exist (V3 PR5) --
+def _hotel(name):
+    return {"name": name, "url": f"https://h.example/{name}"}
+
+
+def _leg_h(region, nights, stops, no_data=False):
+    """A leg whose onsen stops carry a `hotels` list (PR5 shape)."""
+    return {
+        "region": region,
+        "nights": nights,
+        "no_data": no_data,
+        "onsens": [{**_onsen(name), "hotels": hotels} for name, hotels in stops],
+    }
+
+
+def test_hotels_exist_abstains_on_non_trip():
+    r = eval_flow.hotels_exist(outputs={}, reference_outputs={"expected_mode": "search"})
+    assert r["score"] is None
+
+
+def test_hotels_exist_passes_when_all_stops_looked_up():
+    legs = [_leg_h("Gifu", 2, [("Gero Onsen", [_hotel("Ryokan A")]), ("Hirayu Onsen", [])])]
+    outputs = {"_itinerary": _itinerary(2, legs), "hotels": [_hotel("Ryokan A")]}
+    r = eval_flow.hotels_exist(outputs=outputs, reference_outputs=_trip_ref(["Gifu"], 2))
+    assert r["score"] == 1
+
+
+def test_hotels_exist_passes_when_none_found_everywhere():
+    # Empty hotels at every stop is the honest "none found" case → PASS.
+    legs = [_leg_h("Gifu", 1, [("Gero Onsen", [])])]
+    outputs = {"_itinerary": _itinerary(1, legs), "hotels": []}
+    r = eval_flow.hotels_exist(outputs=outputs, reference_outputs=_trip_ref(["Gifu"], 1))
+    assert r["score"] == 1
+
+
+def test_hotels_exist_fails_when_a_stop_missing_lookup():
+    # A stop with NO `hotels` key means the hotel step didn't run for it.
+    leg = {"region": "Gifu", "nights": 1, "no_data": False, "onsens": [_onsen("Gero Onsen")]}
+    outputs = {"_itinerary": _itinerary(1, [leg]), "hotels": []}
+    r = eval_flow.hotels_exist(outputs=outputs, reference_outputs=_trip_ref(["Gifu"], 1))
+    assert r["score"] == 0
+    assert "missing hotels lookup" in r["comment"]
+
+
+def test_hotels_exist_fails_on_fabricated_surfaced_hotel():
+    # A surfaced hotel that no stop returned = fabrication.
+    legs = [_leg_h("Gifu", 1, [("Gero Onsen", [_hotel("Ryokan A")])])]
+    outputs = {"_itinerary": _itinerary(1, legs), "hotels": [_hotel("Phantom Hotel")]}
+    r = eval_flow.hotels_exist(outputs=outputs, reference_outputs=_trip_ref(["Gifu"], 1))
+    assert r["score"] == 0
+    assert "not from any stop" in r["comment"]
+
+
+def test_hotels_exist_ignores_no_data_legs():
+    # A no-data leg carries no onsen, so it imposes no hotel requirement.
+    legs = [
+        _leg_h("Gifu", 2, [("Gero Onsen", [_hotel("Ryokan A")])]),
+        {"region": "Nowhere", "nights": 0, "no_data": True, "onsens": []},
+    ]
+    outputs = {"_itinerary": _itinerary(2, legs), "hotels": [_hotel("Ryokan A")]}
+    r = eval_flow.hotels_exist(
+        outputs=outputs, reference_outputs=_trip_ref(["Gifu", "Nowhere"], 2)
+    )
+    assert r["score"] == 1
+
+
+def test_hotels_exist_fails_when_no_itinerary():
+    r = eval_flow.hotels_exist(
+        outputs={"_itinerary": None}, reference_outputs=_trip_ref(["Gifu"], 1)
+    )
+    assert r["score"] == 0
+
+
 # -- trip cost/latency budget bucket --
 def test_cost_budget_trip_bucket():
     within = {"_cost_usd": 0.015}
