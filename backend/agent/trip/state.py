@@ -6,7 +6,7 @@ from the Step-0 session store (``services/chat/chat_service.py``), which holds t
 raw conversation *transcript*: this schema holds the *structured* state the agent
 accumulates while planning (slots, candidates, itinerary).
 
-PR3a intentionally defines the fields the later slices FILL, so 3b/3c ADD logic to
+PR3a intentionally defined the fields the later slices FILL, so 3b/3c ADD logic to
 existing fields rather than introducing a new state concept (re-planning-readiness
 property #2 in §0):
 
@@ -14,9 +14,10 @@ property #2 in §0):
                      (``model_dump()``), merged + accumulated turn over turn. Stored
                      as a plain dict (not the model) so the checkpointed state stays
                      JSON-serialisable for the future PostgresSaver.
-  * ``candidates`` — placeholder for onsen candidates that PR3c fills from
-                     ``query_onsen_structured``.
-  * ``itinerary``  — placeholder for the assembled plan that PR3c produces.
+  * ``candidates`` — onsen candidates the plan node retrieves per region via
+                     ``query_onsen_structured`` (PR3c fills this).
+  * ``itinerary``  — the naive assembled plan the plan node produces (PR3c fills
+                     this): ``{nights, regions: [...], selected_onsens: [...]}``.
 
 ``turn_count`` is the 3a proof-of-life for the checkpointer: the stub node reads
 the value the previous turn left behind and increments it, so a second invoke on

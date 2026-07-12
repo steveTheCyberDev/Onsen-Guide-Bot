@@ -5,24 +5,27 @@ The seam wired behind the ``trip_enabled`` gate (default False) by
 reply flow through a checkpointed ``StateGraph``; PR3b makes it **active**: each turn
 the graph extracts slots from the message, merges them into the running
 ``TripSlots``, and either asks ONE follow-up (elicit) for the first missing required
-slot or acknowledges readiness (the discrete ``plan`` placeholder). The
-``plan_trip(message, session_id, callbacks=...)`` signature is preserved so the
-pipeline needs no reshaping.
+slot or, once all required slots are present, runs the discrete ``plan`` node to
+assemble a naive onsen itinerary. The ``plan_trip(message, session_id,
+callbacks=...)`` signature is preserved so the pipeline needs no reshaping.
 
-The ``AgentResponse`` contract stays additive-only: the reply is now the elicit
-question or the planning acknowledgement, but ``onsens``/``hotels`` remain empty and
-``recommendation`` stays ``None`` until itinerary assembly lands in PR3c. Slots are
-checkpointed per ``thread_id = session_id`` via ``MemorySaver``, so a follow-up
-answer on a later turn resumes with the prior slots intact.
+The ``AgentResponse`` contract stays additive-only. On an elicit turn the reply is
+the follow-up question and ``onsens`` stays empty; on a plan turn (PR3c) the reply
+is the naive-itinerary template and ``onsens`` is populated with the REAL selected
+in-region onsen (projected from the graph's ``itinerary`` state). ``hotels`` remain
+empty and ``recommendation`` stays ``None`` (hotels/routing/Places are PR5/6/7).
+Slots are checkpointed per ``thread_id = session_id`` via ``MemorySaver``, so a
+follow-up answer on a later turn resumes with the prior slots intact.
 
-Layering: this module imports shared schemas + LLM plumbing from ``agent/`` but never
-from ``api/``, and makes no ``services/`` calls in this slice.
+Layering: this module imports shared schemas from ``agent/`` (and, transitively via
+the graph's plan node, ``services/`` retrieval) but never from ``api/``.
 """
 
 import logging
 
 from agent.agent import AgentResponse
 from agent.trip.graph import trip_graph
+from agent.trip.itinerary import onsen_results_from_itinerary
 
 logger = logging.getLogger(__name__)
 
@@ -50,8 +53,10 @@ async def plan_trip(
             into the graph config so the extraction LLM call's usage is captured.
 
     Returns:
-        An ``AgentResponse``: the graph's reply, empty ``onsens``/``hotels``,
-        ``recommendation=None``. The ``/chat`` response contract is unchanged.
+        An ``AgentResponse``: the graph's reply; ``onsens`` = the itinerary's real
+        selected onsen on a plan turn (empty on an elicit turn); empty ``hotels``;
+        ``recommendation=None``. The ``/chat`` response contract is unchanged
+        (populating ``onsens`` is additive — it was empty in earlier slices).
     """
     logger.info("plan_trip | session_id=%s", session_id)
     config: dict = {"configurable": {"thread_id": session_id}}
@@ -59,9 +64,13 @@ async def plan_trip(
         config["callbacks"] = callbacks
     result = await trip_graph.ainvoke({"message": message}, config=config)
     reply = result.get("reply") or _FALLBACK_REPLY
+    # On an elicit turn the graph produced no itinerary → onsens stays empty. On a
+    # plan turn, project the itinerary's real selected onsen onto OnsenResult.
+    itinerary = result.get("itinerary")
+    onsens = onsen_results_from_itinerary(itinerary) if itinerary else []
     return AgentResponse(
         reply=reply,
-        onsens=[],
+        onsens=onsens,
         hotels=[],
         recommendation=None,
     )

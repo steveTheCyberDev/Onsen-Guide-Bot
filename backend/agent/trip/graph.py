@@ -1,4 +1,4 @@
-"""Trip-planner LangGraph ``StateGraph`` — PR3b slots + elicit-loop.
+"""Trip-planner LangGraph ``StateGraph`` — PR3c slots + elicit-loop + naive itinerary.
 
 The **first use of LangGraph in the live /chat path** (the legacy ReAct agent in
 ``agent/agent.py`` is the only other user, behind ``CHAT_ENGINE=react``). This is a
@@ -10,19 +10,22 @@ for the four re-planning-readiness properties this module honours:
   1. Hand-built ``StateGraph`` (this file), not the prebuilt ReAct graph.
   2. Accumulating working state from day one (``TripState`` in state.py) — PR3b now
      fills ``slots`` (a ``TripSlots``) turn over turn.
-  3. A discrete ``plan`` node — 3b keeps it a placeholder ("got everything, planning
-     next"); PR3c makes it real without reshaping; PR7 hangs a ``check_constraints``
-     node + conditional back-edge off it.
+  3. A discrete ``plan`` node — PR3c makes it real (retrieve onsen per region +
+     assemble a naive itinerary deterministically) WITHOUT reshaping the graph; PR7
+     hangs a ``check_constraints`` node + conditional back-edge off it.
   4. Checkpointer wired (``MemorySaver`` local; ``PostgresSaver`` deferred behind
      ``trip_checkpointer_backend`` until PR1's Railway Postgres lands).
 
-Shape (3b): ``START → gather → {elicit | plan} → END``. Each turn the ``gather``
-node extracts slots from the message and merges them into the running ``TripSlots``;
-a conditional edge then routes to ``elicit`` (ask ONE follow-up for the first missing
+Shape: ``START → gather → {elicit | plan} → END``. Each turn the ``gather`` node
+extracts slots from the message and merges them into the running ``TripSlots``; a
+conditional edge then routes to ``elicit`` (ask ONE follow-up for the first missing
 required slot, no tool/service calls) when a required slot is missing, or to the
-discrete ``plan`` placeholder once all required slots are present. Slots are
-checkpointed per ``thread_id = session_id``, so a follow-up on a later turn resumes
-with the prior slots intact — the multi-turn elicit-loop that IS the point of PR3b.
+discrete ``plan`` node once all required slots are present. The ``plan`` node (PR3c)
+retrieves onsen candidates per region via ``query_onsen_structured`` and assembles a
+naive itinerary in pure Python (no LLM in the plan path), populating ``candidates`` +
+``itinerary`` in state. Slots are checkpointed per ``thread_id = session_id``, so a
+follow-up on a later turn resumes with the prior slots intact — the multi-turn
+elicit-loop, now feeding a real itinerary.
 """
 
 import logging
@@ -30,6 +33,7 @@ import logging
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, START, StateGraph
 
+from agent.trip.itinerary import assemble_trip
 from agent.trip.slots import (
     TripSlots,
     extract_slots,
@@ -40,15 +44,6 @@ from agent.trip.state import TripState
 from core.config import settings
 
 logger = logging.getLogger(__name__)
-
-# Placeholder reply for the discrete ``plan`` node once every required slot is
-# filled. PR3c replaces this with a real assembled itinerary; for 3b it is a cheap
-# acknowledgement that elicitation is complete and planning is next. No LLM/tool
-# calls here in 3b.
-PLAN_ACK_REPLY = (
-    "Great — I have the essentials for your onsen trip. Putting an itinerary "
-    "together next."
-)
 
 
 async def _gather_node(state: TripState) -> dict:
@@ -98,15 +93,31 @@ def _elicit_node(state: TripState) -> dict:
 
 
 def _plan_node(state: TripState) -> dict:
-    """The discrete ``plan`` node — PR3b placeholder.
+    """The discrete ``plan`` node — PR3c naive itinerary builder.
 
-    Reached only when every required slot is present. 3b acknowledges readiness and
-    stops; PR3c replaces this body with real itinerary assembly over ``candidates``,
-    and PR7 hangs a ``check_constraints`` node + conditional back-edge INTO this same
-    node. The node's identity/name is load-bearing — keep it ``plan``.
+    Reached only when every required slot is present. Retrieves onsen candidates
+    per region (the first ``services/`` call from ``agent/trip/``) and assembles a
+    naive itinerary DETERMINISTICALLY in Python — no LLM call here — mirroring the
+    ``search`` mode's no-fabrication discipline. Writes ``candidates`` + ``itinerary``
+    back into working state and surfaces a template ``reply``. Regions with no
+    ingested data are recorded explicitly ("no onsen found for X"), never invented.
+
+    The node's identity/name is load-bearing (re-planning-readiness property #3):
+    PR7 hangs a ``check_constraints`` node + conditional back-edge INTO this same
+    node without reshaping. No re-planning, hotels, routing, or Places here (PR5/6/7).
+
+    Sync by design: ``query_onsen_structured`` is a blocking Chroma call, so
+    LangGraph runs this node in its executor under ``ainvoke`` — the event loop is
+    not blocked (same trade-off the workflow makes for retrieval).
     """
-    logger.info("trip.plan node (placeholder) | slots complete")
-    return {"reply": PLAN_ACK_REPLY}
+    slots = state.get("slots") or {}
+    logger.info("trip.plan node | slots complete | regions=%s", slots.get("regions"))
+    result = assemble_trip(slots)
+    return {
+        "candidates": result["candidates"],
+        "itinerary": result["itinerary"],
+        "reply": result["reply"],
+    }
 
 
 def _build_checkpointer():
@@ -136,9 +147,9 @@ def build_trip_graph():
 
     Shape: ``START → gather → {elicit | plan} → END``. ``gather`` extracts + merges
     slots; a conditional edge routes to ``elicit`` (missing required slot) or the
-    discrete ``plan`` placeholder (all required present). Compiled WITH a checkpointer
+    discrete ``plan`` node (all required present). Compiled WITH a checkpointer
     so ``TripSlots`` is retained per ``thread_id`` across ``ainvoke`` calls — the
-    multi-turn elicit-loop. 3c/PR7 extend the ``plan`` node without reshaping this.
+    multi-turn elicit-loop. PR7 extends the ``plan`` node without reshaping this.
     """
     builder = StateGraph(TripState)
     builder.add_node("gather", _gather_node)

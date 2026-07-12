@@ -21,8 +21,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from agent.trip import itinerary as itinerary_module
 from agent.trip import slots as slots_module
-from agent.trip.graph import PLAN_ACK_REPLY, build_trip_graph
+from agent.trip.graph import build_trip_graph
 from agent.trip.slots import (
     SlotUpdate,
     TripSlots,
@@ -34,6 +35,28 @@ from agent.trip.slots import (
 
 def _cfg(session_id: str) -> dict:
     return {"configurable": {"thread_id": session_id}}
+
+
+def _onsen(name: str) -> dict:
+    """A minimal query_onsen_structured-shaped record for plan-node tests."""
+    return {
+        "name": name,
+        "location": "Somewhere, Japan",
+        "spring_type": "Sulfur Spring",
+        "spa_quality": "A relaxing sulfur spring.",
+        "detail_url": f"https://example.com/{name}",
+        "lat": 36.0,
+        "lng": 137.0,
+    }
+
+
+def _mock_retrieval(*records: dict):
+    """Patch target for the plan node's per-region retrieval.
+
+    Returns the same records for every region so plan-reaching PR3b tests stay
+    deterministic and make no real Chroma call.
+    """
+    return MagicMock(return_value=list(records))
 
 
 def _mock_llm(*updates: SlotUpdate) -> MagicMock:
@@ -111,19 +134,21 @@ async def test_partial_then_complete_across_two_turns_same_session():
     # Turn 2 (same session): user supplies the season → now complete.
     turn2 = SlotUpdate(dates_or_season="autumn")
 
-    with patch.object(slots_module, "_llm", _mock_llm(turn1, turn2)):
+    with patch.object(slots_module, "_llm", _mock_llm(turn1, turn2)), patch.object(
+        itinerary_module, "query_onsen_structured", _mock_retrieval(_onsen("Gero Onsen"))
+    ):
         r1 = await graph.ainvoke(
             {"message": "5 nights in Gifu and Nagano"}, config=_cfg(session_id)
         )
         r2 = await graph.ainvoke({"message": "in autumn"}, config=_cfg(session_id))
 
-    # Turn 1 → elicit for the missing required slot (dates), NOT the plan ack.
-    assert r1["reply"] != PLAN_ACK_REPLY
+    # Turn 1 → elicit for the missing required slot (dates), NOT an itinerary.
     assert "when" in r1["reply"].lower() or "season" in r1["reply"].lower()
+    assert "itinerary" not in r1["reply"].lower()
 
     # Turn 2 → prior slots persisted (regions/nights), the season merged in, and the
-    # flow proceeded PAST elicitation to the plan placeholder.
-    assert r2["reply"] == PLAN_ACK_REPLY
+    # flow proceeded PAST elicitation to the real plan node (an itinerary).
+    assert "itinerary" in r2["reply"].lower()
     snap = graph.get_state(_cfg(session_id)).values
     assert snap["slots"]["regions"] == ["Gifu", "Nagano"]
     assert snap["slots"]["nights"] == 5
@@ -138,14 +163,17 @@ async def test_complete_in_one_message_asks_no_question():
     session_id = "trip-one-shot"
     full = SlotUpdate(regions=["Oita"], nights=3, dates_or_season="early November")
 
-    with patch.object(slots_module, "_llm", _mock_llm(full)):
+    with patch.object(slots_module, "_llm", _mock_llm(full)), patch.object(
+        itinerary_module, "query_onsen_structured", _mock_retrieval(_onsen("Beppu Onsen"))
+    ):
         r = await graph.ainvoke(
             {"message": "3 nights in Oita in early November"}, config=_cfg(session_id)
         )
 
-    # All required present on the first message → straight to the plan placeholder,
-    # no follow-up question asked.
-    assert r["reply"] == PLAN_ACK_REPLY
+    # All required present on the first message → straight to the real plan node
+    # (an itinerary), no follow-up question asked.
+    assert "itinerary" in r["reply"].lower()
+    assert "?" not in r["reply"]
 
 
 @pytest.mark.asyncio
@@ -157,7 +185,6 @@ async def test_only_one_question_asked_per_turn():
         r = await graph.ainvoke({"message": "I want an onsen trip"}, config=_cfg(session_id))
 
     reply = r["reply"]
-    assert reply != PLAN_ACK_REPLY
     # Exactly one question mark → a single focused ask, not a barrage.
     assert reply.count("?") == 1
     # It targets the HIGHEST-priority missing slot (regions), not nights/dates.
