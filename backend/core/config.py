@@ -46,16 +46,11 @@ class Settings(BaseSettings):
     # sets it to /app/data, where COPY data/ data/ lands) so the ingest job finds
     # the files regardless of the source-tree layout. Mirrors chroma_path above.
     data_path: str = ""
-    # Chat LLM used by the agent. Override via env var CHAT_MODEL (e.g. to swap
-    # "gpt-4o" for "gpt-4o-mini" and measure the difference via the fabrication
-    # eval at scripts/eval_fabrication.py).
+    # Chat LLM knob. Not referenced on the live workflow path today (the routing/
+    # extraction hop uses intent_model, the recommend brain uses analyze_model);
+    # retained as the top-level model knob for the planned model migration (PR8).
+    # Override via env var CHAT_MODEL.
     chat_model: str = "gpt-4o"
-    # Which engine the /chat dispatcher (agent/agent.py::run_agent) routes to.
-    # "react"    → the legacy GPT-4o ReAct agent (run_react_agent) — current live behavior.
-    # "workflow" → the deterministic V2 pipeline (agent/workflow/pipeline.py::run_workflow).
-    # Default MUST stay "react" so live behavior is unchanged until explicitly flipped.
-    # This is the A/B + instant-rollback seam. Override via env var CHAT_ENGINE.
-    chat_engine: str = "react"
     # Small, fast LLM used by the V2 workflow's intent-parsing node
     # (agent/workflow/intent.py) to extract {prefecture, query, wants_hotels}.
     # Kept separate from chat_model so the cheap routing call can use a smaller
@@ -69,8 +64,7 @@ class Settings(BaseSettings):
     analyze_model: str = "gpt-4o"
     # Gate for the RECOMMEND brain. When False (default) the recommend branch skips
     # the analyze_onsen LLM call and returns candidates without pros/cons (safe/dead
-    # until flipped) — this is the A/B rollout seam, mirroring chat_engine above.
-    # Override via env var ANALYZE_ENABLED.
+    # until flipped) — an A/B rollout seam. Override via env var ANALYZE_ENABLED.
     analyze_enabled: bool = False
     # Separate ChromaDB collection for Layer 2 KB prose (etiquette, spring-type
     # benefits, …). Kept apart from the onsen_springs collection so an onsen search

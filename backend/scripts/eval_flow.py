@@ -5,17 +5,17 @@ This is a STANDALONE runnable script, NOT a pytest test: it makes PAID LLM calls
 parse plus, for recommend examples, the analyze brain) and uploads per-example
 scores, cost, latency, and traces to LangSmith via ``langsmith.evaluate()``.
 
-What it gives you over the seed ``eval_fabrication.py``:
+What it covers:
   * a versioned LangSmith DATASET (``onsen-flow-evals``) covering all 3 modes
-    (search / recommend / ask) plus no-data edge cases,
-  * 4 EVALUATORS scoring grounding, structural correctness per mode, cost
-    budget, and latency,
+    (search / recommend / ask) plus no-data edge cases and multi-turn trip threads,
+  * EVALUATORS scoring grounding, structural correctness per mode, the trip
+    evaluators, cost budget, and latency,
   * results land in LangSmith as an EXPERIMENT, so runs are comparable
     run-over-run and across models, with cost/latency captured per example.
 
 Ground truth for grounding is read from ChromaDB metadata at runtime (per
-prefecture), so the eval stays in sync with whatever is actually ingested —
-the same pattern as ``eval_fabrication.py``. No onsen names are hardcoded.
+prefecture), so the eval stays in sync with whatever is actually ingested.
+No onsen names are hardcoded.
 
 Requirements:
   * ``LANGSMITH_API_KEY`` set (in backend/.env), and the APAC endpoint
@@ -57,12 +57,13 @@ load_dotenv(BACKEND_DIR / ".env")
 EVAL_PROJECT = os.getenv("LANGSMITH_EVAL_PROJECT", "onsen-guide-bot-evals")
 
 # IMPORT-ORDER CRITICAL — do NOT move this below the project-code imports.
-# core.config.export_langsmith_env() runs at agent-import time and uses
-# os.environ.setdefault(...) for LANGSMITH_PROJECT; langsmith also caches env
-# vars (lru_cache). So the eval project must be in os.environ BEFORE the first
-# `vectorstore.*` / `agent.*` / `langsmith` import fires — otherwise the flow's
-# CHILD workflow traces land in the default (prod/dev) project. langsmith honors
-# both the LANGSMITH_* and legacy LANGCHAIN_* aliases, so set both.
+# core.config.export_langsmith_env() runs when the workflow pipeline module is
+# imported and uses os.environ.setdefault(...) for LANGSMITH_PROJECT; langsmith
+# also caches env vars (lru_cache). So the eval project must be in os.environ
+# BEFORE the first `vectorstore.*` / `agent.*` / `langsmith` import fires —
+# otherwise the flow's CHILD workflow traces land in the default (prod/dev)
+# project. langsmith honors both the LANGSMITH_* and legacy LANGCHAIN_* aliases,
+# so set both.
 os.environ["LANGSMITH_PROJECT"] = EVAL_PROJECT
 os.environ["LANGCHAIN_PROJECT"] = EVAL_PROJECT
 
@@ -113,10 +114,9 @@ LATENCY_BUDGET_MS: dict[str, int] = {
 def normalize(name: str) -> str:
     """Coarse name normalization: lowercase, strip, collapse whitespace.
 
-    Same intentionally-simple equality used by ``eval_fabrication.py`` — good
-    enough to catch blatant fabrication (a name the DB never heard of). Does NOT
-    handle romanization variants or 'Onsen'-suffix differences; that's a later
-    tightening.
+    Intentionally-simple equality — good enough to catch blatant fabrication (a
+    name the DB never heard of). Does NOT handle romanization variants or
+    'Onsen'-suffix differences; that's a later tightening.
     """
     return re.sub(r"\s+", " ", (name or "").strip().lower())
 
@@ -126,7 +126,7 @@ def build_ground_truth() -> dict[str, set[str]]:
 
     Returns a mapping ``prefecture_en -> set of normalized allowed names``. A
     prefecture absent from the mapping has NO records (so a grounded flow must
-    return nothing for it). Mirrors ``eval_fabrication.py::build_ground_truth``.
+    return nothing for it).
     """
     collection = get_collection()
     data = collection.get(include=["metadatas"])

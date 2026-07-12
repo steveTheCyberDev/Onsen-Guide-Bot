@@ -1,24 +1,21 @@
-"""Deterministic V2 onsen workflow — the ``run_workflow`` pipeline.
+"""Deterministic onsen workflow — the ``run_workflow`` pipeline.
 
-Replaces the ReAct agent's expensive routing loop with an explicit ``async def``
-pipeline that ties together the already-merged Step 1 (``query_onsen_structured``)
-and Step 2 (``parse_intent``):
+The ONLY /chat engine: an explicit ``async def`` pipeline that ties together the
+intent parse and the structured retrieval (no autonomous routing loop):
 
     run_workflow(message)
       ① parse_intent(message)          LLM (small)  → {prefecture, query, wants_hotels}
       ② query_onsen_structured(...)    Python       → onsens[]  (no LLM; kills fabrication)
-      ⑤ analyze_onsen(...)             DEFERRED     → gated seam only (see TODO below)
+      ⑤ analyze_onsen(...)             gated        → recommend-mode brain (analyze_enabled)
       ③ if wants_hotels and onsens:    code branch  → search_hotels (passthrough)
       ④ reply = template               no LLM
 
 The DATA layer (onsens[], hotels[]) is assembled in pure Python from Chroma
 metadata and the Rakuten service, so there is no LLM round-trip that could
-fabricate facts. The only LLM call is the small intent-parse hop.
+fabricate facts. The only LLM call on the search path is the small intent-parse hop.
 
-The response contract is IDENTICAL to ``run_agent`` (reply, onsens[], hotels[])
-so ``api/routes/chat.py`` and the frontend work unchanged — a clean A/B against
-the ReAct baseline. ``run_workflow`` is NOT wired into the API yet (that's the
-``chat_engine`` flag step); for now it is reachable only by tests.
+``run_workflow`` is called directly by ``api/routes/chat.py``; its return shape is
+``AgentResponse.model_dump()`` (reply, onsens[], hotels[], recommendation).
 """
 
 import asyncio
@@ -223,17 +220,15 @@ def _log_cost(
 
 @_trace
 async def run_workflow(message: str, session_id: str) -> dict:
-    """Run the deterministic V2 onsen workflow.
-
-    Mirrors ``run_agent``'s signature and return shape (reply, onsens[],
-    hotels[]) so callers and the API contract are unchanged.
+    """Run the deterministic onsen workflow — the /chat engine.
 
     Args:
         message: The latest user message.
         session_id: Conversation/session identifier for history + persistence.
 
     Returns:
-        ``AgentResponse.model_dump()`` — the same dict shape as ``run_agent``.
+        ``AgentResponse.model_dump()`` — the dict ``api/routes/chat.py`` returns as
+        the ChatResponse (reply, onsens[], hotels[], recommendation).
     """
     logger.info("run_workflow | session_id=%s", session_id)
 

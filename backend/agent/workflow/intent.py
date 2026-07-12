@@ -117,9 +117,9 @@ async def parse_intent(
 
     Args:
         message: The latest user message.
-        history: Conversation history as a list of LangChain messages (same
-            shape ``run_agent`` gets from ``get_history``), passed through so
-            follow-up questions resolve against prior turns.
+        history: Conversation history as a list of LangChain messages (the shape
+            ``get_history`` returns), passed through so follow-up questions
+            resolve against prior turns.
         callbacks: Optional LangChain callbacks (e.g. a
             ``UsageMetadataCallbackHandler``) so the caller can capture token
             usage — this call uses ``.with_structured_output``, so usage is not
