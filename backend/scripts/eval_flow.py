@@ -91,12 +91,21 @@ COST_BUDGET_USD: dict[str, float] = {
     "recommend": 0.05,
     "ask": 0.01,
     "no-data": 0.01,  # no-data examples are search-mode; cheap.
+    # trip (V3 PR4): a multi-turn thread — one intent-parse + one slot-extraction
+    # LLM call PER TURN (both cheap intent_model), no analyze brain, free Chroma
+    # retrieval. Cost is roughly search × turns. STARTING NUMBER (flagged): tune
+    # once we have measured baselines the way search/recommend were tuned.
+    "trip": 0.02,
 }
 LATENCY_BUDGET_MS: dict[str, int] = {
     "search": 8000,
     "recommend": 20000,
     "ask": 8000,
     "no-data": 8000,
+    # trip: measured end-to-end across ALL turns of the thread (multi-turn +
+    # per-region Chroma retrieval + 2 small LLM calls/turn). STARTING NUMBER
+    # (flagged): loose enough for a 1–2 turn thread; tighten after a baseline run.
+    "trip": 20000,
 }
 
 
@@ -223,6 +232,53 @@ _EXAMPLES: list[dict] = [
         "has_data": False,
         "wants_hotels": False,
     },
+    # --- V3 trip-planner (multi-turn threads) --------------------------------
+    # Trip examples carry `messages: list[str]` (run through ONE session_id so the
+    # elicit-loop is exercised) instead of a single `message`. `regions` +
+    # `expected_nights` drive the trip evaluators; `no_data_regions` is the AUTHORED
+    # expectation, reconciled against ChromaDB truth at runtime (like `has_data`).
+    # `prefecture`/`has_data` are unused for trip (per-region grounding is dynamic).
+    {
+        # (a) Under-specified opener → MUST trigger a follow-up; the completing
+        # turn supplies all required slots and yields an itinerary.
+        "messages": [
+            "Can you plan a multi-day onsen trip itinerary for me?",
+            "5 nights across Gifu and Shizuoka this autumn please",
+        ],
+        "expected_mode": "trip",
+        "prefecture": None,
+        "has_data": True,
+        "wants_hotels": False,
+        "regions": ["Gifu", "Shizuoka"],
+        "expected_nights": 5,
+        "no_data_regions": [],
+    },
+    {
+        # (b) Complete in ONE message → straight to the plan node, no follow-up.
+        "messages": ["Plan me a 4-night onsen trip itinerary in Gifu this autumn"],
+        "expected_mode": "trip",
+        "prefecture": None,
+        "has_data": True,
+        "wants_hotels": False,
+        "regions": ["Gifu"],
+        "expected_nights": 4,
+        "no_data_regions": [],
+    },
+    {
+        # (c) A region with NO ingested data (Hokkaido) → the itinerary must say
+        # "no onsen found for Hokkaido" explicitly and fabricate nothing; Gifu
+        # (has data) still yields real stops.
+        "messages": [
+            "Plan a 3-night onsen trip itinerary across Gifu and Hokkaido this winter"
+        ],
+        "expected_mode": "trip",
+        "prefecture": None,
+        "has_data": True,
+        "wants_hotels": False,
+        "regions": ["Gifu", "Hokkaido"],
+        "expected_nights": 3,
+        "no_data_regions": ["Hokkaido"],
+    },
 ]
 
 
@@ -241,8 +297,36 @@ def reconcile_has_data(examples: list[dict], allowed: dict[str, set[str]]) -> li
         pref = ex.get("prefecture")
         if pref is not None:
             ex["has_data"] = pref in allowed
+        # Trip examples span multiple regions; reconcile which of them currently
+        # have NO data so the "explicit none-found" expectation self-corrects if a
+        # region later gets ingested (mirrors the has_data reconciliation above).
+        if ex.get("regions"):
+            ex["no_data_regions"] = [r for r in ex["regions"] if r not in allowed]
         out.append(ex)
     return out
+
+
+def _example_input(ex: dict) -> dict:
+    """The dataset INPUT payload for one example: threaded or single-message.
+
+    Trip examples carry ``messages: list[str]`` (a conversation thread run through
+    one session); all other modes keep the single ``message`` shape. Keeping both
+    shapes lets the existing search/recommend/ask examples stay byte-identical.
+    """
+    if ex.get("messages"):
+        return {"messages": ex["messages"]}
+    return {"message": ex["message"]}
+
+
+def _example_key(inputs: dict) -> str:
+    """Stable dedup key for get-or-create, covering both input shapes.
+
+    Single-message examples key on the message; threads key on the joined turns.
+    Used to detect which ``_EXAMPLES`` are already present in the live dataset.
+    """
+    if inputs.get("messages"):
+        return "||".join(inputs["messages"])
+    return inputs.get("message", "")
 
 
 def _expectation(ex: dict) -> dict:
@@ -265,6 +349,12 @@ def _expectation(ex: dict) -> dict:
         # ('top 5'), the response must return exactly that many onsen. None when
         # no count was requested, so the count is not asserted.
         "expected_count": ex.get("expected_count"),
+        # Optional (trip-mode): the requested regions, total nights, and which
+        # regions are expected to have no data. Drive the trip evaluators
+        # (slot-filling / tool-presence / plan-validity). Empty/None for non-trip.
+        "regions": ex.get("regions", []),
+        "expected_nights": ex.get("expected_nights"),
+        "no_data_regions": ex.get("no_data_regions", []),
     }
 
 
@@ -281,21 +371,23 @@ def get_or_create_dataset(client, allowed: dict[str, set[str]]):
 
     if client.has_dataset(dataset_name=DATASET_NAME):
         dataset = client.read_dataset(dataset_name=DATASET_NAME)
-        existing_msgs = {
-            (e.inputs or {}).get("message")
+        existing_keys = {
+            _example_key(e.inputs or {})
             for e in client.list_examples(dataset_id=dataset.id)
         }
-        missing = [ex for ex in examples if ex["message"] not in existing_msgs]
+        missing = [
+            ex for ex in examples if _example_key(_example_input(ex)) not in existing_keys
+        ]
         if missing:
             client.create_examples(
                 dataset_id=dataset.id,
-                inputs=[{"message": ex["message"]} for ex in missing],
+                inputs=[_example_input(ex) for ex in missing],
                 outputs=[_expectation(ex) for ex in missing],
                 metadata=[_expectation(ex) for ex in missing],
             )
             print(
                 f"Added {len(missing)} new example(s) to existing dataset: "
-                f"{[ex['message'] for ex in missing]}"
+                f"{[_example_key(_example_input(ex)) for ex in missing]}"
             )
         return dataset
 
@@ -311,7 +403,7 @@ def get_or_create_dataset(client, allowed: dict[str, set[str]]):
     expectations = [_expectation(ex) for ex in examples]
     client.create_examples(
         dataset_id=dataset.id,
-        inputs=[{"message": ex["message"]} for ex in examples],
+        inputs=[_example_input(ex) for ex in examples],
         outputs=expectations,
         metadata=expectations,
     )
@@ -334,18 +426,24 @@ def make_target_with_usage():
     ``run_evaluation()`` so importing/calling this module from a long-lived
     process (CI/pytest) never permanently mutates the prod setting.
     """
+    from agent.trip import itinerary as trip_itinerary
+    from agent.trip.graph import trip_graph
+    from agent.trip.slots import TripSlots, missing_required
     from agent.workflow import pipeline
     from agent.workflow.cost import summarize_usage
 
     _counter = {"n": 0}
 
     def target(inputs: dict) -> dict:
-        message = inputs["message"]
+        # Threaded examples carry `messages: list[str]` (run through ONE session so
+        # the trip elicit-loop is exercised); single-message examples are wrapped to
+        # a one-element list so both shapes share this loop.
+        messages = inputs.get("messages") or [inputs["message"]]
         _counter["n"] += 1
         session_id = f"eval-flow-{_counter['n']}-{int(time.time())}"
+        cfg = {"configurable": {"thread_id": session_id}}
 
         captured = {}
-
         real_cls = pipeline.UsageMetadataCallbackHandler
 
         def _factory(*args, **kwargs):
@@ -353,22 +451,60 @@ def make_target_with_usage():
             captured["cb"] = cb
             return cb
 
+        # Spy on the trip plan node's per-region retrieval WITHOUT replacing it —
+        # record the prefecture each call filters by, then delegate to the real
+        # service so grounding still runs against live Chroma. This is the
+        # deterministic "tool-selection presence" signal (a local spy, NOT a
+        # LangSmith run-tree parse). Reverted in finally.
+        real_q = trip_itinerary.query_onsen_structured
+        retrieval_prefectures: list[str] = []
+
+        def _spy_q(query, prefecture=None, n_results=20):
+            retrieval_prefectures.append(prefecture)
+            return real_q(query, prefecture=prefecture, n_results=n_results)
+
         pipeline.UsageMetadataCallbackHandler = _factory  # type: ignore[assignment]
+        trip_itinerary.query_onsen_structured = _spy_q  # type: ignore[assignment]
+
+        total_cost = 0.0
+        trajectory: list[dict] = []
+        result: dict = {}
         started = time.monotonic()
         try:
-            result = asyncio.run(pipeline.run_workflow(message, session_id=session_id))
+            for message in messages:
+                result = asyncio.run(
+                    pipeline.run_workflow(message, session_id=session_id)
+                )
+                # Accumulate cost across every turn of the thread (each turn builds
+                # its own usage callback via the factory above).
+                cb = captured.get("cb")
+                usage_meta = getattr(cb, "usage_metadata", {}) if cb else {}
+                total_cost += summarize_usage(usage_meta)["cost_usd"]
+                # Per-turn trajectory for the slot-filling evaluator: what required
+                # slots were still missing AFTER this turn's gather, and whether the
+                # turn asked a follow-up. Both are read from the checkpointed trip
+                # state / the returned reply — what the flow itself exposes, no
+                # run-tree parsing. For non-trip examples this reads an empty
+                # snapshot and the trip evaluators abstain, so it is harmless.
+                snap = trip_graph.get_state(cfg).values or {}
+                miss = missing_required(TripSlots(**(snap.get("slots") or {})))
+                asked = result.get("reply") in _elicit_question_values()
+                trajectory.append({"missing_required": miss, "asked_followup": asked})
         finally:
             pipeline.UsageMetadataCallbackHandler = real_cls  # type: ignore[assignment]
+            trip_itinerary.query_onsen_structured = real_q  # type: ignore[assignment]
         latency_ms = int((time.monotonic() - started) * 1000)
 
-        cb = captured.get("cb")
-        usage_meta = getattr(cb, "usage_metadata", {}) if cb else {}
-        summary = summarize_usage(usage_meta)
-
+        final = trip_graph.get_state(cfg).values or {}
         return {
             **result,
-            "_cost_usd": summary["cost_usd"],
+            "_cost_usd": total_cost,
             "_latency_ms": latency_ms,
+            # Trip signals (ignored by non-trip evaluators, which abstain).
+            "_trajectory": trajectory,
+            "_final_slots": final.get("slots") or {},
+            "_itinerary": final.get("itinerary"),
+            "_retrieval_prefectures": retrieval_prefectures,
         }
 
     return target
@@ -456,7 +592,13 @@ def grounding(outputs: dict, reference_outputs: dict) -> dict:
 
     Name-level grounding only. Pros/cons fabrication (fuzzy free text derived from
     the description) is scored separately by the ``proscons_grounding`` LLM-judge.
+
+    Trip examples ABSTAIN here — their onsen grounding is per-region and handled by
+    the dedicated ``plan_validity`` evaluator (a single ``prefecture``/``has_data``
+    pair cannot express a multi-region trip).
     """
+    if reference_outputs.get("expected_mode") == "trip":
+        return {"key": "grounding", "score": None, "comment": "n/a (trip → plan_validity)"}
     has_data = bool(reference_outputs.get("has_data"))
     names = _onsen_names(outputs)
 
@@ -499,8 +641,13 @@ def structure(outputs: dict, reference_outputs: dict) -> dict:
                 harness runs with ask_enabled ON (real RAG answer), reply must ALSO
                 differ from the stub (the stub means the answer node never ran).
     no-data   ⇒ onsens empty.
+    trip      ⇒ ABSTAIN — trip structure is asserted by the dedicated trip
+                evaluators (slot_filling_completeness / tool_selection_presence /
+                plan_validity), not this per-mode shape check.
     """
     mode = reference_outputs.get("expected_mode")
+    if mode == "trip":
+        return {"key": "structure", "score": None, "comment": "n/a (trip evaluators)"}
     onsens = outputs.get("onsens") or []
     recommendation = outputs.get("recommendation")
     reply = outputs.get("reply") or ""
@@ -719,6 +866,196 @@ def ask_grounding(
     return {"key": "ask_grounding", "score": verdict, "comment": comment}
 
 
+# --- Trip evaluators (V3 PR4 — deterministic, structure + trajectory) ---------
+# The trip flow is multi-turn and produces an itinerary, so it is scored by three
+# DEDICATED deterministic evaluators reading the target's returned AgentResponse +
+# the checkpointed TripState signals (_trajectory / _final_slots / _itinerary /
+# _retrieval_prefectures) — NOT LangSmith run-trees, and NO LLM judge. Each ABSTAINS
+# (score=None) on non-trip examples. Appropriate to the CURRENT state (pre-hotels/
+# routing): NO hotel-exists or re-plan checks — those arrive with PR5/PR7.
+
+
+def _elicit_question_values() -> set[str]:
+    """The set of canned elicit follow-up questions the trip flow can ask.
+
+    Read from ``agent.trip.slots`` so the eval and the agent never drift (mirrors
+    how ``_ask_stub_reply`` reads the pipeline stub). Used by the target to decide,
+    per turn, whether a follow-up was asked — a structural check against the known
+    elicit vocabulary, not fuzzy string matching.
+    """
+    from agent.trip.slots import _ELICIT_QUESTIONS
+
+    return set(_ELICIT_QUESTIONS.values())
+
+
+def slot_filling_completeness(outputs: dict, reference_outputs: dict) -> dict:
+    """Score 1 iff slot-filling was correct across the thread (trip only).
+
+    Two invariants, read from the per-turn ``_trajectory`` the target built:
+      1. Follow-up IFF missing — every turn asked a follow-up exactly when a
+         required slot was still missing after that turn's gather.
+      2. Completeness — by the final turn, no required slot remains missing.
+
+    ABSTAINS (None) on non-trip examples. Fails (0) if the thread never ran (no
+    trajectory), if any turn violates the follow-up-iff-missing invariant, or if
+    required slots are still missing at the end.
+    """
+    if reference_outputs.get("expected_mode") != "trip":
+        return {"key": "slot_filling_completeness", "score": None, "comment": "n/a"}
+
+    trajectory = outputs.get("_trajectory") or []
+    if not trajectory:
+        return {"key": "slot_filling_completeness", "score": 0, "comment": "no turns ran"}
+
+    for i, turn in enumerate(trajectory):
+        missing = bool(turn.get("missing_required"))
+        asked = bool(turn.get("asked_followup"))
+        if asked != missing:
+            return {
+                "key": "slot_filling_completeness",
+                "score": 0,
+                "comment": (
+                    f"turn {i}: asked_followup={asked} but missing_required="
+                    f"{turn.get('missing_required')}"
+                ),
+            }
+
+    final_missing = trajectory[-1].get("missing_required") or []
+    if final_missing:
+        return {
+            "key": "slot_filling_completeness",
+            "score": 0,
+            "comment": f"required slots still missing at end: {final_missing}",
+        }
+    return {
+        "key": "slot_filling_completeness",
+        "score": 1,
+        "comment": "follow-up-iff-missing held; all required slots filled",
+    }
+
+
+def tool_selection_presence(outputs: dict, reference_outputs: dict) -> dict:
+    """Score 1 iff onsen retrieval was invoked for every requested region (trip only).
+
+    Asserts PRESENCE (not ordering / not exact args) — once slots are complete the
+    plan node must call ``query_onsen_structured`` once per region. Reads the
+    target's ``_retrieval_prefectures`` spy list (the prefecture each retrieval
+    filtered by). Routing/ordering checks do NOT belong here yet — routing doesn't
+    exist until PR7. ABSTAINS on non-trip examples.
+    """
+    if reference_outputs.get("expected_mode") != "trip":
+        return {"key": "tool_selection_presence", "score": None, "comment": "n/a"}
+
+    regions = reference_outputs.get("regions") or []
+    prefectures = set(outputs.get("_retrieval_prefectures") or [])
+    if not prefectures:
+        return {
+            "key": "tool_selection_presence",
+            "score": 0,
+            "comment": "retrieval never invoked (slots never completed?)",
+        }
+    missing = [r for r in regions if r not in prefectures]
+    if missing:
+        return {
+            "key": "tool_selection_presence",
+            "score": 0,
+            "comment": f"no retrieval for region(s): {missing}",
+        }
+    return {
+        "key": "tool_selection_presence",
+        "score": 1,
+        "comment": f"retrieval invoked per region: {sorted(prefectures)}",
+    }
+
+
+def plan_validity(outputs: dict, reference_outputs: dict) -> dict:
+    """Core trip gate: the final itinerary is valid, grounded, and adds up (trip only).
+
+    Checks, all deterministic, over the returned ``_itinerary`` + AgentResponse:
+      * an itinerary was produced;
+      * NIGHTS ADD UP — per-region nights sum to the itinerary total (and match the
+        authored ``expected_nights`` when given);
+      * ONSEN REAL + IN-REGION — every onsen in a region's leg is in that region's
+        ChromaDB ground truth (extends the name-level ``grounding`` logic per
+        region), and every onsen surfaced in ``AgentResponse.onsens`` is in some
+        requested region's truth;
+      * NO FABRICATION for no-data regions — each expected no-data region is flagged
+        ``no_data`` with zero onsen.
+
+    ABSTAINS on non-trip examples. Reads the module-level ``_GROUND_TRUTH`` snapshot
+    the harness injects (same source the ``grounding`` evaluator uses).
+    """
+    if reference_outputs.get("expected_mode") != "trip":
+        return {"key": "plan_validity", "score": None, "comment": "n/a"}
+
+    itinerary = outputs.get("_itinerary")
+    if not itinerary:
+        return {"key": "plan_validity", "score": 0, "comment": "no itinerary produced"}
+
+    legs = itinerary.get("regions") or []
+    total_nights = itinerary.get("nights")
+
+    # Nights add up across the legs, and match the authored expectation if present.
+    if sum(leg.get("nights", 0) for leg in legs) != total_nights:
+        return {
+            "key": "plan_validity",
+            "score": 0,
+            "comment": f"nights don't add up: legs sum != {total_nights}",
+        }
+    expected_nights = reference_outputs.get("expected_nights")
+    if expected_nights is not None and total_nights != expected_nights:
+        return {
+            "key": "plan_validity",
+            "score": 0,
+            "comment": f"nights={total_nights} != expected {expected_nights}",
+        }
+
+    # Per-region grounding: every leg's onsen must be real + in that region.
+    for leg in legs:
+        region = leg.get("region")
+        allowed = _GROUND_TRUTH.get(region, set())
+        names = [o.get("name", "") for o in (leg.get("onsens") or [])]
+        invented = [n for n in names if normalize(n) not in allowed]
+        if invented:
+            return {
+                "key": "plan_validity",
+                "score": 0,
+                "comment": f"onsen not in {region} ground truth: {invented}",
+            }
+        # A no-data leg must carry zero onsen (never fabricated).
+        if leg.get("no_data") and names:
+            return {
+                "key": "plan_validity",
+                "score": 0,
+                "comment": f"no-data region {region} has onsen: {names}",
+            }
+
+    # Every expected no-data region must actually be flagged no_data.
+    expected_nd = set(reference_outputs.get("no_data_regions") or [])
+    flagged_nd = {leg.get("region") for leg in legs if leg.get("no_data")}
+    if not expected_nd <= flagged_nd:
+        return {
+            "key": "plan_validity",
+            "score": 0,
+            "comment": f"expected no-data not flagged: {expected_nd - flagged_nd}",
+        }
+
+    # The surfaced AgentResponse.onsens must all be real + in a requested region.
+    regions = reference_outputs.get("regions") or []
+    all_allowed: set[str] = set()
+    for r in regions:
+        all_allowed |= _GROUND_TRUTH.get(r, set())
+    surfaced_invented = [n for n in _onsen_names(outputs) if normalize(n) not in all_allowed]
+    if surfaced_invented:
+        return {
+            "key": "plan_validity",
+            "score": 0,
+            "comment": f"surfaced onsen out of region: {surfaced_invented}",
+        }
+
+    return {"key": "plan_validity", "score": 1, "comment": "itinerary valid + grounded"}
+
+
 def cost_budget(outputs: dict, reference_outputs: dict) -> dict:
     """Score 1 iff the run's measured cost is within the per-mode budget."""
     mode = reference_outputs.get("expected_mode")
@@ -754,6 +1091,10 @@ def latency(outputs: dict, reference_outputs: dict) -> dict:
 EVALUATORS = [
     grounding,
     structure,
+    # V3 PR4 trip evaluators (deterministic; abstain on non-trip examples).
+    slot_filling_completeness,
+    tool_selection_presence,
+    plan_validity,
     cost_budget,
     latency,
     # proscons_grounding,   # PARKED — see note above
@@ -769,6 +1110,9 @@ _COLUMN_LABELS: dict[str, tuple[str, int]] = {
     "proscons_grounding": ("pc-gnd", 6),
     "ask_grounding": ("ask-gnd", 7),
     "structure": ("struct", 6),
+    "slot_filling_completeness": ("slots", 6),
+    "tool_selection_presence": ("tools", 6),
+    "plan_validity": ("plan", 6),
     "cost_budget": ("cost", 6),
     "latency": ("latency", 7),
 }
@@ -823,8 +1167,15 @@ def run_evaluation() -> int:
     # same finally as analyze_enabled, so a long-lived process never leaks either
     # global even if evaluate() raises.
     prior_ask_enabled = settings.ask_enabled
+    # trip mode also needs its gate ON so the trip examples exercise the real
+    # trip-planner graph (slots + elicit-loop + naive itinerary) rather than
+    # falling through to a plain onsen search. Flipped here and RESTORED in the same
+    # finally — trip_enabled's committed default stays False (ships dead in prod);
+    # this flip is eval-harness-local only, and a long-lived process never leaks it.
+    prior_trip_enabled = settings.trip_enabled
     settings.analyze_enabled = True
     settings.ask_enabled = True
+    settings.trip_enabled = True
     try:
         # Tag the experiment with the analyze model so two runs that differ only
         # by ANALYZE_MODEL (the model-comparison use case) are distinguishable in
@@ -846,6 +1197,7 @@ def run_evaluation() -> int:
     finally:
         settings.analyze_enabled = prior_analyze_enabled
         settings.ask_enabled = prior_ask_enabled
+        settings.trip_enabled = prior_trip_enabled
 
     return _report(results)
 
