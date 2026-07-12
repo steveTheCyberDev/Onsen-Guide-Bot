@@ -53,6 +53,42 @@ def test_reconcile_has_data_uses_chroma_truth():
     assert examples[0]["has_data"] is False
 
 
+def test_reconcile_recomputes_trip_no_data_regions():
+    """A trip example's no_data_regions is recomputed from live ground truth."""
+    examples = [
+        {
+            "messages": ["plan a trip"],
+            "expected_mode": "trip",
+            "prefecture": None,
+            "has_data": True,
+            "wants_hotels": False,
+            "regions": ["Gifu", "Hokkaido"],
+            "expected_nights": 3,
+            "no_data_regions": [],  # authored empty; reconciliation should fix it
+        }
+    ]
+    allowed = {"Gifu": {"gero onsen"}}  # Hokkaido absent → no data
+    out = eval_flow.reconcile_has_data(examples, allowed)
+    assert out[0]["no_data_regions"] == ["Hokkaido"]
+    # input not mutated
+    assert examples[0]["no_data_regions"] == []
+
+
+def test_example_input_and_key_cover_both_shapes():
+    """Single-message and threaded examples map to the right input payload + key."""
+    single = {"message": "Find onsen in Gifu"}
+    threaded = {"messages": ["plan a trip", "5 nights in Gifu this autumn"]}
+    assert eval_flow._example_input(single) == {"message": "Find onsen in Gifu"}
+    assert eval_flow._example_input(threaded) == {
+        "messages": ["plan a trip", "5 nights in Gifu this autumn"]
+    }
+    # Keys are stable and distinguish threads from single messages.
+    assert eval_flow._example_key({"message": "Find onsen in Gifu"}) == "Find onsen in Gifu"
+    assert (
+        eval_flow._example_key({"messages": ["a", "b"]}) == "a||b"
+    )
+
+
 # --- grounding evaluator ------------------------------------------------------
 @pytest.fixture(autouse=True)
 def _ground_truth():
@@ -229,6 +265,291 @@ def test_structure_no_data_good_and_bad():
     assert eval_flow.structure(outputs=bad, reference_outputs={"expected_mode": "no-data"})["score"] == 0
 
 
+# --- trip evaluators (V3 PR4) -------------------------------------------------
+# Pure-logic tests for the three deterministic trip evaluators with fabricated
+# target outputs (trajectory / itinerary / retrieval-spy) — NO run_workflow, NO
+# LangSmith, NO LLM. Ground truth is set per-test (the autouse fixture resets it).
+
+
+def _trip_ref(regions, nights, no_data_regions=None):
+    """A trip reference_outputs (expectation) block."""
+    return {
+        "expected_mode": "trip",
+        "regions": regions,
+        "expected_nights": nights,
+        "no_data_regions": no_data_regions or [],
+    }
+
+
+def _leg(region, nights, onsen_names, no_data=False):
+    return {
+        "region": region,
+        "nights": nights,
+        "no_data": no_data,
+        "onsens": [_onsen(n) for n in onsen_names],
+    }
+
+
+def _itinerary(nights, legs):
+    selected = [o for leg in legs for o in leg["onsens"]]
+    return {"nights": nights, "regions": legs, "selected_onsens": selected}
+
+
+# -- existing evaluators abstain on trip mode --
+def test_grounding_abstains_on_trip():
+    r = eval_flow.grounding(outputs={"onsens": []}, reference_outputs=_trip_ref(["Gifu"], 3))
+    assert r["score"] is None
+
+
+def test_structure_abstains_on_trip():
+    r = eval_flow.structure(outputs={"onsens": []}, reference_outputs=_trip_ref(["Gifu"], 3))
+    assert r["score"] is None
+
+
+# -- slot_filling_completeness --
+def test_slot_filling_abstains_on_non_trip():
+    r = eval_flow.slot_filling_completeness(
+        outputs={"_trajectory": []}, reference_outputs={"expected_mode": "search"}
+    )
+    assert r["score"] is None
+
+
+def test_slot_filling_passes_followup_then_complete():
+    # Turn 1: something missing → follow-up asked. Turn 2: complete → no follow-up.
+    outputs = {
+        "_trajectory": [
+            {"missing_required": ["dates_or_season"], "asked_followup": True},
+            {"missing_required": [], "asked_followup": False},
+        ]
+    }
+    r = eval_flow.slot_filling_completeness(outputs=outputs, reference_outputs=_trip_ref(["Gifu"], 5))
+    assert r["score"] == 1
+
+
+def test_slot_filling_passes_complete_in_one_turn():
+    outputs = {"_trajectory": [{"missing_required": [], "asked_followup": False}]}
+    r = eval_flow.slot_filling_completeness(outputs=outputs, reference_outputs=_trip_ref(["Gifu"], 4))
+    assert r["score"] == 1
+
+
+def test_slot_filling_fails_followup_not_asked_when_missing():
+    # Required slot missing but NO follow-up asked → invariant violated.
+    outputs = {"_trajectory": [{"missing_required": ["nights"], "asked_followup": False}]}
+    r = eval_flow.slot_filling_completeness(outputs=outputs, reference_outputs=_trip_ref(["Gifu"], 3))
+    assert r["score"] == 0
+
+
+def test_slot_filling_fails_followup_asked_when_nothing_missing():
+    outputs = {"_trajectory": [{"missing_required": [], "asked_followup": True}]}
+    r = eval_flow.slot_filling_completeness(outputs=outputs, reference_outputs=_trip_ref(["Gifu"], 3))
+    assert r["score"] == 0
+
+
+def test_slot_filling_fails_when_required_still_missing_at_end():
+    outputs = {
+        "_trajectory": [
+            {"missing_required": ["nights", "dates_or_season"], "asked_followup": True},
+            {"missing_required": ["dates_or_season"], "asked_followup": True},
+        ]
+    }
+    r = eval_flow.slot_filling_completeness(outputs=outputs, reference_outputs=_trip_ref(["Gifu"], 3))
+    assert r["score"] == 0
+
+
+def test_slot_filling_fails_when_no_turns():
+    r = eval_flow.slot_filling_completeness(outputs={"_trajectory": []}, reference_outputs=_trip_ref(["Gifu"], 3))
+    assert r["score"] == 0
+
+
+# -- tool_selection_presence --
+def test_tool_presence_abstains_on_non_trip():
+    r = eval_flow.tool_selection_presence(
+        outputs={"_retrieval_prefectures": []}, reference_outputs={"expected_mode": "recommend"}
+    )
+    assert r["score"] is None
+
+
+def test_tool_presence_passes_when_all_regions_retrieved():
+    outputs = {"_retrieval_prefectures": ["Gifu", "Shizuoka"]}
+    r = eval_flow.tool_selection_presence(
+        outputs=outputs, reference_outputs=_trip_ref(["Gifu", "Shizuoka"], 5)
+    )
+    assert r["score"] == 1
+
+
+def test_tool_presence_fails_when_a_region_not_retrieved():
+    outputs = {"_retrieval_prefectures": ["Gifu"]}  # Shizuoka missing
+    r = eval_flow.tool_selection_presence(
+        outputs=outputs, reference_outputs=_trip_ref(["Gifu", "Shizuoka"], 5)
+    )
+    assert r["score"] == 0
+    assert "Shizuoka" in r["comment"]
+
+
+def test_tool_presence_fails_when_retrieval_never_ran():
+    outputs = {"_retrieval_prefectures": []}
+    r = eval_flow.tool_selection_presence(outputs=outputs, reference_outputs=_trip_ref(["Gifu"], 3))
+    assert r["score"] == 0
+
+
+# -- plan_validity --
+def test_plan_validity_abstains_on_non_trip():
+    r = eval_flow.plan_validity(outputs={}, reference_outputs={"expected_mode": "search"})
+    assert r["score"] is None
+
+
+def test_plan_validity_passes_grounded_and_nights_add_up():
+    eval_flow.set_ground_truth({"Gifu": {"gero onsen", "hirayu onsen"}, "Shizuoka": {"atami onsen"}})
+    legs = [_leg("Gifu", 3, ["Gero Onsen", "Hirayu Onsen"]), _leg("Shizuoka", 2, ["Atami Onsen"])]
+    outputs = {
+        "_itinerary": _itinerary(5, legs),
+        "onsens": [_onsen("Gero Onsen"), _onsen("Atami Onsen")],
+    }
+    r = eval_flow.plan_validity(outputs=outputs, reference_outputs=_trip_ref(["Gifu", "Shizuoka"], 5))
+    assert r["score"] == 1
+
+
+def test_plan_validity_fails_when_no_itinerary():
+    r = eval_flow.plan_validity(outputs={"_itinerary": None}, reference_outputs=_trip_ref(["Gifu"], 3))
+    assert r["score"] == 0
+
+
+def test_plan_validity_fails_when_nights_dont_add_up():
+    eval_flow.set_ground_truth({"Gifu": {"gero onsen"}})
+    legs = [_leg("Gifu", 2, ["Gero Onsen"])]  # legs sum 2 but total says 5
+    outputs = {"_itinerary": _itinerary(5, legs), "onsens": [_onsen("Gero Onsen")]}
+    r = eval_flow.plan_validity(outputs=outputs, reference_outputs=_trip_ref(["Gifu"], 5))
+    assert r["score"] == 0
+    assert "nights" in r["comment"].lower()
+
+
+def test_plan_validity_fails_when_total_nights_mismatch_expected():
+    eval_flow.set_ground_truth({"Gifu": {"gero onsen"}})
+    legs = [_leg("Gifu", 4, ["Gero Onsen"])]
+    outputs = {"_itinerary": _itinerary(4, legs), "onsens": [_onsen("Gero Onsen")]}
+    # itinerary is internally consistent (4==4) but expected_nights is 5.
+    r = eval_flow.plan_validity(outputs=outputs, reference_outputs=_trip_ref(["Gifu"], 5))
+    assert r["score"] == 0
+
+
+def test_plan_validity_fails_on_fabricated_onsen_out_of_region():
+    eval_flow.set_ground_truth({"Gifu": {"gero onsen"}})
+    legs = [_leg("Gifu", 3, ["Totally Invented Onsen"])]
+    outputs = {"_itinerary": _itinerary(3, legs), "onsens": [_onsen("Totally Invented Onsen")]}
+    r = eval_flow.plan_validity(outputs=outputs, reference_outputs=_trip_ref(["Gifu"], 3))
+    assert r["score"] == 0
+    assert "ground truth" in r["comment"]
+
+
+def test_plan_validity_passes_no_data_region_flagged_empty():
+    eval_flow.set_ground_truth({"Gifu": {"gero onsen"}})  # Hokkaido absent → no data
+    legs = [_leg("Gifu", 3, ["Gero Onsen"]), _leg("Hokkaido", 0, [], no_data=True)]
+    outputs = {"_itinerary": _itinerary(3, legs), "onsens": [_onsen("Gero Onsen")]}
+    ref = _trip_ref(["Gifu", "Hokkaido"], 3, no_data_regions=["Hokkaido"])
+    r = eval_flow.plan_validity(outputs=outputs, reference_outputs=ref)
+    assert r["score"] == 1
+
+
+def test_plan_validity_fails_when_no_data_region_has_onsen():
+    eval_flow.set_ground_truth({"Gifu": {"gero onsen"}})
+    # Hokkaido flagged no_data but (impossibly) carries an onsen → fabrication.
+    legs = [_leg("Gifu", 3, ["Gero Onsen"]), _leg("Hokkaido", 0, ["Phantom Onsen"], no_data=True)]
+    outputs = {"_itinerary": _itinerary(3, legs), "onsens": [_onsen("Gero Onsen")]}
+    ref = _trip_ref(["Gifu", "Hokkaido"], 3, no_data_regions=["Hokkaido"])
+    r = eval_flow.plan_validity(outputs=outputs, reference_outputs=ref)
+    assert r["score"] == 0
+
+
+def test_plan_validity_fails_when_expected_no_data_region_not_flagged():
+    # Ground truth says Hokkaido has data, but the example expected it as no-data
+    # and the leg is NOT flagged → expectation unmet.
+    eval_flow.set_ground_truth({"Gifu": {"gero onsen"}, "Hokkaido": {"sapporo onsen"}})
+    legs = [_leg("Gifu", 2, ["Gero Onsen"]), _leg("Hokkaido", 1, ["Sapporo Onsen"])]
+    outputs = {"_itinerary": _itinerary(3, legs), "onsens": [_onsen("Gero Onsen"), _onsen("Sapporo Onsen")]}
+    ref = _trip_ref(["Gifu", "Hokkaido"], 3, no_data_regions=["Hokkaido"])
+    r = eval_flow.plan_validity(outputs=outputs, reference_outputs=ref)
+    assert r["score"] == 0
+    assert "no-data not flagged" in r["comment"]
+
+
+def test_plan_validity_fails_on_surfaced_onsen_out_of_region():
+    # Legs are clean, but AgentResponse.onsens leaks a name from no requested region.
+    eval_flow.set_ground_truth({"Gifu": {"gero onsen"}})
+    legs = [_leg("Gifu", 3, ["Gero Onsen"])]
+    outputs = {"_itinerary": _itinerary(3, legs), "onsens": [_onsen("Rogue Onsen")]}
+    r = eval_flow.plan_validity(outputs=outputs, reference_outputs=_trip_ref(["Gifu"], 3))
+    assert r["score"] == 0
+    assert "out of region" in r["comment"]
+
+
+# -- trip cost/latency budget bucket --
+def test_cost_budget_trip_bucket():
+    within = {"_cost_usd": 0.015}
+    over = {"_cost_usd": 0.03}
+    ref = {"expected_mode": "trip"}
+    assert eval_flow.cost_budget(outputs=within, reference_outputs=ref)["score"] == 1
+    assert eval_flow.cost_budget(outputs=over, reference_outputs=ref)["score"] == 0
+
+
+def test_latency_trip_bucket():
+    within = {"_latency_ms": 15000}
+    over = {"_latency_ms": 25000}
+    ref = {"expected_mode": "trip"}
+    assert eval_flow.latency(outputs=within, reference_outputs=ref)["score"] == 1
+    assert eval_flow.latency(outputs=over, reference_outputs=ref)["score"] == 0
+
+
+# --- target thread-runner (plumbing, no paid calls) ---------------------------
+def test_target_runs_thread_and_captures_trip_signals():
+    """The target loops a `messages` thread through one session and records the
+    per-turn trajectory + final slots/itinerary — all seams mocked, no paid calls.
+    """
+    from agent.trip.slots import _ELICIT_QUESTIONS
+    from agent.workflow import pipeline
+
+    dates_q = _ELICIT_QUESTIONS["dates_or_season"]
+
+    # Turn 1: still missing dates → elicit question. Turn 2: complete → itinerary.
+    turn_results = [
+        {"reply": dates_q, "onsens": [], "hotels": [], "recommendation": None},
+        {"reply": "Here's a naive 5-night onsen itinerary — Gifu (5 nights): Gero Onsen.",
+         "onsens": [_onsen("Gero Onsen")], "hotels": [], "recommendation": None},
+    ]
+
+    async def _fake_run_workflow(message, session_id):
+        return turn_results.pop(0)
+
+    # get_state is called after each turn (2) + once for the final snapshot (3).
+    itinerary = {"nights": 5, "regions": [_leg("Gifu", 5, ["Gero Onsen"])],
+                 "selected_onsens": [_onsen("Gero Onsen")]}
+    snapshots = [
+        SimpleNamespace(values={"slots": {"regions": ["Gifu"], "nights": 5}}),  # after t1: dates missing
+        SimpleNamespace(values={"slots": {"regions": ["Gifu"], "nights": 5, "dates_or_season": "autumn"},
+                                "itinerary": itinerary}),  # after t2
+        SimpleNamespace(values={"slots": {"regions": ["Gifu"], "nights": 5, "dates_or_season": "autumn"},
+                                "itinerary": itinerary}),  # final
+    ]
+
+    from agent.trip import graph as trip_graph_mod
+
+    with patch.object(pipeline, "run_workflow", _fake_run_workflow), \
+        patch.object(trip_graph_mod.trip_graph, "get_state", side_effect=snapshots):
+        target = eval_flow.make_target_with_usage()
+        out = target({"messages": ["plan a trip", "5 nights in Gifu this autumn"]})
+
+    # Trajectory: turn 1 asked a follow-up (dates missing); turn 2 complete, none.
+    traj = out["_trajectory"]
+    assert len(traj) == 2
+    assert traj[0]["asked_followup"] is True and traj[0]["missing_required"] == ["dates_or_season"]
+    assert traj[1]["asked_followup"] is False and traj[1]["missing_required"] == []
+    # Final slots + itinerary surfaced for the plan_validity evaluator.
+    assert out["_itinerary"]["nights"] == 5
+    assert out["_final_slots"]["dates_or_season"] == "autumn"
+    # Last turn's AgentResponse fields passthrough.
+    assert out["onsens"][0]["name"] == "Gero Onsen"
+    assert "_cost_usd" in out and "_latency_ms" in out
+
+
 # --- cost_budget evaluator ----------------------------------------------------
 def test_cost_budget_within_passes():
     outputs = {"_cost_usd": 0.0017}
@@ -333,6 +654,42 @@ def test_run_evaluation_flips_and_restores_ask_enabled():
         assert settings.ask_enabled is False  # restored, no leak
     finally:
         settings.ask_enabled = original
+
+
+def test_run_evaluation_flips_and_restores_trip_enabled():
+    """run_evaluation flips trip_enabled ON for the run, then restores it."""
+    from core.config import settings
+
+    original = settings.trip_enabled
+    settings.trip_enabled = False  # start from a known prior value (prod default)
+    seen = {}
+
+    def _capture(*args, **kwargs):
+        seen["trip_enabled"] = settings.trip_enabled
+        return MagicMock()
+
+    try:
+        _run_evaluation_with_no_paid_calls(evaluate_side_effect=_capture)
+        assert seen["trip_enabled"] is True  # ON during the run
+        assert settings.trip_enabled is False  # restored, no leak
+    finally:
+        settings.trip_enabled = original
+
+
+def test_run_evaluation_restores_trip_enabled_even_if_evaluate_raises():
+    """The trip_enabled restore lives in the same finally — a raise must not leak."""
+    from core.config import settings
+
+    original = settings.trip_enabled
+    settings.trip_enabled = False
+    try:
+        with pytest.raises(RuntimeError, match="boom"):
+            _run_evaluation_with_no_paid_calls(
+                evaluate_side_effect=RuntimeError("boom")
+            )
+        assert settings.trip_enabled is False  # restored despite the raise
+    finally:
+        settings.trip_enabled = original
 
 
 def test_run_evaluation_restores_ask_enabled_even_if_evaluate_raises():
