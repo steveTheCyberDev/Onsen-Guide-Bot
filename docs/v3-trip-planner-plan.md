@@ -185,8 +185,17 @@ belt-and-suspenders now that validation is upstream.
 
 ## 3. Tools (Google-APIs-first)
 
-Each new capability = a framework-agnostic service under `services/{name}/{name}_service.py`; thin
-`@tool` wrappers under `agent/trip/tools/` bind them for the agent. All use the shared retry helper.
+Each new capability = a framework-agnostic service under `services/{name}/{name}_service.py`. All use
+the shared retry helper.
+
+**How the graph invokes them — direct `services/` calls (default), not a wrapper layer.** As built in
+PR3c, graph nodes call `services/` functions **directly** (e.g. `itinerary.py` → `query_onsen_structured`),
+matching the workflow's no-wrapper layering; PR5/PR6 add hotels/Places the same way. There is **no
+`agent/trip/tools/` `@tool` wrapper layer today, and none is needed** for deterministic orchestration.
+A `@tool`-binding layer becomes relevant **only if** we deliberately make PR7's `plan` node an
+**LLM tool-caller** (the model chooses which tool to invoke) — a conscious decision at PR7. If we keep
+re-planning deterministic (a Python loop over service calls, the least-autonomy default), we never
+introduce it. (The now-deleted `agent/tools/` was ReAct-only plumbing, unrelated to this.)
 
 ### Reused as-is
 - **`query_onsen_structured`** (`services/retrieval/retrieval_service.py`) — onsen candidates per region. Free, request-time.
