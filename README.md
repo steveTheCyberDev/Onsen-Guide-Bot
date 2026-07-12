@@ -57,7 +57,7 @@ React (Vite + Tailwind)  ──HTTP──>  FastAPI  ──>  Workflow pipeline
   ⑤ reply          template             →  typed AgentResponse  { reply, onsens[], hotels[], recommendation }
 ```
 
-The factual data layer (② ④) never calls an LLM, so it **can't fabricate** — the model only routes (①) and reasons over already-retrieved candidates (③). The original ReAct agent is retained behind a `CHAT_ENGINE` flag for A/B comparison and rollback.
+The factual data layer (② ④) never calls an LLM, so it **can't fabricate** — the model only routes (①) and reasons over already-retrieved candidates (③). The original ReAct agent was A/B'd against this workflow behind a feature flag, then removed once the workflow was proven in prod — the deterministic workflow is now the only engine.
 
 **Strict, one-directional layering** — each layer only knows the one below it:
 
@@ -81,9 +81,9 @@ api/  ──>  agent/ (workflow + tools)  ──>  services/  ──>  ChromaDB 
 The judgement calls I'd defend in a design review.
 
 ### 1. A deterministic workflow, *not* an agent — after measuring the agent
-**Why I started with ReAct:** query shapes were unknown, so I wrapped geocoding/search/hotels as tools and let `create_react_agent` reason → call tool → observe → repeat. The right call while I didn't yet know what users would ask.
+**Why I started with ReAct:** query shapes were unknown, so I wrapped geocoding/search/hotels as tools and let a LangGraph ReAct agent reason → call tool → observe → repeat. The right call while I didn't yet know what users would ask.
 **What measurement showed:** with LangSmith tracing I attributed a 20-onsen query's ~35 s almost entirely to **two GPT-4o round-trips** — one to "observe" the tool output, one to re-serialize it into the response schema. The agent's freedom *was* the latency.
-**The redesign:** I replaced the loop with a fixed pipeline — one cheap `gpt-4o-mini` intent call, then **pure-Python assembly** of the retrieved records (no second LLM hop). Same grounded results, **~35 s → ~3.7 s (~10×)**, shipped behind a `CHAT_ENGINE` flag so I could A/B the two engines in prod and roll back instantly.
+**The redesign:** I replaced the loop with a fixed pipeline — one cheap `gpt-4o-mini` intent call, then **pure-Python assembly** of the retrieved records (no second LLM hop). Same grounded results, **~35 s → ~3.7 s (~10×)**, shipped behind a feature flag so I could A/B the two engines in prod and roll back instantly. Once proven, the flag and the ReAct engine were removed — the workflow is the only engine.
 **The insight I'd articulate:** for V1/V2 this is a *workflow*, not an *agent* — and treating it as one made it faster, cheaper, and impossible to hallucinate facts. True agency (an LLM choosing its own tool path) earns its place back at **V3**, not before.
 
 ### 2. The one LLM judgement call that earns its place: the recommend brain
@@ -195,7 +195,6 @@ RAKUTEN_APP_ID=...          # Rakuten Travel API
 RAKUTEN_ACCESS_KEY=...
 API_KEY=...                 # the X-API-Key guard
 # Optional — feature flags & observability (sensible local defaults):
-CHAT_ENGINE=workflow        # "workflow" (default in prod) | "react" (legacy, for A/B)
 ANALYZE_ENABLED=true        # on = recommend brain returns pros/cons + recommendation
 LANGSMITH_TRACING=true      # + LANGSMITH_API_KEY to trace runs / run evals
 ```

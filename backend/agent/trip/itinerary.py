@@ -33,7 +33,7 @@ PR3c adds NO re-planning, constraint checks, hotels, routing, or Places (PR5/6/7
 
 import logging
 
-from agent.agent import OnsenResult
+from agent.schemas import OnsenResult
 from services.retrieval.retrieval_service import query_onsen_structured
 
 logger = logging.getLogger(__name__)

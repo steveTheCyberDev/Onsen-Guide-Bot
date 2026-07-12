@@ -1,13 +1,13 @@
 """Trip-planner LangGraph ``StateGraph`` — PR3c slots + elicit-loop + naive itinerary.
 
-The **first use of LangGraph in the live /chat path** (the legacy ReAct agent in
-``agent/agent.py`` is the only other user, behind ``CHAT_ENGINE=react``). This is a
-hand-built ``StateGraph`` compiled with a checkpointer — deliberately NOT
-``create_react_agent`` — so PR7 re-planning is purely additive (an edge + a node,
-not a reshape). See docs/v3-trip-planner-plan.md §0 "LangGraph adoption decision"
-for the four re-planning-readiness properties this module honours:
+The **only use of LangGraph in the live /chat path** (the deterministic search/
+recommend/ask workflow is LangGraph-free). This is a hand-built ``StateGraph``
+compiled with a checkpointer — deliberately NOT a prebuilt agent graph — so PR7
+re-planning is purely additive (an edge + a node, not a reshape). See
+docs/v3-trip-planner-plan.md §0 "LangGraph adoption decision" for the four
+re-planning-readiness properties this module honours:
 
-  1. Hand-built ``StateGraph`` (this file), not the prebuilt ReAct graph.
+  1. Hand-built ``StateGraph`` (this file), not a prebuilt agent graph.
   2. Accumulating working state from day one (``TripState`` in state.py) — PR3b now
      fills ``slots`` (a ``TripSlots``) turn over turn.
   3. A discrete ``plan`` node — PR3c makes it real (retrieve onsen per region +
@@ -180,7 +180,7 @@ def build_trip_graph():
     return builder.compile(checkpointer=_build_checkpointer())
 
 
-# Module-level singleton, mirroring the ReAct ``graph`` in agent/agent.py. Compiling
-# once at import keeps the in-process MemorySaver alive for the whole process, so
-# slots accumulate across /chat requests keyed by thread_id=session_id.
+# Module-level singleton compiled once at import. This keeps the in-process
+# MemorySaver alive for the whole process, so slots accumulate across /chat
+# requests keyed by thread_id=session_id.
 trip_graph = build_trip_graph()

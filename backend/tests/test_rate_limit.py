@@ -25,7 +25,7 @@ def low_limit_client(monkeypatch):
     Sets the limit strings to 2/minute, then reloads the limiter, both route
     modules, and the app so the `@limiter.limit(...)` decorators re-bind to the
     low values. Yields the client plus a handle on the reloaded route modules so
-    individual tests can patch the handler dependencies (run_agent / search_hotels).
+    individual tests can patch the handler dependencies (run_workflow / search_hotels).
     """
     from fastapi.testclient import TestClient
 
@@ -66,7 +66,7 @@ def test_chat_within_limit_returns_200(low_limit_client):
     tc, chat_mod, _ = low_limit_client
     agent_result = {"reply": "ok", "onsens": [], "hotels": []}
     # Act
-    with patch.object(chat_mod, "run_agent", new=AsyncMock(return_value=agent_result)):
+    with patch.object(chat_mod, "run_workflow", new=AsyncMock(return_value=agent_result)):
         first = tc.post("/chat", json={"message": "hi"})
         second = tc.post("/chat", json={"message": "hi"})
     # Assert — first two requests are under the 2/minute limit
@@ -79,7 +79,7 @@ def test_chat_exceeding_limit_returns_429(low_limit_client):
     tc, chat_mod, _ = low_limit_client
     agent_result = {"reply": "ok", "onsens": [], "hotels": []}
     # Act — third request in the same window trips the limit
-    with patch.object(chat_mod, "run_agent", new=AsyncMock(return_value=agent_result)):
+    with patch.object(chat_mod, "run_workflow", new=AsyncMock(return_value=agent_result)):
         tc.post("/chat", json={"message": "hi"})
         tc.post("/chat", json={"message": "hi"})
         third = tc.post("/chat", json={"message": "hi"})
@@ -92,7 +92,7 @@ def test_chat_429_body_is_rate_limit_exceeded(low_limit_client):
     tc, chat_mod, _ = low_limit_client
     agent_result = {"reply": "ok", "onsens": [], "hotels": []}
     # Act
-    with patch.object(chat_mod, "run_agent", new=AsyncMock(return_value=agent_result)):
+    with patch.object(chat_mod, "run_workflow", new=AsyncMock(return_value=agent_result)):
         for _ in range(3):
             resp = tc.post("/chat", json={"message": "hi"})
     # Assert
@@ -148,7 +148,7 @@ def test_chat_and_hotels_limits_are_independent(low_limit_client):
     agent_result = {"reply": "ok", "onsens": [], "hotels": []}
     body = {"latitude": 26.2124, "longitude": 127.6809, "radius": 3}
     # Act
-    with patch.object(chat_mod, "run_agent", new=AsyncMock(return_value=agent_result)):
+    with patch.object(chat_mod, "run_workflow", new=AsyncMock(return_value=agent_result)):
         for _ in range(3):
             tc.post("/chat", json={"message": "hi"})  # last one is 429
     with patch.object(hotels_mod, "search_hotels", new=Mock(return_value=[])):

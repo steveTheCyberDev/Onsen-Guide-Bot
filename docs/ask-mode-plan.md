@@ -38,7 +38,7 @@ retrieval (EN query ↔ EN chunk) beats cross-lingual.
 - `core/config.py` is the single source of truth; existing knobs `analyze_enabled`
   (gate pattern, `config.py:65`), `intent_model`/`analyze_model`, `chroma_path`,
   `data_path`/`data_dir` (env-split, `config.py:130-141`).
-- `agent/agent.py:106-144` owns `AgentResponse`; `api/routes/chat.py`
+- `agent/schemas.py` owns `AgentResponse`; `api/routes/chat.py`
   `ChatResponse` mirrors it. `recommendation: str|None` is already additive there
   — the `ask` answer rides in the existing `reply` field, so **no schema change is
   strictly required**.

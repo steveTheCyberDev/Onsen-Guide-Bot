@@ -105,7 +105,8 @@ _llm = ChatOpenAI(
     temperature=0,
     stream_usage=True,
     # Bounded retries on transient OpenAI errors (timeouts, 429/5xx); the OpenAI
-    # SDK handles the backoff. Same knob as the main chat llm in agent/agent.py.
+    # SDK handles the backoff. Same knob (settings.llm_max_retries) as every
+    # other ChatOpenAI instance in the workflow.
     max_retries=settings.llm_max_retries,
 ).with_structured_output(Intent)
 
@@ -117,9 +118,9 @@ async def parse_intent(
 
     Args:
         message: The latest user message.
-        history: Conversation history as a list of LangChain messages (same
-            shape ``run_agent`` gets from ``get_history``), passed through so
-            follow-up questions resolve against prior turns.
+        history: Conversation history as a list of LangChain messages (the shape
+            ``get_history`` returns), passed through so follow-up questions
+            resolve against prior turns.
         callbacks: Optional LangChain callbacks (e.g. a
             ``UsageMetadataCallbackHandler``) so the caller can capture token
             usage — this call uses ``.with_structured_output``, so usage is not

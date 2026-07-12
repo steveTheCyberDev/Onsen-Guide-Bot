@@ -16,15 +16,20 @@ Onsen-Guide-Bot/
 │   │       └── hotels.py        # POST /hotels (deterministic → rakuten_service directly)
 │   │
 │   ├── agent/
-│   │   ├── agent.py             # LangGraph ReAct agent (legacy engine, kept for rollback)
-│   │   ├── tools/               # thin wrappers: geocoding_tool, rakuten_tool, retrieval_tool
-│   │   └── workflow/            # V2 deterministic workflow — the LIVE /chat engine
-│   │       ├── pipeline.py      # orchestrates the 3 router modes
-│   │       ├── intent.py        # parse_intent: route search/recommend/ask + extract slots
-│   │       ├── analyze.py       # analyze_onsen: pros/cons + recommendation (judgment layer)
-│   │       ├── ask.py           # ask-mode: semantic RAG over the knowledge base
-│   │       ├── spring_benefits.py  # spring-type → benefit lookup table (not embeddings)
-│   │       └── cost.py          # token/cost accounting
+│   │   ├── schemas.py           # shared /chat response models (OnsenResult/HotelResult/AgentResponse)
+│   │   ├── workflow/            # deterministic workflow — the ONLY /chat engine
+│   │   │   ├── pipeline.py      # orchestrates the 3 router modes (search/recommend/ask) + trip branch
+│   │   │   ├── intent.py        # parse_intent: route search/recommend/ask/trip + extract slots
+│   │   │   ├── analyze.py       # analyze_onsen: pros/cons + recommendation (judgment layer)
+│   │   │   ├── ask.py           # ask-mode: semantic RAG over the knowledge base
+│   │   │   ├── spring_benefits.py  # spring-type → benefit lookup table (not embeddings)
+│   │   │   └── cost.py          # token/cost accounting
+│   │   └── trip/               # V3 trip-planner (LangGraph StateGraph, gated by trip_enabled)
+│   │       ├── graph.py         # hand-built StateGraph: gather → {elicit | plan}
+│   │       ├── slots.py         # TripSlots + extraction + region validation
+│   │       ├── itinerary.py     # naive itinerary assembly (deterministic)
+│   │       ├── agent.py         # plan_trip entry point
+│   │       └── state.py         # TripState (checkpointed working state)
 │   │
 │   ├── services/                # framework-agnostic (no LangChain imports)
 │   │   ├── chat/chat_service.py
@@ -35,7 +40,7 @@ Onsen-Guide-Bot/
 │   │
 │   ├── vectorstore/store.py     # ChromaDB setup (onsen + knowledge collections)
 │   │
-│   ├── scripts/                 # ops/CLI: ingest*, geocode_jsonl, eval_fabrication, eval_flow
+│   ├── scripts/                 # ops/CLI: ingest*, geocode_jsonl, eval_flow
 │   │
 │   ├── data/
 │   │   ├── okinawa_springs.jsonl, tokai_springs.jsonl   # onsen dataset

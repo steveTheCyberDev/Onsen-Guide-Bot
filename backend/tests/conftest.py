@@ -61,9 +61,9 @@ def _patch_known_prefectures():
 def client():
     """FastAPI TestClient that authenticates by default.
 
-    Importing the app pulls in `agent.agent`, which constructs a ChatOpenAI
-    client and a LangGraph react agent at import time. No network call is made
-    on import, so this is safe; tests that hit `/chat` mock `run_agent`.
+    Importing the app pulls in the workflow engine (`agent/workflow/pipeline.py`),
+    which constructs ChatOpenAI clients at import time. No network call is made on
+    import, so this is safe; tests that hit `/chat` mock `run_workflow`.
 
     The valid X-API-Key header is attached to every request so existing route
     tests don't each have to set it; auth-specific behaviour is covered by the

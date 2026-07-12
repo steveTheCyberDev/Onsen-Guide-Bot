@@ -27,7 +27,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from agent.agent import OnsenResult
+from agent.schemas import OnsenResult
 from agent.trip import itinerary as itinerary_module
 from agent.trip import slots as slots_module
 from agent.trip.agent import plan_trip

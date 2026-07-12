@@ -23,7 +23,7 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_openai import ChatOpenAI
 from pydantic import BaseModel, Field
 
-from agent.agent import OnsenResult
+from agent.schemas import OnsenResult
 from core.config import settings
 
 logger = logging.getLogger(__name__)

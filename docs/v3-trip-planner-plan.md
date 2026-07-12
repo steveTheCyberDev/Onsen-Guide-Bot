@@ -46,9 +46,10 @@ unchanged:** Railway Postgres provisioning, and the frontend `session_id`→per-
 ### LangGraph adoption decision (2026-07-11)
 
 **Chosen: adopt a hand-built LangGraph `StateGraph` at PR3** (not deferred to PR7's re-planning).
-LangGraph is already a dependency (`backend/requirements.txt`, `langgraph>=0.2.0`), used today only by
-the legacy ReAct path (`agent/agent.py`, `create_react_agent`, behind `CHAT_ENGINE=react`); the live
-workflow path is LangGraph-free. PR3 is therefore the **first use of LangGraph in the production path**.
+LangGraph is already a dependency (`backend/requirements.txt`, `langgraph>=0.2.0`); the deterministic
+search/recommend/ask workflow path is LangGraph-free, so the trip `StateGraph` is the **only use of
+LangGraph in the production path**. (Historically LangGraph also backed the V1 ReAct agent, since
+removed.)
 
 Why adopt now rather than build PR3 in plain Python and convert later: the throwaway cost of deferring
 is narrow but real — a bespoke `TripSlots` persistence mechanism written for PR3 that PR7's checkpointer
@@ -62,7 +63,7 @@ carries.
 **Re-planning-readiness — PR3's graph MUST have these four properties so PR7 re-planning is purely
 additive (an edge + a node, not a reshape):**
 
-1. **Hand-built `StateGraph`, not `create_react_agent`.** The prebuilt is a throwaway; the hand-built
+1. **Hand-built `StateGraph`, not a prebuilt agent graph.** The prebuilt is a throwaway; the hand-built
    graph is the keeper PR7 extends.
 2. **Accumulating working state from day one** — state holds `TripSlots` *and* placeholders for
    `candidates` / `itinerary` even though PR3 only fills slots. PR7 then adds `distance_cache` and

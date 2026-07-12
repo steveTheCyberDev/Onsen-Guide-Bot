@@ -1,24 +1,21 @@
-"""Deterministic V2 onsen workflow — the ``run_workflow`` pipeline.
+"""Deterministic onsen workflow — the ``run_workflow`` pipeline.
 
-Replaces the ReAct agent's expensive routing loop with an explicit ``async def``
-pipeline that ties together the already-merged Step 1 (``query_onsen_structured``)
-and Step 2 (``parse_intent``):
+The ONLY /chat engine: an explicit ``async def`` pipeline that ties together the
+intent parse and the structured retrieval (no autonomous routing loop):
 
     run_workflow(message)
       ① parse_intent(message)          LLM (small)  → {prefecture, query, wants_hotels}
       ② query_onsen_structured(...)    Python       → onsens[]  (no LLM; kills fabrication)
-      ⑤ analyze_onsen(...)             DEFERRED     → gated seam only (see TODO below)
+      ⑤ analyze_onsen(...)             gated        → recommend-mode brain (analyze_enabled)
       ③ if wants_hotels and onsens:    code branch  → search_hotels (passthrough)
       ④ reply = template               no LLM
 
 The DATA layer (onsens[], hotels[]) is assembled in pure Python from Chroma
 metadata and the Rakuten service, so there is no LLM round-trip that could
-fabricate facts. The only LLM call is the small intent-parse hop.
+fabricate facts. The only LLM call on the search path is the small intent-parse hop.
 
-The response contract is IDENTICAL to ``run_agent`` (reply, onsens[], hotels[])
-so ``api/routes/chat.py`` and the frontend work unchanged — a clean A/B against
-the ReAct baseline. ``run_workflow`` is NOT wired into the API yet (that's the
-``chat_engine`` flag step); for now it is reachable only by tests.
+``run_workflow`` is called directly by ``api/routes/chat.py``; its return shape is
+``AgentResponse.model_dump()`` (reply, onsens[], hotels[], recommendation).
 """
 
 import asyncio
@@ -27,13 +24,13 @@ import time
 
 from langchain_core.callbacks import UsageMetadataCallbackHandler
 
-from agent.agent import AgentResponse, HotelResult, OnsenResult
+from agent.schemas import AgentResponse, HotelResult, OnsenResult
 from agent.trip.agent import plan_trip
 from agent.workflow.analyze import analyze_onsen
 from agent.workflow.ask import answer_question
 from agent.workflow.cost import summarize_usage
 from agent.workflow.intent import parse_intent
-from core.config import settings
+from core.config import export_langsmith_env, settings
 from services.chat.chat_service import get_history, save_message
 from services.rakuten.rakuten_service import search_hotels
 from services.retrieval.retrieval_service import query_onsen_structured
@@ -57,11 +54,26 @@ _ONSEN_FIELDS = ("name", "location", "spring_type", "spa_quality", "lat", "lng")
 # no count, and as the upper clamp when they do (e.g. 'top 100' → _MAX_RESULTS).
 _MAX_RESULTS = 20
 
+# Export LangSmith tracing env vars (if enabled) BEFORE importing/constructing the
+# @traceable decorator below. langsmith reads these env vars and caches them, so
+# they must be present in os.environ before the first langsmith import fires. This
+# is the live engine module, imported on the /chat path via api/routes/chat.py, so
+# it is the right home for the export now that the ReAct agent module is gone.
+# No-op + tracing disabled unless LANGSMITH_TRACING=true and an API key are set.
+_TRACING_ENABLED = export_langsmith_env()
+if _TRACING_ENABLED:
+    logger.info(
+        "LangSmith tracing ENABLED | project=%s | endpoint=%s",
+        settings.langsmith_project,
+        settings.langsmith_endpoint,
+    )
+else:
+    logger.info("LangSmith tracing disabled (no-op)")
+
 # --- LangSmith tracing (import-guarded, no-op when disabled) ---
-# Wrap run_workflow with langsmith's @traceable so the V2 workflow run is
-# distinguishable from the v1-baseline ReAct run in the LangSmith UI. Tracing
-# only actually emits when the LangSmith env vars are exported (see
-# core.config.export_langsmith_env, called at agent import time); otherwise the
+# Wrap run_workflow with langsmith's @traceable so the workflow run is grouped and
+# labelled in the LangSmith UI. Tracing only actually emits when the LangSmith env
+# vars are exported (see the export_langsmith_env call just above); otherwise the
 # decorator is a transparent pass-through. The import guard keeps the module
 # importable even if langsmith is ever absent.
 try:
@@ -208,17 +220,15 @@ def _log_cost(
 
 @_trace
 async def run_workflow(message: str, session_id: str) -> dict:
-    """Run the deterministic V2 onsen workflow.
-
-    Mirrors ``run_agent``'s signature and return shape (reply, onsens[],
-    hotels[]) so callers and the API contract are unchanged.
+    """Run the deterministic onsen workflow — the /chat engine.
 
     Args:
         message: The latest user message.
         session_id: Conversation/session identifier for history + persistence.
 
     Returns:
-        ``AgentResponse.model_dump()`` — the same dict shape as ``run_agent``.
+        ``AgentResponse.model_dump()`` — the dict ``api/routes/chat.py`` returns as
+        the ChatResponse (reply, onsens[], hotels[], recommendation).
     """
     logger.info("run_workflow | session_id=%s", session_id)
 
