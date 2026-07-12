@@ -42,7 +42,7 @@ def test_hotels_with_wrong_key_returns_401(unauth_client):
 def test_chat_with_valid_key_passes_guard(unauth_client):
     # A valid key must reach the handler — mock the agent so no LLM call is made.
     agent_result = {"reply": "ok", "onsens": [], "hotels": []}
-    with patch("api.routes.chat.run_agent", new=AsyncMock(return_value=agent_result)):
+    with patch("api.routes.chat.run_workflow", new=AsyncMock(return_value=agent_result)):
         response = unauth_client.post(
             "/chat", json={"message": "hi"}, headers={"X-API-Key": TEST_API_KEY}
         )

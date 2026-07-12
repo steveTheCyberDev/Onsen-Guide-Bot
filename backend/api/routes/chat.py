@@ -3,8 +3,8 @@ import logging
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
-from agent.agent import run_agent
 from agent.schemas import HotelResult, OnsenResult
+from agent.workflow.pipeline import run_workflow
 from api.limiter import limiter
 from core.config import settings
 from core.exceptions import OnsenBotError
@@ -24,8 +24,7 @@ class ChatResponse(BaseModel):
     onsens: list[OnsenResult] = []
     hotels: list[HotelResult] = []
     # V2.5 RECOMMEND addition (ADDITIVE, optional). Carries the recommend-mode
-    # top-level pick; None for search/ask modes and the legacy ReAct path so the
-    # existing contract is unchanged for those flows.
+    # top-level pick; None for search/ask modes so the contract is unchanged there.
     recommendation: str | None = None
 
 
@@ -37,7 +36,7 @@ class ChatResponse(BaseModel):
 async def chat(request: Request, payload: ChatRequest):
     logger.info("POST /chat request | session_id=%s | message=%r", payload.session_id, payload.message)
     try:
-        result = await run_agent(payload.message, payload.session_id)
+        result = await run_workflow(payload.message, payload.session_id)
     except OnsenBotError as e:
         logger.error("POST /chat service error | session_id=%s | error=%s", payload.session_id, e)
         raise HTTPException(status_code=502, detail=str(e))

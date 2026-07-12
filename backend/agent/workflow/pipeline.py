@@ -33,7 +33,7 @@ from agent.workflow.analyze import analyze_onsen
 from agent.workflow.ask import answer_question
 from agent.workflow.cost import summarize_usage
 from agent.workflow.intent import parse_intent
-from core.config import settings
+from core.config import export_langsmith_env, settings
 from services.chat.chat_service import get_history, save_message
 from services.rakuten.rakuten_service import search_hotels
 from services.retrieval.retrieval_service import query_onsen_structured
@@ -57,11 +57,26 @@ _ONSEN_FIELDS = ("name", "location", "spring_type", "spa_quality", "lat", "lng")
 # no count, and as the upper clamp when they do (e.g. 'top 100' → _MAX_RESULTS).
 _MAX_RESULTS = 20
 
+# Export LangSmith tracing env vars (if enabled) BEFORE importing/constructing the
+# @traceable decorator below. langsmith reads these env vars and caches them, so
+# they must be present in os.environ before the first langsmith import fires. This
+# is the live engine module, imported on the /chat path via api/routes/chat.py, so
+# it is the right home for the export now that the ReAct agent module is gone.
+# No-op + tracing disabled unless LANGSMITH_TRACING=true and an API key are set.
+_TRACING_ENABLED = export_langsmith_env()
+if _TRACING_ENABLED:
+    logger.info(
+        "LangSmith tracing ENABLED | project=%s | endpoint=%s",
+        settings.langsmith_project,
+        settings.langsmith_endpoint,
+    )
+else:
+    logger.info("LangSmith tracing disabled (no-op)")
+
 # --- LangSmith tracing (import-guarded, no-op when disabled) ---
-# Wrap run_workflow with langsmith's @traceable so the V2 workflow run is
-# distinguishable from the v1-baseline ReAct run in the LangSmith UI. Tracing
-# only actually emits when the LangSmith env vars are exported (see
-# core.config.export_langsmith_env, called at agent import time); otherwise the
+# Wrap run_workflow with langsmith's @traceable so the workflow run is grouped and
+# labelled in the LangSmith UI. Tracing only actually emits when the LangSmith env
+# vars are exported (see the export_langsmith_env call just above); otherwise the
 # decorator is a transparent pass-through. The import guard keeps the module
 # importable even if langsmith is ever absent.
 try:
