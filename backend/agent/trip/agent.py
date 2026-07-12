@@ -10,12 +10,13 @@ assemble a naive onsen itinerary. The ``plan_trip(message, session_id,
 callbacks=...)`` signature is preserved so the pipeline needs no reshaping.
 
 The ``AgentResponse`` contract stays additive-only. On an elicit turn the reply is
-the follow-up question and ``onsens`` stays empty; on a plan turn (PR3c) the reply
-is the naive-itinerary template and ``onsens`` is populated with the REAL selected
-in-region onsen (projected from the graph's ``itinerary`` state). ``hotels`` remain
-empty and ``recommendation`` stays ``None`` (hotels/routing/Places are PR5/6/7).
-Slots are checkpointed per ``thread_id = session_id`` via ``MemorySaver``, so a
-follow-up answer on a later turn resumes with the prior slots intact.
+the follow-up question and ``onsens``/``hotels`` stay empty; on a plan turn the reply
+is the naive-itinerary template, ``onsens`` is populated with the REAL selected
+in-region onsen, and ``hotels`` (PR5) with the REAL nearby lodging per stop (both
+projected from the graph's ``itinerary`` state; hotels are fail-soft, so a Rakuten
+outage just yields empty hotels). ``recommendation`` stays ``None`` (routing/Places
+are PR6/7). Slots are checkpointed per ``thread_id = session_id`` via ``MemorySaver``,
+so a follow-up answer on a later turn resumes with the prior slots intact.
 
 Layering: this module imports shared schemas from ``agent/`` (and, transitively via
 the graph's plan node, ``services/`` retrieval) but never from ``api/``.
@@ -25,7 +26,10 @@ import logging
 
 from agent.schemas import AgentResponse
 from agent.trip.graph import trip_graph
-from agent.trip.itinerary import onsen_results_from_itinerary
+from agent.trip.itinerary import (
+    hotel_results_from_itinerary,
+    onsen_results_from_itinerary,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -42,9 +46,7 @@ async def plan_trip(
     Drives the compiled ``StateGraph`` with the checkpointer keyed by
     ``thread_id = session_id``, so ``TripSlots`` accumulate across turns of the same
     session. The reply is the graph's output — an elicit follow-up when a required
-    slot is missing, or the planning acknowledgement once all required slots are
-    present. The ``AgentResponse`` contract is additive-only: empty
-    ``onsens``/``hotels``, ``recommendation=None`` (itinerary lands in PR3c).
+    slot is missing, or the naive itinerary once all required slots are present.
 
     Args:
         message: The latest user message. Passed into graph state as ``message``.
@@ -54,9 +56,9 @@ async def plan_trip(
 
     Returns:
         An ``AgentResponse``: the graph's reply; ``onsens`` = the itinerary's real
-        selected onsen on a plan turn (empty on an elicit turn); empty ``hotels``;
-        ``recommendation=None``. The ``/chat`` response contract is unchanged
-        (populating ``onsens`` is additive — it was empty in earlier slices).
+        selected onsen and ``hotels`` = their real nearby lodging on a plan turn
+        (both empty on an elicit turn); ``recommendation=None``. The ``/chat``
+        response contract is unchanged (populating ``onsens``/``hotels`` is additive).
     """
     logger.info("plan_trip | session_id=%s", session_id)
     config: dict = {"configurable": {"thread_id": session_id}}
@@ -64,13 +66,15 @@ async def plan_trip(
         config["callbacks"] = callbacks
     result = await trip_graph.ainvoke({"message": message}, config=config)
     reply = result.get("reply") or _FALLBACK_REPLY
-    # On an elicit turn the graph produced no itinerary → onsens stays empty. On a
-    # plan turn, project the itinerary's real selected onsen onto OnsenResult.
+    # On an elicit turn the graph produced no itinerary → onsens/hotels stay empty.
+    # On a plan turn, project the itinerary's real selected onsen + their nearby
+    # hotels (PR5) onto OnsenResult / HotelResult.
     itinerary = result.get("itinerary")
     onsens = onsen_results_from_itinerary(itinerary) if itinerary else []
+    hotels = hotel_results_from_itinerary(itinerary) if itinerary else []
     return AgentResponse(
         reply=reply,
         onsens=onsens,
-        hotels=[],
+        hotels=hotels,
         recommendation=None,
     )

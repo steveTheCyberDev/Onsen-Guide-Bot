@@ -22,18 +22,26 @@ Two-tier flow (mirrors the workflow's data-layer/assembly split):
      data explicitly so the reply can say "no onsen found for X" instead of
      inventing stops.
 
+PR5 adds a HOTEL step: for each selected onsen stop with coordinates, look up
+nearby lodging via the existing ``search_hotels`` (Rakuten), attaching the result
+to that stop. It follows the workflow's **fail-soft** discipline — a Rakuten
+outage/error never breaks the response; that stop simply has no hotels and the
+reply says so explicitly ("no hotels found nearby"), never fabricated.
+
 Everything here stays JSON-serialisable (plain dicts/lists) so the produced
 ``itinerary`` and ``candidates`` can be checkpointed for the future PostgresSaver.
-Projection onto the Pydantic ``OnsenResult`` happens at the ``agent/trip/agent.py``
-boundary via :func:`onsen_results_from_itinerary`, keeping the graph state plain.
+Projection onto the Pydantic ``OnsenResult`` / ``HotelResult`` happens at the
+``agent/trip/agent.py`` boundary via :func:`onsen_results_from_itinerary` /
+:func:`hotel_results_from_itinerary`, keeping the graph state plain.
 
-Layering: imports ``agent/`` schemas + now ``services/`` retrieval — never ``api/``.
-PR3c adds NO re-planning, constraint checks, hotels, routing, or Places (PR5/6/7).
+Layering: imports ``agent/`` schemas + ``services/`` (retrieval + rakuten) — never
+``api/``. PR5 adds hotels only; NO routing, Places, weather, or re-planning (PR6/7).
 """
 
 import logging
 
-from agent.schemas import OnsenResult
+from agent.schemas import HotelResult, OnsenResult
+from services.rakuten.rakuten_service import search_hotels
 from services.retrieval.retrieval_service import query_onsen_structured
 
 logger = logging.getLogger(__name__)
@@ -50,11 +58,16 @@ _STOPS_PER_NIGHT: dict[str, int] = {"relaxed": 1, "packed": 2}
 _DEFAULT_STOPS_PER_NIGHT = 1  # relaxed
 
 # Keys on a query_onsen_structured record that OnsenResult accepts. The records
-# carry EXTRA keys (detail_url) that are NOT OnsenResult fields; OnsenResult forbids
-# extras (Pydantic v2 default), so we project onto this allow-list rather than
-# ``OnsenResult(**record)``. Mirrors ``pipeline._ONSEN_FIELDS`` — kept local so
-# agent/trip/ does not couple to agent/workflow internals.
+# carry EXTRA keys (detail_url, and now hotels) that are NOT OnsenResult fields;
+# OnsenResult forbids extras (Pydantic v2 default), so we project onto this
+# allow-list rather than ``OnsenResult(**record)``. Mirrors ``pipeline._ONSEN_FIELDS``
+# — kept local so agent/trip/ does not couple to agent/workflow internals.
 _ONSEN_FIELDS = ("name", "location", "spring_type", "spa_quality", "lat", "lng")
+
+# How many hotel names to name per onsen stop in the deterministic reply. The full
+# hotel set is always carried in state + AgentResponse.hotels; this only bounds the
+# prose so a busy leg stays readable.
+_HOTELS_IN_REPLY = 3
 
 
 def _stops_per_night(pace: str) -> int:
@@ -156,12 +169,112 @@ def build_itinerary(slots: dict, candidates: dict[str, list[dict]]) -> dict:
     return {"nights": nights, "regions": legs, "selected_onsens": selected}
 
 
+def _to_hotel(h: dict) -> HotelResult:
+    """Map a Rakuten service hotel dict to a HotelResult.
+
+    Mirrors ``pipeline._to_hotel`` field-for-field so trip and search/recommend
+    produce identical hotel shapes. Rakuten returns Japanese-only names (no
+    translation in V1), so name == originalName == the Japanese string. Kept local
+    so agent/trip/ does not couple to agent/workflow internals.
+    """
+    name = h.get("name") or ""
+    price = h.get("price")
+    return HotelResult(
+        name=name,
+        originalName=name,
+        location=h.get("address"),
+        hotelSpecial=h.get("hotelSpecial"),
+        price=str(price) if price is not None else None,
+        image=h.get("hotelImageUrl"),
+        url=h.get("url"),
+        lat=h.get("lat"),
+        lng=h.get("lng"),
+    )
+
+
+def _fetch_hotels_for_stop(onsen: dict) -> list[dict]:
+    """Look up nearby hotels for one onsen stop — fail-soft, never raising.
+
+    Uses the onsen's ingest-time coordinates. Mirrors the workflow's hotel step
+    discipline (``agent/workflow/pipeline.py``): ``search_hotels`` is sync (uses
+    ``requests``), and a Rakuten outage/error must NEVER break the plan — on any
+    error (or missing coords) this returns ``[]`` and the stop is treated as
+    "no hotels found nearby", never fabricated.
+
+    Off the event loop: this runs inside the SYNC ``plan`` node, which LangGraph
+    executes in its executor under ``ainvoke``, so the blocking Rakuten call does
+    not block the loop (same trade-off the plan node makes for Chroma retrieval).
+    """
+    lat = onsen.get("lat")
+    lng = onsen.get("lng")
+    if lat is None or lng is None:
+        logger.warning(
+            "trip.hotels | onsen=%s has no coords — skipping hotel lookup",
+            onsen.get("name"),
+        )
+        return []
+    try:
+        hotels = search_hotels(lat, lng)
+        logger.info(
+            "trip.hotels | onsen=%s | hotels=%d (lat=%s lng=%s)",
+            onsen.get("name"), len(hotels), lat, lng,
+        )
+        return hotels
+    except Exception as e:
+        # Fail soft — leave this stop's hotels empty; NEVER 500 the whole plan.
+        logger.warning(
+            "trip.hotels | hotel lookup failed for onsen=%s (lat=%s lng=%s): %s",
+            onsen.get("name"), lat, lng, e,
+        )
+        return []
+
+
+def attach_hotels(itinerary: dict) -> None:
+    """Attach nearby hotels to every selected onsen stop (in place, fail-soft).
+
+    For each planned leg's onsen stop, fetch nearby lodging and set
+    ``onsen['hotels']`` to the (possibly empty) list of raw hotel dicts. Mutates the
+    itinerary in place; the leg onsen and ``selected_onsens`` share the same dict
+    refs, so both see the attached hotels. No-data legs carry no onsen, so they get
+    no hotels. Stays JSON-serialisable (raw hotel dicts) for the checkpointer.
+    """
+    for leg in itinerary.get("regions", []):
+        for onsen in leg.get("onsens", []):
+            onsen["hotels"] = _fetch_hotels_for_stop(onsen)
+
+
+def hotel_results_from_itinerary(itinerary: dict) -> list[HotelResult]:
+    """Flatten every stop's hotels onto ``HotelResult``, de-duplicated.
+
+    Called at the ``agent.py`` boundary to populate ``AgentResponse.hotels``.
+    Onsen stops in the same leg can be close enough to return overlapping hotels,
+    so we de-dupe by ``(name, url)`` to avoid the same hotel appearing many times.
+    Every surfaced hotel comes from a real per-stop ``search_hotels`` lookup — never
+    fabricated.
+    """
+    seen: set[tuple] = set()
+    results: list[HotelResult] = []
+    for leg in itinerary.get("regions", []):
+        for onsen in leg.get("onsens", []):
+            for h in onsen.get("hotels") or []:
+                key = (h.get("name"), h.get("url"))
+                if key in seen:
+                    continue
+                seen.add(key)
+                results.append(_to_hotel(h))
+    return results
+
+
 def build_reply(itinerary: dict) -> str:
     """Render the deterministic template reply describing the itinerary.
 
     No LLM: a plain description built from the assembled legs. Names real onsen per
-    region and states "No onsen found for X" for any region with no ingested data,
-    so the prose never implies stops that do not exist.
+    region (with their nearby hotels, or an explicit "no hotels found nearby" when a
+    stop's lookup came back empty) and states "No onsen found for X" for any region
+    with no ingested data — so the prose never implies onsen or hotels that do not
+    exist. Hotel prose is only added for stops that went through the hotel step
+    (an ``onsen['hotels']`` key present), so callers rendering an onsen-only
+    itinerary are unaffected.
     """
     nights = itinerary.get("nights", 0)
     legs = itinerary.get("regions", [])
@@ -179,8 +292,24 @@ def build_reply(itinerary: dict) -> str:
     segments = []
     for leg in planned:
         night_word = "night" if leg["nights"] == 1 else "nights"
-        onsen_names = ", ".join(o["name"] for o in leg["onsens"])
-        segments.append(f"{leg['region']} ({leg['nights']} {night_word}): {onsen_names}")
+        onsen_segs = []
+        for o in leg["onsens"]:
+            seg = o["name"]
+            hotels = o.get("hotels")
+            # Only mention lodging for stops that went through the hotel step (key
+            # present). A present-but-empty list means "we looked, found none".
+            if hotels is not None:
+                if hotels:
+                    names = ", ".join(
+                        h.get("name", "") for h in hotels[:_HOTELS_IN_REPLY]
+                    )
+                    seg += f" (nearby hotels: {names})"
+                else:
+                    seg += " (no hotels found nearby)"
+            onsen_segs.append(seg)
+        segments.append(
+            f"{leg['region']} ({leg['nights']} {night_word}): " + "; ".join(onsen_segs)
+        )
 
     night_word = "night" if nights == 1 else "nights"
     reply = (
@@ -210,9 +339,9 @@ def onsen_results_from_itinerary(itinerary: dict) -> list[OnsenResult]:
 def assemble_trip(slots: dict) -> dict:
     """Retrieve candidates and assemble the naive itinerary for the plan node.
 
-    Orchestrates the two tiers: :func:`retrieve_candidates` (services call) then
-    :func:`build_itinerary` + :func:`build_reply` (pure Python). Returns the pieces
-    the ``plan`` node writes back into graph state.
+    Orchestrates the tiers: :func:`retrieve_candidates` (Chroma) → :func:`build_itinerary`
+    (pure Python) → :func:`attach_hotels` (Rakuten, fail-soft) → :func:`build_reply`.
+    Returns the pieces the ``plan`` node writes back into graph state.
 
     Args:
         slots: The serialised ``TripSlots`` dict from graph state (required slots
@@ -225,6 +354,9 @@ def assemble_trip(slots: dict) -> dict:
     """
     by_region = retrieve_candidates(slots)
     itinerary = build_itinerary(slots, by_region)
+    # PR5: look up nearby hotels for each selected onsen stop (fail-soft, in place)
+    # BEFORE building the reply so the prose can reference lodging.
+    attach_hotels(itinerary)
     reply = build_reply(itinerary)
     flat_candidates = [rec for records in by_region.values() for rec in records]
     logger.info(
