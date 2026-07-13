@@ -39,7 +39,7 @@ The parts I'd bring up in an interview — the engineering, not the feature list
 - **~10× faster by removing the agent.** The V1 LangGraph **ReAct agent** averaged **~35 s** per `/chat`. I traced it, found two GPT-4o round-trips dominating the time, and redesigned it into a **deterministic workflow** — one small intent call + pure-Python assembly — landing at **~3.7 s**. Shipped behind a feature flag for an A/B and instant rollback.
 - **Hallucination prevented *structurally*, not by prompting.** Onsen results are assembled in Python from retrieved records; the LLM never invents facts. An **automated eval suite** (LangSmith) scores grounding so "is it honest?" has a number.
 - **Cost & latency are observed, not guessed.** Full LangSmith tracing in prod with **per-request cost/token attribution** (~$0.002 search · ~$0.005 recommend), and the expensive recommend LLM call sits behind a gated rollout flag.
-- **Production-grade, not a notebook.** Per-IP rate limiting, outbound retry/backoff, fail-closed API-key auth, **312 backend + 126 frontend tests**, CI test gates (including a deterministic eval release gate), and branch-protected releases to Railway + Vercel.
+- **Production-grade, not a notebook.** Per-IP rate limiting, outbound retry/backoff, fail-closed API-key auth, **418 backend + 126 frontend tests**, CI test gates (including a deterministic eval release gate), and branch-protected releases to Railway + Vercel.
 
 ---
 
@@ -145,7 +145,7 @@ In the Railway container, `/chat` returned zero results despite a "successful" i
 
 ## Status & limitations
 
-**V2.5 is live in production** — the deterministic workflow, guide-style recommendations, the `ask` knowledge base, evals, and observability are all shipped and running. **V3 (the trip-planner agent) is now kicking off** — see the [design plan](./docs/v3-trip-planner-plan.md). I'd rather name the remaining gaps than hide them:
+**V2.5 is live in production** — the deterministic workflow, guide-style recommendations, the `ask` knowledge base, evals, and observability are all shipped and running. **V3 (the trip-planner agent) is under active build** — the LangGraph agent, session persistence, slot-filling, a naive itinerary, multi-turn evals, region validation, and per-stop hotels are all merged to `develop` **behind a `trip_enabled` flag** (not yet flipped in prod) — see the [design plan](./docs/v3-trip-planner-plan.md). I'd rather name the remaining gaps than hide them:
 
 **Shipped since V1** (were the V1 limitations): ingest-time geocoding · the `ask`-mode knowledge base · LangSmith eval harness, now a **deterministic CI release gate** · tracing + per-request cost accounting · rate limiting + outbound resilience · the workflow redesign.
 
@@ -165,12 +165,13 @@ In the Railway container, `/chat` returned zero results despite a "successful" i
 - LangSmith tracing + per-request cost accounting; a LangSmith eval harness, now a **deterministic release gate** in CI (LLM-as-judge parked until the flow + data stabilise).
 - Hardening: rate limiting, outbound retries/backoff; CI test gates + branch-protected releases.
 
-**V3 — kicking off: the trip-planner agent**
-The first true *agent* — dynamic tool sequencing + re-planning — for the one query the workflow can't serve: *"plan me a 3-day onsen trip."* **Single agent first; multi-agent only if it strains.**
-- **Step 0 — persistent session state** (the hard prerequisite): a bespoke session store, SQLite local / Postgres prod, replacing the in-memory single-worker history.
-- **Slot-filling** (regions · nights · dates · party · budget · prefs) + a LangGraph agent over **Google-API tools** — Places (reviews/ratings, to *ground* pros/cons in real signal), Distance Matrix/Directions (travel-time / re-planning), weather — plus the existing onsen/hotel/analyze tools.
-- **Multi-turn / trajectory agent evals**, measured against the workflow baseline.
-- Migrate chat GPT-4o → **Claude (Sonnet 4.6 / Opus 4.8)** with a provider fallback chain; pgvector when scale demands it.
+**V3 — under active build: the trip-planner agent**
+The first true *agent* — dynamic tool sequencing + re-planning — for the one query the workflow can't serve: *"plan me a 3-day onsen trip."* **Single agent first; multi-agent only if it strains.** Merged to `develop` behind a `trip_enabled` flag:
+- ✅ **Step 0 — persistent session state** (the hard prerequisite): a session store checkpointing per-thread state, SQLite local / Postgres prod (the Postgres path lands with Railway Postgres).
+- ✅ **Slot-filling** (regions · nights · dates · party · budget · prefs) + a LangGraph agent, region validation (reject non-Japan early), a naive day-by-day itinerary, and per-stop hotels (fail-soft).
+- ✅ **Multi-turn / trajectory agent evals**, measured against the workflow baseline.
+- ⏭️ **Next:** Google **Places** ratings to *ground* pros/cons (PR6) · **Distance Matrix/Directions** travel-time + re-planning — the real agent loop (PR7). Both gated on Google billing.
+- ⏭️ Migrate chat GPT-4o → **Claude (Sonnet / Opus)** with a provider fallback chain; pgvector when scale demands it.
 
 Full design: [`docs/v3-trip-planner-plan.md`](./docs/v3-trip-planner-plan.md). Earlier notes: [`docs/V2_IMPLEMENTATION_PLAN.md`](./docs/V2_IMPLEMENTATION_PLAN.md) · [`docs/v2-slot-filling-agent.md`](./docs/v2-slot-filling-agent.md).
 
@@ -214,14 +215,14 @@ VITE_GOOGLE_MAPS_API_KEY=...
 VITE_API_KEY=...           # matches the backend API_KEY
 ```
 
-**Tests:** `pytest` in `backend/` (312 tests, external I/O mocked) · `npm test` in `frontend/` (126 Vitest + RTL tests).
+**Tests:** `pytest` in `backend/` (418 tests, external I/O mocked) · `npm test` in `frontend/` (126 Vitest + RTL tests).
 **Evals (paid):** `.venv/bin/python scripts/eval_flow.py` from `backend/` — runs the LangSmith flow-eval experiment (needs `LANGSMITH_API_KEY`).
 
 ---
 
 ## Stack
 
-**Backend:** FastAPI · deterministic LangGraph/LCEL workflow (legacy ReAct agent retained behind a flag) · GPT-4o + `gpt-4o-mini` + `text-embedding-3-small` · ChromaDB · Pydantic · LangSmith (tracing + evals)
+**Backend:** FastAPI · deterministic LangGraph/LCEL workflow (the sole `/chat` engine — the legacy ReAct agent was A/B'd behind a flag, then removed once the workflow was proven) · GPT-4o + `gpt-4o-mini` + `text-embedding-3-small` · ChromaDB · Pydantic · LangSmith (tracing + evals)
 **Frontend:** React 18 · Vite 5 · Tailwind · `@react-google-maps/api`
 **Data:** ~220 onsen (Okinawa + Tokai), Japanese→English translated at ingest via `gpt-4o-mini`, geocoded once at ingest, embedded with prefecture/city/spring-type metadata
 **Integrations:** Google Maps (geocoding + JS map) · Rakuten Travel API (live hotels) — displayed with the required [Rakuten Web Service credit badge](https://webservice.rakuten.co.jp/guide/credit) per their attribution terms
