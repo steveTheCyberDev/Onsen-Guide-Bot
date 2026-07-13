@@ -137,60 +137,41 @@ This is the part I'm most proud of — most of these were *correctness* and *pro
 
 ## Honest limitations — and the path to production-grade
 
-I'd rather name the gaps than pretend they don't exist. Here's what V1 deliberately doesn't do yet, and what it would take to make it production-/senior-grade. (The first three are also the top of my V2 plan — they're product improvements *and* the things that demonstrate real LLM-engineering rigor.)
+I'd rather name the gaps than pretend they don't exist. This section began as V1's honest limitations; **most have since been closed through V2/V2.5**, so I've kept it as a scorecard rather than pretending they were never there.
 
-**AI engineering depth**
-- **Eval harness — seeded (fabrication slice).** I built a small fabrication eval (`scripts/eval_fabrication.py`): fixed cases with ground truth read from the DB — out-of-data prefectures must return *empty* (the no-fabrication contract), in-data ones must return only real onsen. It already earned its keep, catching that `gpt-4o-mini` isn't a safe drop-in (it misuses the search tool). Still to broaden: retrieval hit-rate, tool-selection accuracy, answer quality, and wiring it to gate CI — so "is the agent good?" has a fuller *number*, not an opinion.
-- **No observability.** No request tracing, token/cost accounting, or latency metrics. I'd add structured per-request logging (tokens, cost, latency, tool calls) and/or tracing.
-- **Performance — now measured (and the result surprised me).** Before/after timing on `/chat` (challenge #8) showed ingest-time geocoding was a cost/reliability win, not a latency one — the GPT-4o ReAct loop is the real bottleneck. Next perf work targets the loop (a workflow with fewer round-trips + a cheaper model), not geocoding. Still missing: token/cost accounting and tracing to attribute latency per step.
+**Closed since V1:**
+- **Eval harness** — grew from the seeded fabrication slice into a full LangSmith flow-eval over the real workflow (grounding, per-mode structure, cost, latency), now a **deterministic CI release gate**.
+- **Observability** — LangSmith step-level tracing in prod with per-request token/cost accounting, sliced by mode.
+- **Performance** — the ReAct→workflow redesign (challenge #10) landed the measured ~10× win.
+- **Resilience** — outbound retries/backoff and timeouts on the external calls (Rakuten/Google/OpenAI); rate limiting on the paid endpoints.
+- **Guardrails asserted** — the no-fabrication contract is pinned by tests + the eval grounding evaluator, not just smoke-level.
+- **Frontend tests in CI** — Vitest now gates PRs alongside backend pytest.
+- **Packaging** — README with demo GIF + live link and architecture/sequence diagrams shipped.
 
-**Engineering rigor**
-- **Resilience:** external calls (Rakuten, Google, OpenAI) lack retries, timeouts, and graceful degradation — the unhappy path isn't designed for yet.
-- **Guardrail tests are smoke-level**, not asserted; I'd add tests that pin the no-fabrication behaviour against regressions.
-- **State & scale:** chat history is in-memory (lost on restart, not multi-instance safe), there's no rate limiting, and the dataset is ~220 records. Each needs either a fix (persistent session store, rate limiting) or an explicit scaling plan.
-- **Frontend tests aren't in CI yet** (backend pytest is); both suites should gate every PR.
-
-**Packaging**
-- A README with a demo GIF + live link, and Architecture Decision Records + a C4/sequence diagram, to make the design thinking legible.
+**Still open (conscious tradeoffs):**
+- **State & scale.** Chat history / session state now persists (V3 Step 0), but the container is still **single-worker** and the Postgres checkpointer path is unimplemented until Railway Postgres lands — so it isn't multi-instance safe yet. Dataset is ~220 records; pgvector seam kept open for when scale demands it.
+- **Pros/cons groundedness isn't gated.** The **LLM-as-judge** evaluator is built but **parked** (non-deterministic false-negatives blocked clean releases); re-enabled once V3 + real Google Places ratings stabilise the signal.
+- **Map-click hotels surface in Japanese** — the deterministic `/hotels` endpoint skips the translating agent for speed; the fix is a `translation_service` that caches by Rakuten hotel id.
 
 ---
 
 ## Roadmap
 
-### V2 — Intermediate (next)
+### V2 / V2.5 — Intermediate (delivered & live)
+The V2 discipline was *scaffolding around the agent first* — **instrument → baseline → change → show the measured delta** — not building a fancier agent. All of it shipped:
+- **Performance:** ingest-time geocoding + the ReAct→workflow redesign (challenge #10) — measured ~10× win.
+- **The "Guide" brain:** the `analyze_onsen` step — per-onsen **pros/cons** + a grounded recommendation over a compact projection of the retrieved candidates (the one LLM call that earns its place back). Live via `ANALYZE_ENABLED`.
+- **`ask` knowledge base:** semantic RAG over prose docs (etiquette, tattoo policy, spring-type benefits) in a separate Chroma collection. Live via `ASK_ENABLED`.
+- **Rigor:** LangSmith tracing + per-request cost accounting; a LangSmith eval harness now a **deterministic CI release gate**; rate limiting + outbound retries/backoff; frontend Vitest in CI.
 
-#### What to fix BEFORE starting V2
-The slot-filling migration is the headline of V2, but I'm deliberately doing the *scaffolding around the agent* first — otherwise I can't prove the new agent is better, only assert it. The senior move isn't building a fancier agent; it's the loop **instrument → baseline → change → show the measured delta**. (This list is verified against current AI-engineering practice, not just my own gut.)
+Still-open V2-era ideas carried forward: `translation_service` (cache hotel-name translations by Rakuten hotel id), richer map filters, and expanding coverage beyond Okinawa + Tokai.
 
-- **Tier 1 — unblock everything (do first):**
-  - *Ingest-time geocoding* — **DONE.** Onsen are geocoded once at ingest with lat/lng stored in Chroma; per-request Google calls removed. Measured: a **cost + reliability** win, not a latency one (the LLM loop dominates — challenge #8), which is exactly what pointed at the workflow redesign.
-  - *Eval harness* — a fixed set scoring retrieval hit-rate, fabrication rate, tool-selection accuracy. Without a number I can't honestly claim slot-filling is "more accurate." The senior version is evals **gating CI** plus a loop where real failed traces become new eval cases.
-  - *Agent tracing* — **DONE.** LangSmith step-level tracing on the current ReAct agent (challenge #9). Captured the baseline: a 20-onsen Shizuoka query is ~30 s, ~28 s of it two GPT-4o round-trips (observe + JSON re-serialization). This is the number the slot-filling migration is measured against.
-  - *Frontend tests into CI* — uncomment the `frontend-tests` job in `ci.yml` and require both checks on `main` (trivial, overdue).
-- **Tier 2 — foundation V2 leans on:**
-  - *Resilience* — today only `timeout=10` exists. Add the real stack: retry with backoff + jitter, fallback chains, circuit breakers, graceful degradation, and multi-provider failover (LLM providers run ~99–99.5% uptime). The V3 GPT-4o→Claude migration is the natural hook for a fallback chain.
-  - *Observability* — structured per-request logging: tokens, cost, latency, tool calls. The whole point of slot-filling is "cheaper, fewer calls" — unprovable without this.
-  - *Persistent chat history* — the in-memory dict breaks on restart / multi-instance; slot-filling is *more* stateful, so this only gets worse if ignored.
-- **Tier 3 — pin against regressions (can run alongside early V2):**
-  - *Assert the anti-fabrication guardrails* as real tests (today smoke-level) — lock in the proudest correctness win before refactoring the agent.
-  - *Rate limiting* on the paid endpoints (the API-key guard exists; add a limiter).
-
-#### V2 features
-- **Performance:** ingest-time geocoding (kill per-request Google calls); consider response streaming and a faster/cheaper model where the ReAct loop allows; cache query embeddings.
-- **"Guide", not just search — onsen pros/cons analysis.** Today the bot only *retrieves and lists* onsen; it doesn't earn the name "Guide" because it has no point of view. Add an `analyze_onsen` step that, once results are assembled, produces per-onsen **pros/cons** plus an overall recommendation/ranking grounded in the user's intent. Architecturally this is the *first LLM call that legitimately earns its place back* after the workflow redesign stripped the LLM out of the onsen path: listing facts isn't judgment (so it's deterministic Python), but weighing trade-offs **is** (so it's an LLM call). Clean two-layer flow: **data layer** = Python assembles `onsens[]` from Chroma metadata (facts, no fabrication); **judgment layer** = LLM reads that and *adds* opinion. Keep it cheap + safe: feed a **compact projection** (name, spring type, location, short spa_quality — not the full 20 descriptions, to avoid re-creating the #2/#3 cost from challenge #9), and require pros/cons to derive from the retrieved fields, not invented facts.
-- **New services:** `booking_service`, `preferences_service`, `translation_service` (cache hotel-name translations by Rakuten hotel id instead of re-translating each fetch).
-- **Product:** richer map view + filters; wire the prefecture filter to actually constrain results (today it only re-centres the map); user preference memory.
-- **Agent:** move from open-ended ReAct toward slot-filling for more predictable, cheaper conversations.
-- **Data:** expand coverage beyond Okinawa + Tokai to more regions.
-- **Hardening:** rate limiting; consider real user auth (beyond the shared API key).
-
-### V3 — Advanced (kicking off)
-The trip-planner **agent** — the concrete query the workflow can't serve (*"plan a 3-day onsen trip"*): dynamic tool sequencing + re-planning. **Single agent first; multi-agent only if it strains.** Full design: [`docs/v3-trip-planner-plan.md`](./docs/v3-trip-planner-plan.md).
-- **Step 0 — persistent session state** (hard prerequisite): a bespoke session store, SQLite local / Postgres prod, behind a flag, replacing the in-memory single-worker history. The trip-planner's per-thread state later checkpoints to the **same Postgres** (LangGraph `PostgresSaver`).
-- **Slot-filling** (regions · nights · dates · party · budget · prefs) + a LangGraph agent over **Google-API tools** — **Places** (reviews/ratings, finally grounding pros/cons in real signal — this *is* the parked `ratings_service`), **Distance Matrix/Directions** (travel-time / re-planning), weather — plus the existing onsen/hotel/analyze tools.
-- **Multi-turn / trajectory agent evals**, measured against the workflow baseline (instrument → baseline → prove).
-- **Model:** migrate chat from GPT-4o to **Claude (Sonnet 4.6 / Opus 4.8)** with a provider fallback chain.
-- **Storage:** pgvector migration path kept open (`schema.sql`) for when scale demands it.
+### V3 — Advanced (under active build)
+The trip-planner **agent** — the concrete query the workflow can't serve (*"plan a 3-day onsen trip"*): dynamic tool sequencing + re-planning. **Single agent first; multi-agent only if it strains.** PR1–PR5 are **merged to `develop` behind a `trip_enabled` flag** (not yet flipped in prod). Full design: [`docs/v3-trip-planner-plan.md`](./docs/v3-trip-planner-plan.md).
+- ✅ **Step 0 — persistent session state:** a session store checkpointing per-thread state (SQLite local; the LangGraph `PostgresSaver` prod path lands with Railway Postgres — currently raises `NotImplementedError`).
+- ✅ **Slot-filling** (regions · nights · dates · party · budget · prefs) via a LangGraph agent, plus region validation (reject non-Japan early), a naive day-by-day itinerary, per-stop hotels (fail-soft), and multi-turn/trajectory evals against the workflow baseline.
+- ⏭️ **Next (both gated on Google billing):** **Places** ratings/reviews to *ground* pros/cons in real signal (this *is* the parked `ratings_service`) — PR6 · **Distance Matrix/Directions** for travel-time + re-planning, the real agent loop — PR7.
+- ⏭️ **Model:** migrate chat GPT-4o → **Claude (Sonnet / Opus)** with a provider fallback chain; pgvector when scale demands it.
 - **Multi-agent:** only *later* — an orchestrator over specialised sub-agents — when a single agent visibly strains, not before.
 
 ### Guiding principle
@@ -198,90 +179,29 @@ Each addition is self-contained: a new external API is a new `services/{name}`, 
 
 ---
 
-## Next direction — from workflow to *agent* (design captured 2026-06-10; not yet built)
+## Design note — the autonomy ladder (captured June 2026; since delivered)
 
-A design discussion on where the system goes next. **Reconciled with progress 2026-06-11:** the `analyze_onsen` recommend brain and the LangSmith eval harness have since shipped — `recommend` is now live in prod (`ANALYZE_ENABLED=true`) with the frontend rendering pros/cons + recommendation — so the V2 roadmap above is largely done. The one capability still unbuilt is the `ask`-mode knowledge base (the agreed next build). The autonomy-ladder discussion below sharpens *when* this graduates from workflow to agent.
+A June design discussion on where the system goes after V1. **Most of what it proposed has since shipped** — the `ask`-mode knowledge base, the `analyze_onsen` recommend brain (grounded on a compact projection of the retrieved candidates), and the two-collection split (onsen records vs. a *separate* prose KB, with a small spring-type→benefit lookup table rather than embeddings) are all **live in prod**. What's worth keeping is the framing that still drives every "workflow or agent?" call.
 
-### Target shape — KB feeds both `ask` and `recommend`
-
-```mermaid
-flowchart TD
-    U["User input"] --> R{"LLM router<br/>search · recommend · ask"}
-
-    R -->|search| S["DB search<br/>deterministic · Python assembly"]
-    R -->|recommend| REC["recommend<br/>retrieve candidates → analyze (LLM)<br/>→ grounded pros/cons + recommendation"]
-    R -->|ask| ASK["ask<br/>semantic RAG over KB"]
-
-    ONS[("ONSEN collection (Vector DB)<br/>name · spring_type · lat/lng<br/>description · ratings/reviews")]
-    KB[("KB collection — prose (Vector DB)<br/>etiquette · tattoo policy<br/>spring-type benefits")]
-
-    S --> ONS
-    REC ==>|"FACTS — may assert per-onsen claims"| ONS
-    REC -. "REASONING — interpret need, never assert facts" .-> KB
-    ASK --> KB
-
-    OD["Onsen data<br/>+ geocode + EN translation<br/>+ ratings (Google Places)"] -->|ingest + enrich| ONS
-    MD["Markdown knowledge docs"] -->|ingest| KB
-
-    S --> OUT["reply / answer"]
-    REC --> OUT
-    ASK --> OUT
-```
-
-The diagram encodes the **grounding boundary**: `recommend` draws two kinds of edge — a **solid (FACTS)** edge from the onsen collection (the only source allowed to assert claims about a *specific* onsen) and a **dotted (REASONING)** edge from the KB (domain knowledge to interpret the user's need, e.g. "skin → sulfur", but never to introduce a new fact about a specific onsen). Note also the **two separate Vector DB collections**, **ratings enrichment at ingest**, and that the spring-type→benefit reasoning is a small lookup table alongside the KB, not embeddings.
-
-### Reframe: capabilities vs. orchestration
-The instinct was "add a knowledge base + an external ratings API to *make it an agent*." The clarifying distinction: a knowledge base and a ratings API are **capabilities** (`services/` + `tools/`); **agent vs. workflow** is the *orchestration* on top — does code decide the path (workflow) or does an LLM decide which tools to call, and when, in a loop (agent)? Adding a capability does **not** by itself make it an agent. So: **build the capabilities now as workflow steps** (reliable, cheap, testable), and treat "become an agent" as a *separate, later* decision — the same conclusion reached for V1/V2. Because `services/` are framework-agnostic and `tools/` are thin wrappers, whatever I build now is reusable by a workflow **or** a future agent unchanged.
-
-### Capability 1 — Knowledge base (the `ask` mode / V2.5 Layer 2)
-Author markdown domain docs (etiquette, tattoo policy, bathing steps, spring-type benefits) and serve the currently-stubbed `ask` branch via semantic RAG.
-
-### Capability 2 — Real ratings/reviews, to *ground* pros/cons
-Today's pros/cons are **LLM-inferred from each onsen's own description** — the unmeasured groundedness gap the eval flagged. A ratings/reviews source replaces inference with real signal. Two refinements over the first instinct (TripAdvisor):
-- **Provider:** prefer **Google Places** (already integrated for geocoding; a `place_id` can be captured at the same ingest step; better coverage of small Japanese onsen; simpler attribution) over TripAdvisor. Build a `ratings_service` seam so the provider is swappable.
-- **Ingest-time enrichment, not per-request** — the proven pattern (geocoding, translation): pull rating + a few review snippets once at ingest, store in Chroma metadata. Grounds pros/cons with **zero per-request latency/cost**. A per-request tool only earns its place once freshness matters or the system is genuinely agentic.
-
-### The key insight: the KB should feed `recommend`, not just `ask`
-A KB-grounded recommendation **is** more accurate — but there are **two kinds of knowledge → two kinds of accuracy**:
-- **Per-onsen signal** (description, ratings, reviews) **differentiates** candidates — the biggest lever for "which of these is best" (= Capability 2).
-- **General domain knowledge** (the KB) improves the **reasoning**: it's the same for every candidate, so it doesn't pick A over B, but it lets the LLM map a **need → attribute**. *E.g. user says "skin problems" → KB knows "sulfur springs help skin" → recommend ranks toward `spring_type = sulfur` and explains why.*
-
-**Grounding discipline (critical):** keep the layers doing different jobs or fabrication returns — **onsen records ground the FACTS** (any claim about a specific onsen must come from its own data), **the KB grounds the REASONING** (domain knowledge used to interpret the need, never to assert new facts about a specific onsen). The recommend brain gets three clearly-labelled inputs: candidate onsen, user preferences, relevant KB snippets. The eval's grounding evaluator + the planned LLM-judge keep it honest.
-
-### Do we store the KB in a vector DB? Only the prose.
-Match storage to **size + structure + access pattern** — don't reach for vectors by reflex:
-- **Long-form prose** (etiquette, tattoo policy) → open-ended semantic Q&A → **vector DB**, in a **separate Chroma collection** (not mixed with onsen records — different shape; mixing muddies both). This is the `ask`-mode showcase.
-- **Structured domain facts** (spring-type → benefit) → a **small table/dict or prompt injection**, *not* embeddings. You look these up, you don't semantically search them; embedding a 15-row table and hoping similarity returns the right row is strictly worse than a dict. (Mirrors the earlier rule: structured facts stay queryable lookups/metadata; only prose goes into a semantic RAG pool.)
-- It's a **hybrid** — and that's correct. Caveat: if the prose KB starts tiny, prompt-stuff it and graduate to the vector collection only once it outgrows cheap context.
-
-### When it actually *becomes* an agent
-Once `recommend` wants to consult **two retrieval sources** (onsen DB + KB) and an **enrichment tool** (ratings), and *which* it needs depends on the query, deciding that dynamically is precisely a **LangGraph agent's** job — and the cleanest reason the system graduates from workflow to agent. That's the V3 upgrade, arriving when query complexity (not the résumé) demands it.
-
-### The autonomy ladder — and the case that defines the agent boundary (discussion 2026-06-11)
-
-Working through routing examples surfaced the cleanest framing for the whole roadmap: the system is walking **up an autonomy ladder**, one rung at a time —
+### The autonomy ladder
+The system walks **up an autonomy ladder**, one rung at a time:
 
 > **rules → pipeline → workflow → agent → multi-agent**
 
-The discipline is to use the **least autonomy that solves the task**, and to climb a rung only when a *concrete* case can't be served by the rung below — not because "agent" sounds more advanced. This is also the honest narrative arc of the project: V1 jumped straight to a ReAct **agent** (the right bootstrapping move while query shapes were unknown); I then **measured** it was over-reach for known shapes and graduated *down* to a deterministic **workflow** (challenge #10, ~10× faster); and now I climb back *up* to an agent **only for the one case that genuinely needs it.** "I measured my agent was the wrong altitude and graduated down, then back up for a real reason" is a far stronger story than "I built an agent."
+Use the **least autonomy that solves the task**, and climb a rung only when a *concrete* case can't be served below — not because "agent" sounds advanced. That's the honest arc: V1 jumped straight to a ReAct **agent** (right while query shapes were unknown); I **measured** it was over-reach and graduated *down* to a deterministic **workflow** (challenge #10, ~10×); now I climb back *up* to an agent **only for the one case that needs it.** "I measured my agent was the wrong altitude and graduated down, then back up for a real reason" beats "I built an agent."
 
-**The case that defines the boundary** came from a real test query: *"I'd like a 3-day onsen trip — what's your suggestion?"* This is the first query where the tool sequence **isn't knowable up front** — how many onsen, which regions, hotels per night, transport between them, re-plan if one's full. That dynamic, looping, re-planning shape is the textbook definition of when autonomy earns its cost. Everything below it stays a workflow:
+**The case that defines the boundary** was a real test query: *"I'd like a 3-day onsen trip — what's your suggestion?"* — the first query whose tool sequence **isn't knowable up front** (how many onsen, which regions, hotels per night, transport, re-plan if one's full). That dynamic, looping, re-planning shape is exactly when autonomy earns its cost. Everything below it stays a workflow:
 
 | Query | Mode | Rung |
 |---|---|---|
 | "Onsen in Shizuoka" | **search** | workflow (deterministic list) |
 | "Somewhere relaxing with outdoor baths" | **recommend** | workflow (candidates → analyze) |
 | "Do they allow tattoos? What do I bring?" | **ask** | workflow (semantic RAG over KB) |
-| **"3-day onsen trip, suggestions?"** | recommend (partial) | **agent** — a real itinerary (sequencing, transport, re-planning) is V3 |
+| **"3-day onsen trip, suggestions?"** | **agent** | a real itinerary — sequencing, transport, re-planning — **= V3, now under active build** |
 
-So `search` / `recommend` / `ask` are all correctly **pre-wired workflows**; the trip-planner is the concrete scenario that becomes the **V3 agent** (and then multi-agent for "compare these regions and plan"). The agent comes back when *query complexity* demands it — not the résumé.
+So `search` / `recommend` / `ask` are correctly **pre-wired workflows**; the trip-planner is the concrete scenario that becomes the **V3 agent** (multi-agent only *later*, for "compare these regions and plan"). The agent comes back when *query complexity* demands it — not the résumé.
 
-**Where slot-filling fits (it's not a separate agent).** Slot-filling — asking "Which prefecture?" when a required slot is missing — is an **upgrade to the router**, not a new component. The router (`parse_intent`) already *extracts* slots (prefecture, query, wants_hotels); slot-filling just adds a **gate + follow-up branch**: *required slot missing → ask → end the turn → re-enter on the next message.* Its real cost is **multi-turn state** (remember the pending question, merge the reply), which is why it's parked behind the in-memory-history limitation. It's orthogonal to `ask` mode — `ask` is a *destination* the router branches to; slot-filling is *how the router elicits* before branching.
-
-### Recommended build sequence
-1. **Knowledge base / `ask` mode** (Layer 2) — separate vector collection for prose + a small spring-type→benefit table for reasoning. *(workflow)*
-2. **`ratings_service` + ingest-time enrichment** (Google Places) — grounds pros/cons in real ratings; pair with an **LLM-as-judge evaluator** so pros/cons groundedness becomes *measurable* (and the gpt-4o → gpt-4o-mini switch can be re-decided on data). *(workflow)*
-3. **Then** wrap these as agent tools under a LangGraph orchestrator for multi-step queries. *(agent — the real V3 upgrade)*
+**Grounding discipline (still enforced):** onsen records ground the **FACTS** (any claim about a specific onsen comes from its own data); the KB grounds the **REASONING** (domain knowledge to interpret a need — "skin → sulfur" — never to assert a new fact about a specific onsen). Real **Google Places ratings** (V3 PR6) are the next lever, to ground pros/cons in signal rather than LLM inference — paired with the parked LLM-as-judge evaluator once the flow + data stabilise.
 
 ---
 
@@ -289,4 +209,4 @@ So `search` / `recommend` / `ask` are all correctly **pre-wired workflows**; the
 
 V1 is **live in production and feature-complete** for its scope. V2's performance headline shipped and is **live in prod**: ingest-time geocoding plus the ReAct→workflow redesign (challenge #10) — ~10× faster and the workflow is now the **only** `/chat` engine (in V3 the legacy ReAct agent and the engine-select flag were removed, since the workflow had been the prod engine through V2/V2.5/ask). V2.5's **3-mode router**, the **`analyze_onsen` "guide" judgment layer**, AND the **`ask`-mode knowledge base** are all **live in prod** (`ANALYZE_ENABLED=true`, `ASK_ENABLED=true`; frontend renders pros/cons + recommendation). The LangSmith eval harness is now a **deterministic CI release gate** (name-grounding, structure, cost, latency); the **LLM-as-judge** evaluators are **parked** — judging LLM prose while the flow + data are still moving produced non-deterministic false-negatives that blocked clean releases, so they're kept for re-enable once V3 + real ratings stabilise the signal.
 
-**V3 — the trip-planner agent — is now kicking off**, starting with **Step 0 (persistent session state)**, the hard prerequisite that the in-memory/single-worker history blocks. Full design: [`docs/v3-trip-planner-plan.md`](./docs/v3-trip-planner-plan.md).
+**V3 — the trip-planner agent — is under active build**, with **PR1–PR5 merged to `develop` behind a `trip_enabled` flag** (not yet flipped in prod): Step 0 persistent session state, the LangGraph agent + slot-filling, region validation, a naive itinerary, per-stop hotels (fail-soft), and multi-turn evals. The suite sits at **418 backend + 126 frontend tests**. **Next:** decide **PR6** (Google Places ratings to ground pros/cons) vs **PR7** (Distance Matrix/Directions routing + re-planning — the real agent loop); both gated on Google billing. Carried prerequisites before any prod cutover: `session_id`→per-conversation UUID and a Railway Postgres checkpointer (the `PostgresSaver` path currently raises `NotImplementedError`). Full design: [`docs/v3-trip-planner-plan.md`](./docs/v3-trip-planner-plan.md).
