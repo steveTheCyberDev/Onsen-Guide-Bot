@@ -74,6 +74,65 @@ def test_reconcile_recomputes_trip_no_data_regions():
     assert examples[0]["no_data_regions"] == []
 
 
+def test_multifactor_examples_are_wellformed_and_gate_flags_propagate():
+    """The 4 PR7 multi-factor examples parse and their gate flags reach reference_outputs.
+
+    Verifies the dataset authoring is well-formed (each is a complete trip thread
+    with valid regions/nights) and that _expectation() carries the new expect_*
+    gate keys into the reference outputs the PR7 evaluators read.
+    """
+    multifactor = [
+        ex
+        for ex in eval_flow._EXAMPLES
+        if ex.get("conflict_factors")  # only the PR7 red-baseline examples set this
+    ]
+    assert len(multifactor) == 4
+
+    valid_regions = {"Gifu", "Nagano", "Shizuoka", "Aichi", "Okinawa"}
+    at_least_one_gate = 0
+    for ex in multifactor:
+        # Structurally a complete trip thread.
+        assert ex["expected_mode"] == "trip"
+        assert ex["messages"] and isinstance(ex["messages"], list)
+        assert ex["expected_nights"]
+        assert ex["regions"] and set(ex["regions"]) <= valid_regions
+
+        exp = eval_flow._expectation(ex)
+        # Every gate key is present in the expectation (default or set).
+        for key in (
+            "expect_constraint_conflict_ack",
+            "expect_feasibility_flag",
+            "expect_tradeoff_explanation",
+            "expect_dropped_regions",
+            "conflict_factors",
+        ):
+            assert key in exp
+        if any(
+            exp[k]
+            for k in (
+                "expect_constraint_conflict_ack",
+                "expect_feasibility_flag",
+                "expect_tradeoff_explanation",
+                "expect_dropped_regions",
+            )
+        ):
+            at_least_one_gate += 1
+    # Every multi-factor example gates at least one PR7 evaluator.
+    assert at_least_one_gate == 4
+
+
+def test_pre_pr7_examples_leave_gate_flags_off():
+    """Non-multi-factor examples must NOT set any PR7 gate flag (so evaluators abstain)."""
+    for ex in eval_flow._EXAMPLES:
+        if ex.get("conflict_factors"):
+            continue  # the PR7 examples are allowed to set gates
+        exp = eval_flow._expectation(ex)
+        assert exp["expect_constraint_conflict_ack"] is False
+        assert exp["expect_feasibility_flag"] is False
+        assert exp["expect_tradeoff_explanation"] is False
+        assert exp["expect_dropped_regions"] == []
+
+
 def test_example_input_and_key_cover_both_shapes():
     """Single-message and threaded examples map to the right input payload + key."""
     single = {"message": "Find onsen in Gifu"}
@@ -553,6 +612,178 @@ def test_hotels_exist_fails_when_no_itinerary():
         outputs={"_itinerary": None}, reference_outputs=_trip_ref(["Gifu"], 1)
     )
     assert r["score"] == 0
+
+
+# -- multi-factor re-planning evaluators (V3 PR7 RED BASELINE) --
+# Pure-logic tests for the four new deterministic evaluators. Each gets a
+# fabricated GOOD reply (the behaviour PR7 will produce → PASS), the naive
+# template reply today's plan node produces (→ FAIL, the red baseline), and an
+# abstain case when the example does not carry the evaluator's gate flag.
+
+# A representative naive PR3c template reply — the exact prose shape build_reply
+# emits. It names every region and its onsen/hotels but contains NONE of the
+# multi-factor behaviour markers, so every PR7 evaluator must FAIL on it.
+_NAIVE_REPLY = (
+    "Here's a naive 3-night onsen itinerary — Gifu (1 night): Gero Onsen "
+    "(nearby hotels: Ryokan A); Nagano (1 night): Shibu Onsen "
+    "(no hotels found nearby); Shizuoka (1 night): Atami Onsen."
+)
+
+
+# -- constraint_conflict_acknowledged --
+def test_constraint_conflict_abstains_without_gate_flag():
+    r = eval_flow.constraint_conflict_acknowledged(
+        outputs={"reply": _NAIVE_REPLY}, reference_outputs=_trip_ref(["Gifu"], 3)
+    )
+    assert r["score"] is None
+
+
+def test_constraint_conflict_passes_on_acknowledging_reply():
+    good = {
+        "reply": (
+            "Three dispersed regions in 3 nights at a relaxed pace would be rushed, "
+            "so this is over-constrained — here's a tighter plan."
+        )
+    }
+    ref = {"expected_mode": "trip", "expect_constraint_conflict_ack": True}
+    assert eval_flow.constraint_conflict_acknowledged(outputs=good, reference_outputs=ref)["score"] == 1
+
+
+def test_constraint_conflict_fails_on_naive_reply():
+    """The red baseline: today's naive plan reply never acknowledges the conflict."""
+    ref = {"expected_mode": "trip", "expect_constraint_conflict_ack": True}
+    r = eval_flow.constraint_conflict_acknowledged(
+        outputs={"reply": _NAIVE_REPLY}, reference_outputs=ref
+    )
+    assert r["score"] == 0
+
+
+# -- no_infeasible_plan --
+def test_no_infeasible_plan_abstains_without_gate_flag():
+    r = eval_flow.no_infeasible_plan(
+        outputs={"reply": _NAIVE_REPLY}, reference_outputs=_trip_ref(["Gifu"], 3)
+    )
+    assert r["score"] is None
+
+
+def test_no_infeasible_plan_passes_when_feasibility_flagged():
+    good = {
+        "reply": (
+            "Okinawa and Gifu need a flight, which costs you a travel day — "
+            "I'd suggest two separate trips or reallocate the nights."
+        )
+    }
+    ref = {"expected_mode": "trip", "expect_feasibility_flag": True}
+    assert eval_flow.no_infeasible_plan(outputs=good, reference_outputs=ref)["score"] == 1
+
+
+def test_no_infeasible_plan_fails_on_naive_reply():
+    """The red baseline: the naive node plans Okinawa+Gifu without flagging a flight."""
+    ref = {"expected_mode": "trip", "expect_feasibility_flag": True}
+    r = eval_flow.no_infeasible_plan(outputs={"reply": _NAIVE_REPLY}, reference_outputs=ref)
+    assert r["score"] == 0
+
+
+# -- tradeoff_explained --
+def test_tradeoff_explained_abstains_without_gate_flag():
+    r = eval_flow.tradeoff_explained(
+        outputs={"reply": _NAIVE_REPLY}, reference_outputs=_trip_ref(["Gifu"], 3)
+    )
+    assert r["score"] is None
+
+
+def test_tradeoff_explained_passes_when_tradeoff_stated():
+    good = {
+        "reply": (
+            "I prioritised winter-accessible outdoor baths, so I'd swap the "
+            "high-elevation stop for a lower one rather than risk a snowed-in road."
+        )
+    }
+    ref = {"expected_mode": "trip", "expect_tradeoff_explanation": True}
+    assert eval_flow.tradeoff_explained(outputs=good, reference_outputs=ref)["score"] == 1
+
+
+def test_tradeoff_explained_fails_on_naive_reply():
+    """The red baseline: the naive reply makes and explains no tradeoff."""
+    ref = {"expected_mode": "trip", "expect_tradeoff_explanation": True}
+    r = eval_flow.tradeoff_explained(outputs={"reply": _NAIVE_REPLY}, reference_outputs=ref)
+    assert r["score"] == 0
+
+
+# -- dropped_region_reasoned --
+def test_dropped_region_abstains_without_expected_list():
+    r = eval_flow.dropped_region_reasoned(
+        outputs={"reply": _NAIVE_REPLY}, reference_outputs=_trip_ref(["Gifu"], 3)
+    )
+    assert r["score"] is None
+
+
+def test_dropped_region_passes_when_a_droppable_region_reasoned():
+    good = {
+        "reply": (
+            "To keep the pace relaxed I'd drop Shizuoka and focus on Gifu and "
+            "Nagano, which are closer together."
+        )
+    }
+    ref = {
+        "expected_mode": "trip",
+        "expect_dropped_regions": ["Nagano", "Shizuoka"],
+    }
+    assert eval_flow.dropped_region_reasoned(outputs=good, reference_outputs=ref)["score"] == 1
+
+
+def test_dropped_region_fails_on_naive_reply_naming_all_regions():
+    """Red baseline: the naive reply names every region but with NO drop context.
+
+    Guards the both-conditions rule — naming a region is not enough without a
+    drop/merge marker, so the naive itinerary (which lists all three regions)
+    must still FAIL.
+    """
+    ref = {
+        "expected_mode": "trip",
+        "expect_dropped_regions": ["Nagano", "Shizuoka"],
+    }
+    r = eval_flow.dropped_region_reasoned(outputs={"reply": _NAIVE_REPLY}, reference_outputs=ref)
+    assert r["score"] == 0
+
+
+def test_dropped_region_fails_when_drop_marker_but_wrong_region():
+    """A drop marker that names only a NON-droppable region does not pass."""
+    reply = {"reply": "I'd drop Hokkaido entirely and keep the rest."}
+    ref = {
+        "expected_mode": "trip",
+        "expect_dropped_regions": ["Nagano", "Shizuoka"],
+    }
+    r = eval_flow.dropped_region_reasoned(outputs=reply, reference_outputs=ref)
+    assert r["score"] == 0
+
+
+# -- the naive baseline fails ALL four new evaluators (the red baseline in one shot) --
+def test_naive_reply_fails_every_multifactor_evaluator():
+    """One assertion that today's naive plan reply reds every PR7 evaluator."""
+    ref = {
+        "expected_mode": "trip",
+        "expect_constraint_conflict_ack": True,
+        "expect_feasibility_flag": True,
+        "expect_tradeoff_explanation": True,
+        "expect_dropped_regions": ["Nagano", "Shizuoka"],
+    }
+    out = {"reply": _NAIVE_REPLY}
+    assert eval_flow.constraint_conflict_acknowledged(outputs=out, reference_outputs=ref)["score"] == 0
+    assert eval_flow.no_infeasible_plan(outputs=out, reference_outputs=ref)["score"] == 0
+    assert eval_flow.tradeoff_explained(outputs=out, reference_outputs=ref)["score"] == 0
+    assert eval_flow.dropped_region_reasoned(outputs=out, reference_outputs=ref)["score"] == 0
+
+
+# -- the four new evaluators abstain on non-trip / pre-PR7 examples (no side effects) --
+def test_multifactor_evaluators_abstain_on_search_example():
+    """The PR7 evaluators must not touch the existing search/recommend/ask rows."""
+    out = {"reply": "Found 2 onsen in Okinawa.", "onsens": []}
+    ref = {"expected_mode": "search"}  # no expect_* gate flags
+    assert eval_flow.constraint_conflict_acknowledged(outputs=out, reference_outputs=ref)["score"] is None
+    assert eval_flow.no_infeasible_plan(outputs=out, reference_outputs=ref)["score"] is None
+    assert eval_flow.tradeoff_explained(outputs=out, reference_outputs=ref)["score"] is None
+    assert eval_flow.dropped_region_reasoned(outputs=out, reference_outputs=ref)["score"] is None
 
 
 # -- trip cost/latency budget bucket --
