@@ -288,6 +288,113 @@ _EXAMPLES: list[dict] = [
         "expected_nights": 3,
         "no_data_regions": [],
     },
+    # --- V3 PR7 RED BASELINE: multi-factor re-planning (2026-07-13) -----------
+    # The four examples below capture "multi-factor re-planning" scenarios whose
+    # conflict only SURFACES after routing/feasibility/weather/ratings signals the
+    # naive PR3c plan node does not have. They are an EVAL-FIRST RED BASELINE for
+    # PR7 (routing + re-planning): all required slots are valid and every region is
+    # in the ingested set (Gifu/Nagano/Shizuoka/Aichi/Okinawa), so the flow REACHES
+    # today's plan node and produces a naive itinerary. The EXISTING evaluators
+    # (slot_filling_completeness / tool_selection_presence / plan_validity /
+    # hotels_exist / cost_budget / latency) therefore PASS — the plan is well-formed,
+    # grounded, and adds up. What FAILS (by design) are the four NEW multi-factor
+    # evaluators (constraint_conflict_acknowledged / no_infeasible_plan /
+    # tradeoff_explained / dropped_region_reasoned): the naive node crams the trip
+    # silently and never acknowledges the conflict, flags infeasibility, explains a
+    # tradeoff, or reasons about a dropped region. PR7 turning those four GREEN on
+    # these examples is its definition of done. The `expect_*` / `conflict_factors`
+    # keys gate the new evaluators (they ABSTAIN when absent, so the existing 12
+    # examples are untouched). See _expectation() + the PR7 evaluator block below.
+    {
+        # ① Over-constrained: pace × nights × spread. Three DISPERSED regions can't
+        # be covered at a relaxed pace in 3 nights — the conflict only surfaces once
+        # routing shows the drive times. Expected (PR7): keep the stated relaxed
+        # pace, drop/merge the outlier region rather than silently cramming, and
+        # explain the tradeoff. Timing ("this autumn") is supplied so all required
+        # slots complete and the flow reaches the plan node.
+        "messages": [
+            "Plan a relaxed 3-night onsen trip across Gifu, Nagano and Shizuoka "
+            "this autumn, for two."
+        ],
+        "expected_mode": "trip",
+        "prefecture": None,
+        "has_data": True,
+        "wants_hotels": False,
+        "regions": ["Gifu", "Nagano", "Shizuoka"],
+        "expected_nights": 3,
+        "no_data_regions": [],
+        "conflict_factors": ["pace_x_nights_x_spread"],
+        "expect_constraint_conflict_ack": True,
+        "expect_tradeoff_explanation": True,
+        # PR7 may drop/merge either dispersed outlier; PASS if EITHER is named in a
+        # drop/merge context (coarsest honest level — see dropped_region_reasoned).
+        "expect_dropped_regions": ["Nagano", "Shizuoka"],
+    },
+    {
+        # ② Geographic infeasibility: Okinawa ↔ Gifu needs a flight (a lost travel
+        # day) and may not even route over water. Slots are complete and both
+        # regions are valid/in-data, so the naive node happily emits a
+        # silently-broken 2+2 itinerary. Expected (PR7): FLAG the feasibility problem
+        # instead of emitting the broken plan, and offer a sensible reshape (split
+        # trips / reallocate nights).
+        "messages": [
+            "Plan a packed 4-night onsen trip this spring — 2 nights in Okinawa "
+            "and 2 nights in Gifu."
+        ],
+        "expected_mode": "trip",
+        "prefecture": None,
+        "has_data": True,
+        "wants_hotels": False,
+        "regions": ["Okinawa", "Gifu"],
+        "expected_nights": 4,
+        "no_data_regions": [],
+        "conflict_factors": ["geographic_infeasibility"],
+        "expect_constraint_conflict_ack": True,
+        "expect_feasibility_flag": True,
+    },
+    {
+        # ③ Weather × outdoor pref × season: 3 nights in January across Nagano and
+        # Gifu, loving outdoor rotenburo. The conflict surfaces only after a weather
+        # signal — some high-elevation stops are snowed-in / road-risk, others are
+        # ideal yukimi (snow-view) rotenburo. Expected (PR7): select winter-accessible
+        # outdoor stops, drop the snow-risk one, and reorder for a weather buffer —
+        # a stop-level tradeoff (so no expect_dropped_regions; that's region-level).
+        "messages": [
+            "Plan a 3-night onsen trip in January across Nagano and Gifu — "
+            "we love outdoor rotenburo."
+        ],
+        "expected_mode": "trip",
+        "prefecture": None,
+        "has_data": True,
+        "wants_hotels": False,
+        "regions": ["Nagano", "Gifu"],
+        "expected_nights": 3,
+        "no_data_regions": [],
+        "conflict_factors": ["weather_x_outdoor_x_season"],
+        "expect_constraint_conflict_ack": True,
+        "expect_tradeoff_explanation": True,
+    },
+    {
+        # ④ Budget × ratings × party: 3 nights in Gifu and Aichi, family of 4, mid
+        # budget, wanting highly-rated onsen. The conflict surfaces only after a
+        # ratings + hotel lookup — the top-rated onsen pair only with pricey ryokan
+        # or lack family-of-4 rooms within a mid budget. Expected (PR7): trade rating
+        # for fit where it costs least, and STATE what it traded and why.
+        "messages": [
+            "Plan a 3-night onsen trip this autumn in Gifu and Aichi for a family "
+            "of four, mid budget, and we want highly-rated onsen."
+        ],
+        "expected_mode": "trip",
+        "prefecture": None,
+        "has_data": True,
+        "wants_hotels": False,
+        "regions": ["Gifu", "Aichi"],
+        "expected_nights": 3,
+        "no_data_regions": [],
+        "conflict_factors": ["budget_x_ratings_x_party"],
+        "expect_constraint_conflict_ack": True,
+        "expect_tradeoff_explanation": True,
+    },
 ]
 
 
@@ -364,6 +471,16 @@ def _expectation(ex: dict) -> dict:
         "regions": ex.get("regions", []),
         "expected_nights": ex.get("expected_nights"),
         "no_data_regions": ex.get("no_data_regions", []),
+        # Optional (trip-mode, V3 PR7 RED BASELINE): multi-factor re-planning
+        # expectations. These GATE the four PR7 evaluators below — each abstains
+        # unless its flag is set — so the pre-PR7 examples never see them. Default
+        # off/empty so every non-multi-factor example (search/recommend/ask/no-data
+        # and the three pre-PR7 trip threads) leaves them absent and unaffected.
+        "conflict_factors": ex.get("conflict_factors", []),
+        "expect_constraint_conflict_ack": ex.get("expect_constraint_conflict_ack", False),
+        "expect_feasibility_flag": ex.get("expect_feasibility_flag", False),
+        "expect_tradeoff_explanation": ex.get("expect_tradeoff_explanation", False),
+        "expect_dropped_regions": ex.get("expect_dropped_regions", []),
     }
 
 
@@ -1118,6 +1235,177 @@ def hotels_exist(outputs: dict, reference_outputs: dict) -> dict:
     }
 
 
+# --- Trip multi-factor re-planning evaluators (V3 PR7 RED BASELINE) -----------
+# These four DETERMINISTIC evaluators express the multi-factor expectations the
+# current trip evaluators cannot: a plan that acknowledges an over-constraint,
+# flags a geographic infeasibility instead of silently emitting a broken
+# itinerary, explains a tradeoff, and reasons about a dropped/merged region.
+#
+# THEY ARE A RED BASELINE FOR PR7. Against today's naive PR3c plan node they FAIL
+# BY DESIGN: the naive node crams the trip into a template reply with NO conflict
+# acknowledgement, feasibility flag, tradeoff, or drop reasoning — so each returns
+# score=0 on its multi-factor example. PR7 (routing + re-planning) turning these
+# GREEN is its definition of done. NOTE: they ARE in the active EVALUATORS gate
+# (unlike the parked LLM judges), so a live experiment / the CI eval gate will show
+# these as failing pairs until PR7 lands — that visible red IS the baseline.
+#
+# Detection is intentionally COARSE: each scans the deterministic ``reply`` prose
+# for a vocabulary of behaviour markers. A naive template itinerary contains NONE
+# of them, so the FAIL is genuine (not tautological). # PR7: tighten from prose
+# marker-matching to inspecting a structured state signal (e.g. a per-leg travel
+# time / a `constraints` or `feasibility` field the plan node PR7 will add) once
+# those fields exist. Each evaluator ABSTAINS (score=None) unless its per-example
+# gate flag is set in reference_outputs, so the pre-PR7 examples are untouched.
+
+# Behaviour-marker vocabularies. Chosen to be indicative of the target behaviour
+# AND absent from the naive template reply ("Here's a naive N-night onsen
+# itinerary — Region (X nights): Onsen (nearby hotels: ...); ... No onsen found
+# for X."), so their absence is a real FAIL rather than a rigged one.
+_CONFLICT_ACK_MARKERS = (
+    "won't be able", "will not be able", "won't fit", "can't cover",
+    "cannot cover", "can't realistically", "cannot realistically",
+    "not enough time", "too much ground", "spread too thin", "would be rushed",
+    "would feel rushed", "would be tight", "over-constrained", "overconstrained",
+    "unrealistic", "not feasible", "isn't feasible", "not realistic",
+    "isn't realistic", "difficult to cover", "hard to cover", "trade-off",
+    "tradeoff", "too far apart", "too dispersed",
+)
+_FEASIBILITY_MARKERS = (
+    "flight", "fly ", "flying", "travel day", "lost day", "lose a day",
+    "losing a day", "over water", "not reachable", "can't drive", "cannot drive",
+    "can't route", "won't route", "split trip", "split it into",
+    "separate trips", "two separate", "reallocate", "reshape", "requires a plane",
+)
+_TRADEOFF_MARKERS = (
+    "in exchange", "at the cost", "at the expense", "rather than", "instead of",
+    "prioritis", "prioritiz", "traded", "trade ", "sacrific", "swap ",
+    "to stay within", "to keep within", "so i'd", "so i would", "so we'd",
+    "so we would", "which means", "in return",
+)
+_DROP_MARKERS = (
+    "drop", "dropping", "merge", "merging", "focus on", "focus just on",
+    "leave out", "leaving out", "skip", "skipping", "remove", "exclude",
+    "narrow to", "narrow down", "cut ",
+)
+
+
+def _reply_lower(outputs: dict) -> str:
+    """The response reply text lowercased — the surface the markers scan."""
+    return (outputs.get("reply") or "").lower()
+
+
+def _markers_present(text: str, markers: tuple[str, ...]) -> list[str]:
+    """Return the subset of ``markers`` that appear as substrings in ``text``."""
+    return [m for m in markers if m in text]
+
+
+def constraint_conflict_acknowledged(outputs: dict, reference_outputs: dict) -> dict:
+    """Score 1 iff the reply ACKNOWLEDGES the over-constraint (trip PR7 target).
+
+    Applies only to examples flagged ``expect_constraint_conflict_ack`` (the four
+    multi-factor examples); ABSTAINS (None) otherwise. The naive plan node crams
+    the trip silently and never signals the conflict, so this FAILS on today's
+    output BY DESIGN — PR7 makes it green.
+    """
+    if not reference_outputs.get("expect_constraint_conflict_ack"):
+        return {"key": "constraint_conflict_acknowledged", "score": None, "comment": "n/a"}
+    hits = _markers_present(_reply_lower(outputs), _CONFLICT_ACK_MARKERS)
+    if hits:
+        return {
+            "key": "constraint_conflict_acknowledged",
+            "score": 1,
+            "comment": f"acknowledged the constraint conflict: {hits}",
+        }
+    return {
+        "key": "constraint_conflict_acknowledged",
+        "score": 0,
+        "comment": "reply crams silently — no over-constraint acknowledgement (PR7 target)",
+    }
+
+
+def no_infeasible_plan(outputs: dict, reference_outputs: dict) -> dict:
+    """Score 1 iff a geographically-infeasible trip is FLAGGED, not silently planned.
+
+    Applies only to examples flagged ``expect_feasibility_flag`` (the Okinawa↔Gifu
+    example); ABSTAINS (None) otherwise. Score 1 requires the reply to flag the
+    feasibility problem (flight / lost travel day / split trips / reallocate). The
+    naive node emits a silently-broken 2+2 itinerary with no such flag, so this
+    FAILS BY DESIGN until PR7 adds routing/feasibility.
+    """
+    if not reference_outputs.get("expect_feasibility_flag"):
+        return {"key": "no_infeasible_plan", "score": None, "comment": "n/a"}
+    hits = _markers_present(_reply_lower(outputs), _FEASIBILITY_MARKERS)
+    if hits:
+        return {
+            "key": "no_infeasible_plan",
+            "score": 1,
+            "comment": f"flagged the feasibility problem: {hits}",
+        }
+    return {
+        "key": "no_infeasible_plan",
+        "score": 0,
+        "comment": "emitted an itinerary without flagging the geographic infeasibility (PR7 target)",
+    }
+
+
+def tradeoff_explained(outputs: dict, reference_outputs: dict) -> dict:
+    """Score 1 iff the reply EXPLAINS the tradeoff it made (trip PR7 target).
+
+    Applies only to examples flagged ``expect_tradeoff_explanation``; ABSTAINS
+    (None) otherwise. A real re-plan states what it gave up and why (e.g. traded a
+    rating for a family-fit room, swapped a snowed-in stop for an accessible one).
+    The naive node makes no tradeoff and explains none, so this FAILS BY DESIGN
+    until PR7.
+    """
+    if not reference_outputs.get("expect_tradeoff_explanation"):
+        return {"key": "tradeoff_explained", "score": None, "comment": "n/a"}
+    hits = _markers_present(_reply_lower(outputs), _TRADEOFF_MARKERS)
+    if hits:
+        return {
+            "key": "tradeoff_explained",
+            "score": 1,
+            "comment": f"explained a tradeoff: {hits}",
+        }
+    return {
+        "key": "tradeoff_explained",
+        "score": 0,
+        "comment": "no tradeoff explanation in reply (PR7 target)",
+    }
+
+
+def dropped_region_reasoned(outputs: dict, reference_outputs: dict) -> dict:
+    """Score 1 iff the reply drops/merges a region AND names one it was allowed to drop.
+
+    Applies only to examples carrying a non-empty ``expect_dropped_regions`` list
+    (the over-constrained example); ABSTAINS (None) otherwise. Requires BOTH a
+    drop/merge marker AND at least one of the droppable regions named in the reply —
+    the naive node names every requested region but with NO drop context, so this
+    FAILS BY DESIGN until PR7 re-plans by dropping an outlier. ``expect_dropped_regions``
+    lists every region PR7 may legitimately drop (either dispersed outlier), so the
+    check does not over-constrain WHICH region is dropped.
+    """
+    expected = reference_outputs.get("expect_dropped_regions") or []
+    if not expected:
+        return {"key": "dropped_region_reasoned", "score": None, "comment": "n/a"}
+    text = _reply_lower(outputs)
+    drop_hits = _markers_present(text, _DROP_MARKERS)
+    named = [r for r in expected if r.lower() in text]
+    if drop_hits and named:
+        return {
+            "key": "dropped_region_reasoned",
+            "score": 1,
+            "comment": f"reasoned about dropping {named} ({drop_hits})",
+        }
+    return {
+        "key": "dropped_region_reasoned",
+        "score": 0,
+        "comment": (
+            f"no dropped-region reasoning (drop_markers={drop_hits}, "
+            f"named={named}) — naive plan keeps all regions (PR7 target)"
+        ),
+    }
+
+
 def cost_budget(outputs: dict, reference_outputs: dict) -> dict:
     """Score 1 iff the run's measured cost is within the per-mode budget."""
     mode = reference_outputs.get("expected_mode")
@@ -1158,6 +1446,13 @@ EVALUATORS = [
     tool_selection_presence,
     plan_validity,
     hotels_exist,  # V3 PR5
+    # V3 PR7 RED BASELINE — multi-factor re-planning. Deterministic; ABSTAIN on
+    # every example except the four multi-factor trip examples. Expected to FAIL
+    # against today's naive plan node (that is the baseline); PR7 turns them green.
+    constraint_conflict_acknowledged,
+    no_infeasible_plan,
+    tradeoff_explained,
+    dropped_region_reasoned,
     cost_budget,
     latency,
     # proscons_grounding,   # PARKED — see note above
@@ -1177,6 +1472,10 @@ _COLUMN_LABELS: dict[str, tuple[str, int]] = {
     "tool_selection_presence": ("tools", 6),
     "plan_validity": ("plan", 6),
     "hotels_exist": ("hotels", 6),
+    "constraint_conflict_acknowledged": ("conflict", 8),
+    "no_infeasible_plan": ("feasible", 8),
+    "tradeoff_explained": ("tradeoff", 8),
+    "dropped_region_reasoned": ("drop-rgn", 8),
     "cost_budget": ("cost", 6),
     "latency": ("latency", 7),
 }
