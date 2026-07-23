@@ -16,7 +16,10 @@ re-planning-readiness properties this module honours:
   4. Checkpointer wired (``MemorySaver`` local; ``PostgresSaver`` deferred behind
      ``trip_checkpointer_backend`` until PR1's Railway Postgres lands).
 
-Shape: ``START → gather → {elicit | plan} → END``. Each turn the ``gather`` node
+Shape (PR7): ``START → gather → {elicit → END | plan → check_constraints →
+{plan (re-plan back-edge) | END}}``. The ``check_constraints`` node + conditional
+back-edge hang off ``plan`` per property #3 WITHOUT reshaping the rest of the graph.
+Each turn the ``gather`` node
 extracts slots from the message and merges them into the running ``TripSlots``; a
 conditional edge then routes to ``elicit`` (ask ONE follow-up, no tool/LLM calls)
 when a required slot is missing OR when a named region is unknown/non-Japan
@@ -36,6 +39,7 @@ import logging
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, START, StateGraph
 
+from agent.trip.constraints import augment_reply, detect_conflicts
 from agent.trip.itinerary import assemble_trip
 from agent.trip.slots import (
     TripSlots,
@@ -109,32 +113,130 @@ def _elicit_node(state: TripState) -> dict:
 
 
 def _plan_node(state: TripState) -> dict:
-    """The discrete ``plan`` node — PR3c naive itinerary builder.
+    """The discrete ``plan`` node — naive itinerary builder (PR3c) + re-plan target (PR7).
 
-    Reached only when every required slot is present. Retrieves onsen candidates
-    per region, assembles a naive itinerary DETERMINISTICALLY in Python — no LLM
-    call here — and (PR5) looks up nearby hotels per selected onsen stop (fail-soft),
-    mirroring the ``search`` mode's no-fabrication discipline. Writes ``candidates`` +
-    ``itinerary`` back into working state and surfaces a template ``reply``. Regions
-    with no ingested data are recorded explicitly ("no onsen found for X"), and stops
-    with no nearby lodging say "no hotels found nearby" — never invented.
+    Reached when every required slot is present, AND re-entered via the
+    ``check_constraints`` back-edge (PR7) when a corrective re-plan is needed.
+    Retrieves onsen candidates per region, assembles a naive itinerary
+    DETERMINISTICALLY in Python — no LLM call here — looks up nearby hotels per
+    selected onsen stop (PR5, fail-soft), and computes haversine region centroids +
+    a nearest-neighbour stop route (PR7). Writes ``candidates`` + ``itinerary`` back
+    into working state and surfaces the base template ``reply`` (``check_constraints``
+    may then prefix it with conflict prose). Regions with no ingested data are
+    recorded explicitly ("no onsen found for X"); stops with no nearby lodging say
+    "no hotels found nearby" — never invented.
+
+    PR7 re-plan: any region in ``dropped_regions`` (set by ``check_constraints`` on a
+    prior pass) is EXCLUDED from this pass's effective regions, so the second pass
+    builds a tighter itinerary over the kept regions. On the first pass
+    ``dropped_regions`` is empty, so retrieval still covers every requested region
+    (the tool-selection signal the eval reads).
 
     The node's identity/name is load-bearing (re-planning-readiness property #3):
-    PR7 hangs a ``check_constraints`` node + conditional back-edge INTO this same
-    node without reshaping. No routing, Places, or re-planning here (PR6/7).
+    the ``check_constraints`` node + conditional back-edge hang off it WITHOUT
+    reshaping the graph.
 
     Sync by design: ``query_onsen_structured`` (Chroma) and ``search_hotels``
     (Rakuten) are blocking calls, so LangGraph runs this node in its executor under
     ``ainvoke`` — the event loop is not blocked (same trade-off the workflow makes).
     """
-    slots = state.get("slots") or {}
-    logger.info("trip.plan node | slots complete | regions=%s", slots.get("regions"))
-    result = assemble_trip(slots)
+    slots = dict(state.get("slots") or {})
+    dropped = {d["region"] for d in (state.get("dropped_regions") or [])}
+    requested = slots.get("regions", [])
+    effective = [r for r in requested if r not in dropped]
+    eff_slots = {**slots, "regions": effective}
+    logger.info(
+        "trip.plan node | requested=%s | dropped=%s | effective=%s",
+        requested, sorted(dropped), effective,
+    )
+    result = assemble_trip(eff_slots)
     return {
         "candidates": result["candidates"],
         "itinerary": result["itinerary"],
         "reply": result["reply"],
     }
+
+
+def _check_constraints_node(state: TripState) -> dict:
+    """PR7 re-planning node — detect deterministic conflicts + explain the plan.
+
+    Runs AFTER ``plan`` on the just-assembled itinerary. Applies two honest,
+    haversine-based rules (see ``agent/trip/constraints.py``) over the itinerary's
+    region centroids — NO LLM call, NO Google billing:
+
+      * over-constrained (≥3 dispersed regions the nights can't absorb) → record the
+        farthest-outlier region in ``dropped_regions``, bump ``replan_count``, and
+        signal the ``plan`` back-edge (``pending_replan=True``) so the plan is rebuilt
+        without it;
+      * geographic infeasibility (two regions too far apart for one land trip) →
+        set the advisory ``infeasible`` flag (never a re-plan — can't be fixed by
+        dropping) so the reply flags it + suggests a reshape.
+
+    On the FINAL pass (no further re-plan) it prefixes the base itinerary reply with
+    truthful conflict prose naming the conflict, the tradeoff, and any dropped region
+    + reason. When no conflict is detected it leaves the reply unchanged, so a
+    single-region / compact trip is byte-identical to the pre-PR7 output.
+    """
+    slots = state.get("slots") or {}
+    itinerary = state.get("itinerary") or {}
+    dropped = list(state.get("dropped_regions") or [])
+    replan_count = state.get("replan_count", 0)
+    requested = slots.get("regions", [])
+    centroids = itinerary.get("region_centroids") or {}
+
+    report = detect_conflicts(slots, centroids, replan_count)
+
+    # Infeasibility can be detected on an EARLIER pass than the one that finalises
+    # the reply (a trip that is BOTH infeasible and over-constrained flags it on
+    # pass 1, then drops the outlier and finalises on pass 2 — by which point the
+    # far region may be gone and the fresh report no longer sees it). Persist the
+    # flag across passes so the final reply still notes it: OR this pass's finding
+    # with anything already recorded on state.
+    infeasible = report.infeasible or state.get("infeasible")
+
+    if report.should_replan and report.drop_region:
+        new_dropped = dropped + [
+            {"region": report.drop_region, "reason": report.drop_reason}
+        ]
+        logger.info(
+            "trip.check_constraints | RE-PLAN dropping=%s | replan_count %d→%d",
+            report.drop_region, replan_count, replan_count + 1,
+        )
+        return {
+            "dropped_regions": new_dropped,
+            "replan_count": replan_count + 1,
+            "pending_replan": True,
+            # Carry the flag forward so a co-occurring infeasibility survives the
+            # re-plan and reaches the final reply.
+            "infeasible": infeasible,
+        }
+
+    # Final pass: augment the reply with any conflict prose, record the flag.
+    dropped_set = {d["region"] for d in dropped}
+    kept = [r for r in requested if r not in dropped_set]
+    base_reply = state.get("reply") or ""
+    final_reply = augment_reply(
+        base_reply, slots, requested, kept, dropped, infeasible
+    )
+    logger.info(
+        "trip.check_constraints | final | dropped=%d | infeasible=%s | over=%s",
+        len(dropped), bool(infeasible), report.over_constrained,
+    )
+    return {
+        "reply": final_reply,
+        "infeasible": infeasible,
+        "pending_replan": False,
+    }
+
+
+def _route_after_check(state: TripState) -> str:
+    """Conditional edge off ``check_constraints``: back to ``plan`` or end the turn.
+
+    Takes the back-edge into ``plan`` when a corrective re-plan was requested
+    (``pending_replan``), else ends. The re-plan loop is bounded by ``replan_count``
+    in ``detect_conflicts`` (``_MAX_REPLANS``), so this can never spin.
+    """
+    return "plan" if state.get("pending_replan") else "end"
 
 
 def _build_checkpointer():
@@ -162,22 +264,33 @@ def _build_checkpointer():
 def build_trip_graph():
     """Build and compile the trip-planner ``StateGraph``.
 
-    Shape: ``START → gather → {elicit | plan} → END``. ``gather`` extracts + merges
-    slots; a conditional edge routes to ``elicit`` (missing required slot) or the
-    discrete ``plan`` node (all required present). Compiled WITH a checkpointer
-    so ``TripSlots`` is retained per ``thread_id`` across ``ainvoke`` calls — the
-    multi-turn elicit-loop. PR7 extends the ``plan`` node without reshaping this.
+    Shape: ``START → gather → {elicit → END | plan → check_constraints →
+    {plan | END}}``. ``gather`` extracts + merges slots; a conditional edge routes to
+    ``elicit`` (missing required slot) or the discrete ``plan`` node (all required
+    present). ``plan → check_constraints`` then applies the PR7 haversine conflict
+    rules, with a conditional back-edge into ``plan`` for a bounded corrective
+    re-plan. Compiled WITH a checkpointer so ``TripSlots`` (+ the PR7 re-plan fields)
+    are retained per ``thread_id`` across ``ainvoke`` calls — the multi-turn
+    elicit-loop.
     """
     builder = StateGraph(TripState)
     builder.add_node("gather", _gather_node)
     builder.add_node("elicit", _elicit_node)
     builder.add_node("plan", _plan_node)
+    builder.add_node("check_constraints", _check_constraints_node)
     builder.add_edge(START, "gather")
     builder.add_conditional_edges(
         "gather", _route_after_gather, {"elicit": "elicit", "plan": "plan"}
     )
     builder.add_edge("elicit", END)
-    builder.add_edge("plan", END)
+    # PR7: plan → check_constraints, with a conditional back-edge into plan for a
+    # bounded corrective re-plan (drop the farthest outlier). Additive: the plan
+    # node is unchanged in identity; only its outgoing edge moved from END to the
+    # new node (re-planning-readiness property #3).
+    builder.add_edge("plan", "check_constraints")
+    builder.add_conditional_edges(
+        "check_constraints", _route_after_check, {"plan": "plan", "end": END}
+    )
     return builder.compile(checkpointer=_build_checkpointer())
 
 

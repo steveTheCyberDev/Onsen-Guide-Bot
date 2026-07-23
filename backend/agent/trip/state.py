@@ -54,3 +54,22 @@ class TripState(TypedDict, total=False):
     # PR3c fills these from query_onsen_structured + itinerary assembly.
     candidates: list[Any]
     itinerary: dict[str, Any] | None
+
+    # --- PR7 re-planning fields (haversine routing + constraints) -------------
+    # Added as new FIELDS (not a new state concept), per re-planning-readiness
+    # property #2: the check_constraints node reads/writes these and the plan node
+    # consumes ``dropped_regions``. All JSON-serialisable for the future PostgresSaver.
+    #
+    # Regions removed by the over-constrained corrective rule, each
+    # ``{region, reason}``. The plan node excludes these on a re-plan pass; the reply
+    # explains them. Empty on a normal (non-re-planned) trip.
+    dropped_regions: list[dict[str, Any]]
+    # Advisory geographic-infeasibility flag {regions: [a, b], leg_km: float} or None
+    # — set when two regions are too far apart to be one land trip. Never triggers a
+    # re-plan (can't be fixed by dropping); only annotates the reply.
+    infeasible: dict[str, Any] | None
+    # How many corrective re-plans have run — bounds the check_constraints back-edge.
+    replan_count: int
+    # Transient router signal: True when check_constraints wants the plan back-edge.
+    # Read by the conditional edge, reset to False on the final (non-re-plan) pass.
+    pending_replan: bool
