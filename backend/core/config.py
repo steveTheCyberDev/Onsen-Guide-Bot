@@ -95,6 +95,25 @@ class Settings(BaseSettings):
     #                (PR1) exists; selecting it today raises NotImplementedError.
     # Override via env var TRIP_CHECKPOINTER_BACKEND. Default MUST stay "memory".
     trip_checkpointer_backend: str = "memory"
+    # --- Trip-planner routing thresholds (V3 PR7, deterministic haversine) ------
+    # Both are STRAIGHT-LINE (haversine) kilometre thresholds over the ingest-time
+    # onsen coordinates — no Google/Distance-Matrix billing (see
+    # services/routing/routing_service.py). Tunable heuristics, so surfaced as
+    # settings (env-overridable) rather than hard-coded, per the local/prod split.
+    #
+    # Above this inter-region distance a trip is treated as geographically
+    # INFEASIBLE by land (needs a flight / crosses water) and the plan node flags it
+    # + suggests a reshape instead of silently emitting a broken itinerary. 500 km
+    # cleanly separates the island case (Okinawa↔mainland ≈ 1,300 km) from every
+    # adjacent-Honshu pair in the ingested data (all < ~200 km). Override via
+    # TRIP_INFEASIBLE_LEG_KM.
+    trip_infeasible_leg_km: float = 500.0
+    # A trip counts as geographically DISPERSED (a factor in the over-constrained
+    # check) when its largest inter-region hop is at least this far. Combined with
+    # "≥3 regions AND nights ≤ regions" so a compact 3-region cluster is NOT flagged;
+    # only genuinely spread-out regions trigger dropping the farthest outlier.
+    # Override via TRIP_DISPERSED_LEG_KM.
+    trip_dispersed_leg_km: float = 100.0
     # Top-k KB chunks retrieved for an ask answer. Override via ASK_TOP_K.
     ask_top_k: int = 4
     # DISTANCE ceiling for KB chunks (Chroma returns distance, lower = closer).

@@ -43,6 +43,11 @@ import logging
 from agent.schemas import HotelResult, OnsenResult
 from services.rakuten.rakuten_service import search_hotels
 from services.retrieval.retrieval_service import query_onsen_structured
+from services.routing.routing_service import (
+    centroid,
+    order_nearest_neighbour,
+    route_legs as _routing_legs,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -120,6 +125,51 @@ def retrieve_candidates(slots: dict) -> dict[str, list[dict]]:
     return by_region
 
 
+def region_centroids(candidates: dict[str, list[dict]]) -> dict[str, list[float]]:
+    """Compute each region's centroid ``[lat, lng]`` from its candidate coordinates.
+
+    The deterministic haversine routing/constraint layer (PR7) needs a single point
+    per region to measure inter-region separation. We take the mean of the region's
+    retrieved onsen coordinates (records without coords are skipped). A region with
+    no geocoded candidates maps to no entry (it can't participate in distance rules).
+    Stored as plain ``[lat, lng]`` lists so the itinerary stays JSON-serialisable for
+    the checkpointer.
+    """
+    out: dict[str, list[float]] = {}
+    for region, records in candidates.items():
+        points = [
+            (r["lat"], r["lng"])
+            for r in records
+            if r.get("lat") is not None and r.get("lng") is not None
+        ]
+        c = centroid(points)
+        if c is not None:
+            out[region] = [c[0], c[1]]
+    return out
+
+
+def build_route_legs(selected: list[dict]) -> list[dict]:
+    """Order the selected onsen stops nearest-neighbour and return their legs.
+
+    A tiny deterministic TSP-ish pass (:func:`order_nearest_neighbour`) over the
+    stops' ingest-time coordinates produces sensible legs (``{from, to,
+    distance_km}``) instead of the raw retrieval order. Stops without coordinates are
+    skipped (they can't be routed). Returns ``[]`` when fewer than two stops have
+    coords. Names must be unique enough to label a leg; onsen names serve here.
+    """
+    stops = [
+        (o.get("name", ""), o["lat"], o["lng"])
+        for o in selected
+        if o.get("lat") is not None and o.get("lng") is not None
+    ]
+    if len(stops) < 2:
+        return []
+    by_name = {s[0]: s for s in stops}
+    ordered_labels = order_nearest_neighbour(stops)
+    ordered = [by_name[label] for label in ordered_labels]
+    return _routing_legs(ordered)
+
+
 def build_itinerary(slots: dict, candidates: dict[str, list[dict]]) -> dict:
     """Assemble a naive itinerary deterministically (no LLM).
 
@@ -140,6 +190,10 @@ def build_itinerary(slots: dict, candidates: dict[str, list[dict]]) -> dict:
             ``{region, nights, no_data, onsens: [record, ...]}`` in request order.
           - ``selected_onsens``: the flat list of chosen onsen records, in
             itinerary order — the source for ``AgentResponse.onsens``.
+          - ``region_centroids``: ``{region: [lat, lng]}`` mean coordinates per
+            region (PR7 routing; regions without coords omitted).
+          - ``route_legs``: nearest-neighbour-ordered legs between the selected
+            stops (``[{from, to, distance_km}, ...]``; PR7 routing).
     """
     regions = slots.get("regions", [])
     nights = slots.get("nights") or 0
@@ -166,7 +220,16 @@ def build_itinerary(slots: dict, candidates: dict[str, list[dict]]) -> dict:
         )
         selected.extend(picked)
 
-    return {"nights": nights, "regions": legs, "selected_onsens": selected}
+    return {
+        "nights": nights,
+        "regions": legs,
+        "selected_onsens": selected,
+        # PR7 routing signals (deterministic haversine over ingest-time coords):
+        # region_centroids feeds the constraint rules; route_legs is the NN-ordered
+        # stop route. Both plain lists/dicts so the itinerary stays checkpointer-safe.
+        "region_centroids": region_centroids(candidates),
+        "route_legs": build_route_legs(selected),
+    }
 
 
 def _to_hotel(h: dict) -> HotelResult:
