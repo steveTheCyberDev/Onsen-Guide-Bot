@@ -1,0 +1,153 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Onsen Guide Bot — Security Scanning (Phase 1: CI hygiene)
+#
+# Implements docs/security-red-team-plan.md §3 Phase 1: cheap, high-coverage
+# scanning that needs no repo secrets. Kept in a SEPARATE workflow file from
+# ci.yml so the two concerns (functional correctness vs. security hygiene)
+# stay independently readable and independently editable.
+#
+# Jobs defined here:
+#   secret-scan     — gitleaks over the full git history on push/PR. This is
+#                     the ONE hard/blocking gate in this file: if it finds a
+#                     leaked credential the build fails, on purpose.
+#   pip-audit       — known-vulnerability scan of backend/requirements.txt.
+#                     Informational only for now (continue-on-error: true).
+#   npm-audit       — known-vulnerability scan of frontend prod dependencies
+#                     (--omit=dev). Informational only for now.
+#   bandit          — Python SAST over backend/. Informational only for now.
+#
+# Unlike ci.yml's eval-gate (PRs into main only, cost-gated), these scans run
+# on push/PR to ANY branch — they're free (no paid APIs) and we want them
+# protecting `develop` work, not just release candidates into `main`.
+#
+# Upgrade path: once each informational job has a clean/understood baseline,
+# flip `continue-on-error: true` to `false` (or add a severity threshold flag)
+# to make it a real blocking gate. See docs/security-red-team-plan.md Phase 1.
+# ─────────────────────────────────────────────────────────────────────────────
+
+name: Security
+
+on:
+  push:
+    branches:
+      - "**"
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  # ── Secret scanning (blocking) ──────────────────────────────────────────────
+  secret-scan:
+    name: Secrets — gitleaks
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          # gitleaks scans commit history, not just the working tree — needs
+          # full history to catch a secret that was committed then "removed".
+          fetch-depth: 0
+
+      - name: Run gitleaks
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          # No GITHUB_TOKEN permissions beyond default read are required for
+          # scanning; only needed if we later enable gitleaks' PR-comment
+          # feature. Left unset here — action defaults to the ambient token.
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        # No continue-on-error: this is the one hard gate — a found secret
+        # fails the workflow (gitleaks-action exits non-zero on a leak).
+
+  # ── Backend dependency audit (informational) ────────────────────────────────
+  pip-audit:
+    name: Backend — pip-audit (dependency scan)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+          cache-dependency-path: backend/requirements.txt
+
+      - name: Install backend dependencies
+        run: pip install -r backend/requirements.txt
+
+      - name: Install pip-audit
+        run: pip install pip-audit
+
+      # Informational first: report known CVEs against the resolved dependency
+      # set without failing the build. Flip continue-on-error to false (or add
+      # `--strict` / a severity filter) once the current findings are triaged
+      # and the baseline is clean — see docs/security-red-team-plan.md Phase 1.
+      - name: Run pip-audit
+        working-directory: backend
+        continue-on-error: true
+        run: pip-audit -r requirements.txt
+
+  # ── Frontend dependency audit (informational) ───────────────────────────────
+  npm-audit:
+    name: Frontend — npm audit (dependency scan)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          # Same pinned Node version as ci.yml — .nvmrc is the single source
+          # of truth (currently 20.16.0).
+          node-version-file: frontend/.nvmrc
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci
+
+      # --omit=dev scopes the audit to production dependencies only (what
+      # actually ships/runs), not devDependencies like Vitest/jsdom. Those are
+      # version-pinned deliberately (project constraint) and audit noise there
+      # isn't actionable the same way.
+      #
+      # Informational first: report without failing the build. Flip
+      # continue-on-error to false (or add `--audit-level=high`) once the
+      # current findings are triaged and the baseline is clean.
+      - name: Run npm audit (production dependencies only)
+        working-directory: frontend
+        continue-on-error: true
+        run: npm audit --omit=dev
+
+  # ── Python SAST (informational) ─────────────────────────────────────────────
+  bandit:
+    name: Backend — bandit (Python SAST)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Install bandit
+        run: pip install bandit
+
+      # Static analysis for common Python security anti-patterns (e.g. exec/
+      # eval use, hardcoded credentials, insecure deserialization). Scoped to
+      # backend/ source only — excludes tests/ (test fixtures routinely trip
+      # bandit's hardcoded-password/assert checks with no real risk) and
+      # chroma_db/ (generated vectorstore data, not source).
+      #
+      # Informational first: report without failing the build. Flip
+      # continue-on-error to false (or add `-ll` to fail only on
+      # medium+/high-confidence findings) once the current findings are
+      # triaged and the baseline is clean.
+      - name: Run bandit
+        continue-on-error: true
+        run: bandit -r backend --exclude backend/tests,backend/chroma_db -f screen
