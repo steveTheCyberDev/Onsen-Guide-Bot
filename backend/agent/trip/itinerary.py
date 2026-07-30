@@ -390,13 +390,23 @@ def build_reply(itinerary: dict) -> str:
 def onsen_results_from_itinerary(itinerary: dict) -> list[OnsenResult]:
     """Project the itinerary's selected onsen records onto ``OnsenResult``.
 
-    Called at the ``agent.py`` boundary to populate ``AgentResponse.onsens``.
-    Records carry extra keys (detail_url) OnsenResult forbids, so we pass only the
-    allow-listed fields. Kept here so the raw records stay in the (JSON-serialisable)
+    Called at the ``agent.py`` boundary to populate ``AgentResponse.onsens`` (and
+    inside the pc1 analyze node to build the candidates it judges). Records carry
+    extra keys (detail_url, hotels) OnsenResult forbids, so we pass only the
+    allow-listed fields. When the pc1 analyze node has run it attaches grounded
+    ``pros``/``cons`` onto the record; those ARE OnsenResult fields, so we carry them
+    through here (defaulting to ``[]`` when analyze didn't run — search/elicit paths
+    are byte-identical). Kept here so the raw records stay in the (JSON-serialisable)
     checkpointed state and the Pydantic projection lives in one place.
     """
     selected = itinerary.get("selected_onsens", [])
-    return [OnsenResult(**{k: r.get(k) for k in _ONSEN_FIELDS}) for r in selected]
+    results: list[OnsenResult] = []
+    for r in selected:
+        data = {k: r.get(k) for k in _ONSEN_FIELDS}
+        data["pros"] = r.get("pros") or []
+        data["cons"] = r.get("cons") or []
+        results.append(OnsenResult(**data))
+    return results
 
 
 def assemble_trip(slots: dict) -> dict:

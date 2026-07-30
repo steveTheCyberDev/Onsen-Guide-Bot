@@ -16,10 +16,14 @@ re-planning-readiness properties this module honours:
   4. Checkpointer wired (``MemorySaver`` local; ``PostgresSaver`` deferred behind
      ``trip_checkpointer_backend`` until PR1's Railway Postgres lands).
 
-Shape (PR7): ``START → gather → {elicit → END | plan → check_constraints →
-{plan (re-plan back-edge) | END}}``. The ``check_constraints`` node + conditional
-back-edge hang off ``plan`` per property #3 WITHOUT reshaping the rest of the graph.
-Each turn the ``gather`` node
+Shape (pc1): ``START → gather → {elicit → END | plan → check_constraints →
+{plan (re-plan back-edge) | analyze → END}}``. The ``check_constraints`` node +
+conditional back-edge hang off ``plan`` per property #3 WITHOUT reshaping the rest
+of the graph; pc1 then hangs an additive, ``analyze_enabled``-gated ``analyze`` node
+on the SETTLED (non-re-plan) branch — the grounded recommendation ("why this
+itinerary suits you") runs exactly once on the final itinerary and never clobbers
+the deterministic PR7 conflict prose (it only adds a top-level ``recommendation`` +
+per-stop pros/cons). Each turn the ``gather`` node
 extracts slots from the message and merges them into the running ``TripSlots``; a
 conditional edge then routes to ``elicit`` (ask ONE follow-up, no tool/LLM calls)
 when a required slot is missing OR when a named region is unknown/non-Japan
@@ -39,8 +43,9 @@ import logging
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, START, StateGraph
 
+from agent.trip.analyze import analyze_itinerary
 from agent.trip.constraints import augment_reply, detect_conflicts
-from agent.trip.itinerary import assemble_trip
+from agent.trip.itinerary import assemble_trip, onsen_results_from_itinerary
 from agent.trip.slots import (
     TripSlots,
     elicit_message,
@@ -230,13 +235,79 @@ def _check_constraints_node(state: TripState) -> dict:
 
 
 def _route_after_check(state: TripState) -> str:
-    """Conditional edge off ``check_constraints``: back to ``plan`` or end the turn.
+    """Conditional edge off ``check_constraints``: back to ``plan`` or on to ``analyze``.
 
     Takes the back-edge into ``plan`` when a corrective re-plan was requested
-    (``pending_replan``), else ends. The re-plan loop is bounded by ``replan_count``
-    in ``detect_conflicts`` (``_MAX_REPLANS``), so this can never spin.
+    (``pending_replan``); otherwise the itinerary is SETTLED, so it flows to the
+    ``analyze`` node (which then ends the turn). The re-plan loop is bounded by
+    ``replan_count`` in ``detect_conflicts`` (``_MAX_REPLANS``), so this can never
+    spin. Routing through ``analyze`` on the terminal branch (instead of straight to
+    END) is what guarantees the grounded recommendation runs exactly ONCE, on the
+    final itinerary — additive: the plan↔check_constraints loop is untouched.
     """
-    return "plan" if state.get("pending_replan") else "end"
+    return "plan" if state.get("pending_replan") else "analyze"
+
+
+async def _analyze_node(state: TripState) -> dict:
+    """Grounded RECOMMEND step (pc1) — additive, gated, on the SETTLED itinerary.
+
+    Hung after the plan/check_constraints re-plan loop (re-planning-readiness
+    property #3: additive — a node + edge, not a reshape of the loop). Reads the
+    final itinerary's real onsen stops + the traveller's slots and, with ONE grounded
+    LLM call (``agent/trip/analyze.py::analyze_itinerary``), attaches per-stop
+    pros/cons and a top-level recommendation ("why this itinerary suits you").
+
+    Gated by ``analyze_enabled`` (reused from the recommend brain): when off it is a
+    clean NO-OP — returns ``{}`` so the deterministic reply (including any PR7
+    conflict/tradeoff prose from ``check_constraints``) and the empty pros/cons stand
+    unchanged, and ``recommendation`` stays None. ``trip_enabled`` stays False, so
+    this ships dead either way.
+
+    When on it is purely ADDITIVE: it NEVER touches ``reply`` — the honest PR7
+    conflict prose composes with, and is not clobbered by, the new recommendation
+    (a separate top-level field). It only attaches grounded pros/cons onto the
+    checkpointer-safe ``selected_onsens`` dicts (by index; the leg onsens share those
+    refs) and records the ``recommendation``.
+
+    Grounding: pros/cons and the recommendation come ONLY from the assembled stops +
+    slots — the LLM may weigh them, never invent a stop or a new fact (the itinerary
+    is still assembled deterministically upstream).
+
+    Async by design: the analyze call is an async LLM ``ainvoke``; usage is captured
+    via the ambient callbacks propagated from ``plan_trip``'s config.
+    """
+    # Return recommendation=None explicitly on the no-op branches (not {}) so the
+    # "gate off ⇒ recommendation None" guarantee holds UNCONDITIONALLY across turns:
+    # a prior turn on the same thread_id may have checkpointed a recommendation, and
+    # {} would leave that stale value in state. Clearing it keeps the response
+    # additive-identical to a fresh gate-off turn.
+    if not settings.analyze_enabled:
+        logger.info("trip.analyze node | analyze_enabled=False — no-op")
+        return {"recommendation": None}
+    itinerary = state.get("itinerary") or {}
+    selected = itinerary.get("selected_onsens") or []
+    if not selected:
+        # Every requested region lacked data → nothing real to judge; keep the
+        # honest deterministic reply, clear any prior recommendation.
+        logger.info("trip.analyze node | no selected stops — skipping analyze")
+        return {"recommendation": None}
+    slots = dict(state.get("slots") or {})
+    onsens = onsen_results_from_itinerary(itinerary)
+    analyzed, recommendation = await analyze_itinerary(slots, onsens)
+    # Merge grounded pros/cons back onto the (JSON-serialisable) selected_onsens dicts
+    # by index — same order as onsen_results_from_itinerary produced. The leg onsens
+    # share these refs, so both see them; the agent.py projection then carries
+    # pros/cons + recommendation onto AgentResponse.
+    for i, o in enumerate(analyzed):
+        if i < len(selected):
+            selected[i]["pros"] = o.pros
+            selected[i]["cons"] = o.cons
+    logger.info(
+        "trip.analyze node | analyzed=%d stops | recommendation=%s",
+        len(analyzed),
+        bool(recommendation),
+    )
+    return {"itinerary": itinerary, "recommendation": recommendation}
 
 
 def _build_checkpointer():
@@ -265,19 +336,22 @@ def build_trip_graph():
     """Build and compile the trip-planner ``StateGraph``.
 
     Shape: ``START → gather → {elicit → END | plan → check_constraints →
-    {plan | END}}``. ``gather`` extracts + merges slots; a conditional edge routes to
-    ``elicit`` (missing required slot) or the discrete ``plan`` node (all required
-    present). ``plan → check_constraints`` then applies the PR7 haversine conflict
-    rules, with a conditional back-edge into ``plan`` for a bounded corrective
-    re-plan. Compiled WITH a checkpointer so ``TripSlots`` (+ the PR7 re-plan fields)
-    are retained per ``thread_id`` across ``ainvoke`` calls — the multi-turn
-    elicit-loop.
+    {plan | analyze → END}}``. ``gather`` extracts + merges slots; a conditional edge
+    routes to ``elicit`` (missing required slot) or the discrete ``plan`` node (all
+    required present). ``plan → check_constraints`` then applies the PR7 haversine
+    conflict rules, with a conditional back-edge into ``plan`` for a bounded
+    corrective re-plan; on the settled branch it flows to the additive pc1
+    ``analyze`` node (grounded recommendation, gated by ``analyze_enabled``) before
+    END. Compiled WITH a checkpointer so ``TripSlots`` (+ the PR7 re-plan fields and
+    pc1 recommendation) are retained per ``thread_id`` across ``ainvoke`` calls — the
+    multi-turn elicit-loop.
     """
     builder = StateGraph(TripState)
     builder.add_node("gather", _gather_node)
     builder.add_node("elicit", _elicit_node)
     builder.add_node("plan", _plan_node)
     builder.add_node("check_constraints", _check_constraints_node)
+    builder.add_node("analyze", _analyze_node)
     builder.add_edge(START, "gather")
     builder.add_conditional_edges(
         "gather", _route_after_gather, {"elicit": "elicit", "plan": "plan"}
@@ -288,9 +362,14 @@ def build_trip_graph():
     # node is unchanged in identity; only its outgoing edge moved from END to the
     # new node (re-planning-readiness property #3).
     builder.add_edge("plan", "check_constraints")
+    # pc1: on the SETTLED (non-re-plan) branch, check_constraints flows to the
+    # additive analyze node instead of straight to END, so the grounded
+    # recommendation runs exactly once on the final itinerary. The re-plan back-edge
+    # into plan is unchanged — the plan↔check_constraints loop is untouched.
     builder.add_conditional_edges(
-        "check_constraints", _route_after_check, {"plan": "plan", "end": END}
+        "check_constraints", _route_after_check, {"plan": "plan", "analyze": "analyze"}
     )
+    builder.add_edge("analyze", END)
     return builder.compile(checkpointer=_build_checkpointer())
 
 
