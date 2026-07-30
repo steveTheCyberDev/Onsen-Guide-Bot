@@ -64,6 +64,10 @@ def search_hotels(latitude: float, longitude: float, radius: int = 3) -> list:
         )
     hotel_list = [
         {
+            # Rakuten's unique hotel number — the stable key the translation cache
+            # (services/translation) keys on. `.get` (not direct index) so an entry
+            # missing hotelNo degrades to an un-cached translation, never a KeyError.
+            "id": h["hotel"][0]["hotelBasicInfo"].get("hotelNo"),
             "name": h["hotel"][0]["hotelBasicInfo"]["hotelName"],
             "address": h["hotel"][0]["hotelBasicInfo"]["address1"],
             "price": h["hotel"][0]["hotelBasicInfo"].get("hotelMinCharge"),

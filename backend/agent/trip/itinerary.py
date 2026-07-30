@@ -43,6 +43,7 @@ import logging
 from agent.schemas import HotelResult, OnsenResult
 from services.rakuten.rakuten_service import search_hotels
 from services.retrieval.retrieval_service import query_onsen_structured
+from services.translation.translation_service import translate_hotels
 from services.routing.routing_service import (
     centroid,
     order_nearest_neighbour,
@@ -236,17 +237,20 @@ def _to_hotel(h: dict) -> HotelResult:
     """Map a Rakuten service hotel dict to a HotelResult.
 
     Mirrors ``pipeline._to_hotel`` field-for-field so trip and search/recommend
-    produce identical hotel shapes. Rakuten returns Japanese-only names (no
-    translation in V1), so name == originalName == the Japanese string. Kept local
-    so agent/trip/ does not couple to agent/workflow internals.
+    produce identical hotel shapes. When hotel translation is enabled the dict
+    carries ``name_en`` / ``hotelSpecial_en`` / ``location_en`` (added by
+    ``translate_hotels`` in :func:`attach_hotels`); we surface those and keep the
+    Japanese name in ``originalName``. Each ``*_en`` read falls back to the Japanese
+    source, so gate-off / fail-soft shows Japanese exactly as before. Kept local so
+    agent/trip/ does not couple to agent/workflow internals.
     """
     name = h.get("name") or ""
     price = h.get("price")
     return HotelResult(
-        name=name,
+        name=h.get("name_en") or name,
         originalName=name,
-        location=h.get("address"),
-        hotelSpecial=h.get("hotelSpecial"),
+        location=h.get("location_en") or h.get("address"),
+        hotelSpecial=h.get("hotelSpecial_en") or h.get("hotelSpecial"),
         price=str(price) if price is not None else None,
         image=h.get("hotelImageUrl"),
         url=h.get("url"),
@@ -300,10 +304,20 @@ def attach_hotels(itinerary: dict) -> None:
     itinerary in place; the leg onsen and ``selected_onsens`` share the same dict
     refs, so both see the attached hotels. No-data legs carry no onsen, so they get
     no hotels. Stays JSON-serialisable (raw hotel dicts) for the checkpointer.
+
+    After fetching, every hotel across ALL stops is translated JA→EN in ONE batched,
+    cache-aware pass (``translate_hotels``) — one LLM call for the whole trip rather
+    than one per stop. It enriches the same dict refs in place, so the per-stop
+    hotels (and thus the reply + ``HotelResult`` projection) see the English fields.
+    Gated + fail-soft: off = Japanese passthrough (no-op); any error falls back to
+    Japanese, never breaking the plan.
     """
+    all_hotels: list[dict] = []
     for leg in itinerary.get("regions", []):
         for onsen in leg.get("onsens", []):
             onsen["hotels"] = _fetch_hotels_for_stop(onsen)
+            all_hotels.extend(onsen["hotels"])
+    translate_hotels(all_hotels)
 
 
 def hotel_results_from_itinerary(itinerary: dict) -> list[HotelResult]:
@@ -363,8 +377,11 @@ def build_reply(itinerary: dict) -> str:
             # present). A present-but-empty list means "we looked, found none".
             if hotels is not None:
                 if hotels:
+                    # Prefer the English name when translation ran; fall back to the
+                    # Japanese source (gate-off / fail-soft) so the prose never blanks.
                     names = ", ".join(
-                        h.get("name", "") for h in hotels[:_HOTELS_IN_REPLY]
+                        (h.get("name_en") or h.get("name") or "")
+                        for h in hotels[:_HOTELS_IN_REPLY]
                     )
                     seg += f" (nearby hotels: {names})"
                 else:

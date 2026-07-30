@@ -114,6 +114,31 @@ class Settings(BaseSettings):
     # only genuinely spread-out regions trigger dropping the farthest outlier.
     # Override via TRIP_DISPERSED_LEG_KM.
     trip_dispersed_leg_km: float = 100.0
+    # --- Hotel name/detail JA→EN translation (product-completeness hardening) ---
+    # Gate for translating Rakuten hotel name/details from Japanese to English.
+    # When False (DEFAULT) hotels are returned with their original Japanese text
+    # exactly as today — NO LLM call, NO cache lookup, a clean no-op. /hotels is
+    # LIVE in prod, so turning this on is a real behaviour change that must be
+    # flipped deliberately (Railway env) after review. When True the workflow
+    # translates each hotel's name/hotelSpecial/location once (gpt-4o-mini) and
+    # caches the result by Rakuten hotel id, so a given hotel is only translated
+    # once ever. Fail-soft: any translation/LLM/DB error falls back to the original
+    # Japanese text and NEVER breaks the hotel response. Mirrors the analyze_enabled/
+    # ask_enabled/trip_enabled rollout-gate seam. Override via HOTEL_TRANSLATION_ENABLED.
+    hotel_translation_enabled: bool = False
+    # Model used to translate hotel name/details. Defaults to the cheap gpt-4o-mini
+    # (same model + discipline as the ingest translate-at-ingest pattern in
+    # scripts/ingest.py) since the strings are short and the call is batched across
+    # all hotels in one request. Override via env var HOTEL_TRANSLATION_MODEL.
+    hotel_translation_model: str = "gpt-4o-mini"
+    # SQLAlchemy URL for the hotel-translation cache (services/translation). Default
+    # "" means "reuse resolved_session_db_url" (same DB as the chat session store) —
+    # zero-config locally. In prod you MAY split this off (env HOTEL_TRANSLATION_DB_URL,
+    # e.g. its own Postgres/SQLite) so the high-frequency, FULLY fail-soft, non-PII
+    # hotel cache does not contend for write locks (esp. SQLite) with the
+    # non-fail-soft per-user session store (chat_service.save_message). See
+    # resolved_hotel_translation_db_url. Override via env var HOTEL_TRANSLATION_DB_URL.
+    hotel_translation_db_url: str = ""
     # Top-k KB chunks retrieved for an ask answer. Override via ASK_TOP_K.
     ask_top_k: int = 4
     # DISTANCE ceiling for KB chunks (Chroma returns distance, lower = closer).
@@ -222,6 +247,20 @@ class Settings(BaseSettings):
             return self.session_db_url
         db_path = Path(__file__).resolve().parent.parent / "sessions.db"
         return f"sqlite:///{db_path}"
+
+    @property
+    def resolved_hotel_translation_db_url(self) -> str:
+        """Resolved SQLAlchemy URL for the hotel-translation cache.
+
+        Returns ``hotel_translation_db_url`` when HOTEL_TRANSLATION_DB_URL is set
+        (prod may split the non-PII hotel cache onto its own database to avoid
+        write-lock contention with the non-fail-soft chat session store), else falls
+        back to ``resolved_session_db_url`` — the SAME DB as the session store, so
+        local dev stays zero-config. Mirrors the resolved_session_db_url env-split.
+        """
+        if self.hotel_translation_db_url:
+            return self.hotel_translation_db_url
+        return self.resolved_session_db_url
 
     @property
     def kb_data_dir(self) -> Path:

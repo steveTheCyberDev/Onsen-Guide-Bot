@@ -33,6 +33,7 @@ from agent.workflow.intent import parse_intent
 from core.config import export_langsmith_env, settings
 from services.chat.chat_service import get_history, save_message
 from services.rakuten.rakuten_service import search_hotels
+from services.translation.translation_service import translate_hotels
 from services.retrieval.retrieval_service import query_onsen_structured
 
 logger = logging.getLogger(__name__)
@@ -124,20 +125,23 @@ def _build_onsens(records: list[dict]) -> list[OnsenResult]:
 
 
 def _to_hotel(h: dict) -> HotelResult:
-    """Map a Rakuten service hotel dict to a HotelResult (V1 passthrough).
+    """Map a Rakuten service hotel dict to a HotelResult.
 
     Mirrors ``api/routes/hotels.py::_to_item`` field-for-field so /chat and
-    /hotels produce identical hotel shapes. Rakuten returns Japanese-only names
-    (no translation in V1), so name == originalName == the Japanese string.
-    HotelResult has no ``distance`` field, so distance is not computed here.
+    /hotels produce identical hotel shapes. When hotel translation is enabled the
+    dict carries ``name_en`` / ``hotelSpecial_en`` / ``location_en`` (added by
+    ``translate_hotels`` in the hotel branch below); we surface those and keep the
+    Japanese name in ``originalName``. Each ``*_en`` read falls back to the Japanese
+    source, so gate-off / fail-soft shows Japanese exactly as before. HotelResult
+    has no ``distance`` field, so distance is not computed here.
     """
     name = h.get("name") or ""
     price = h.get("price")
     return HotelResult(
-        name=name,
+        name=h.get("name_en") or name,
         originalName=name,
-        location=h.get("address"),
-        hotelSpecial=h.get("hotelSpecial"),
+        location=h.get("location_en") or h.get("address"),
+        hotelSpecial=h.get("hotelSpecial_en") or h.get("hotelSpecial"),
         price=str(price) if price is not None else None,
         image=h.get("hotelImageUrl"),
         url=h.get("url"),
@@ -324,6 +328,11 @@ async def run_workflow(message: str, session_id: str) -> dict:
             # run off the event loop.
             try:
                 raw = await asyncio.to_thread(search_hotels, lat, lng)
+                # Translate name/details JA→EN (cache-aware, batched). Gated +
+                # fail-soft: off = Japanese passthrough (no-op, byte-identical to the
+                # old behaviour); any error falls back to Japanese. Keeps /chat
+                # consistent with /hotels + trips. Sync (LLM+DB) → off the event loop.
+                raw = await asyncio.to_thread(translate_hotels, raw)
                 hotels = [_to_hotel(h) for h in raw]
                 logger.info("run_workflow | hotels=%d (lat=%s lng=%s)", len(hotels), lat, lng)
             except Exception as e:
