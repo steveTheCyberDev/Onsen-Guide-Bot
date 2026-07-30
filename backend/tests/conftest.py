@@ -37,20 +37,28 @@ TEST_KNOWN_PREFECTURES = frozenset(
 
 @pytest.fixture(autouse=True)
 def _patch_known_prefectures():
-    """Patch the trip graph's known-prefecture lookup to a fixed set (no Chroma).
+    """Patch the known-prefecture lookup to a fixed set (no Chroma).
 
-    Autouse so every test that drives the trip graph (directly or via plan_trip)
-    validates regions against ``TEST_KNOWN_PREFECTURES`` instead of the live
-    collection. Region-validation tests override this with their own ``patch`` when
-    they need a specific valid/invalid split. Patches the name bound INSIDE
-    ``agent.trip.graph`` (both the singleton graph and fresh ``build_trip_graph``
-    instances resolve it at call time), leaving the real service function — and its
-    own unit test — untouched.
+    Autouse so every test that validates a region against the ingested set uses
+    ``TEST_KNOWN_PREFECTURES`` instead of the live collection. Two consumers resolve
+    the name at call time and are patched here:
+      - the trip graph (``agent.trip.graph``) — region validation before the plan
+        node (both the singleton graph and fresh ``build_trip_graph`` instances);
+      - the workflow pipeline (``agent.workflow.pipeline``) — the reflected-echo
+        guard in ``_build_reply`` only echoes a prefecture that is in this set.
+    Region-validation tests override the graph binding with their own ``patch`` when
+    they need a specific valid/invalid split. The real service function — and its own
+    unit test — stay untouched.
     """
     from agent.trip import graph as trip_graph_module
+    from agent.workflow import pipeline as workflow_pipeline
 
     with patch.object(
         trip_graph_module,
+        "known_prefectures",
+        return_value=TEST_KNOWN_PREFECTURES,
+    ), patch.object(
+        workflow_pipeline,
         "known_prefectures",
         return_value=TEST_KNOWN_PREFECTURES,
     ):

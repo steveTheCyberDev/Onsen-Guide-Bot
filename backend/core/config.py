@@ -160,6 +160,14 @@ class Settings(BaseSettings):
     # are retried a few times instead of failing the request, without retrying
     # forever. Override via env var LLM_MAX_RETRIES.
     llm_max_retries: int = 2
+    # --- Outbound HTTP timeout (services/http_retry.py) ---
+    # Default per-request timeout (seconds) applied to outbound `requests.get` calls
+    # made through services.http_retry.get_with_retries when the CALLER does not pass
+    # its own `timeout`. A bounded timeout is mandatory so a hung/slow upstream can
+    # never tie up a worker indefinitely (bandit B113). Callers that pass an explicit
+    # `timeout` keep it (this is only the safety-net default). Override via
+    # env var HTTP_TIMEOUT_SECONDS.
+    http_timeout_seconds: float = 10.0
     # --- Inbound rate limiting (slowapi) ---
     # Per-client-IP limits applied to the PAID endpoints only (POST /chat and
     # POST /hotels); /health and other infra routes stay unlimited. Values use

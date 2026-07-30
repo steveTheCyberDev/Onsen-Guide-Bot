@@ -34,7 +34,10 @@ from core.config import export_langsmith_env, settings
 from services.chat.chat_service import get_history, save_message
 from services.rakuten.rakuten_service import search_hotels
 from services.translation.translation_service import translate_hotels
-from services.retrieval.retrieval_service import query_onsen_structured
+from services.retrieval.retrieval_service import (
+    known_prefectures,
+    query_onsen_structured,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -47,8 +50,10 @@ _ASK_STUB_REPLY = (
 
 # Keys on the query_onsen_structured records that OnsenResult accepts. The
 # records carry EXTRA keys (description, detail_url) that are NOT fields on
-# OnsenResult; since OnsenResult forbids extras (Pydantic v2 default),
-# OnsenResult(**record) would raise. We project onto this allow-list instead.
+# OnsenResult. Pydantic v2's DEFAULT is extra="ignore" (unknown keys are silently
+# dropped, not rejected), but OnsenResult sets extra="forbid" EXPLICITLY
+# (agent/schemas.py, defense-in-depth), so OnsenResult(**record) with those extra
+# keys would raise ValidationError. We project onto this allow-list instead.
 _ONSEN_FIELDS = ("name", "location", "spring_type", "spa_quality", "lat", "lng")
 
 # Default/ceiling for how many onsen retrieval returns. Used when the user names
@@ -150,9 +155,25 @@ def _to_hotel(h: dict) -> HotelResult:
     )
 
 
+def _safe_location_label(prefecture: str | None) -> str:
+    """Return a location label safe to interpolate into the user-facing reply.
+
+    Only echoes ``prefecture`` when it matches an INGESTED prefecture (the
+    ``known_prefectures()`` allow-list, matched case-insensitively); anything else
+    — including a jailbroken/injected intent parse that smuggled attacker text into
+    ``intent.prefecture`` — is generalized to ``"Japan"`` so unvalidated text never
+    reaches the reply (reflected-echo hardening). Legitimate real prefectures render
+    unchanged, in their canonical ingested casing.
+    """
+    if not prefecture:
+        return "Japan"
+    canonical = {p.lower(): p for p in known_prefectures()}
+    return canonical.get(prefecture.strip().lower(), "Japan")
+
+
 def _build_reply(prefecture: str | None, onsens: list[OnsenResult], hotels: list[HotelResult]) -> str:
     """Build the template reply (no LLM). Preserves the no-result UX."""
-    where = prefecture or "Japan"
+    where = _safe_location_label(prefecture)
     if not onsens:
         return f"No onsen found in {where} matching your query."
     reply = f"Found {len(onsens)} onsen in {where}"

@@ -10,10 +10,17 @@ The ``/chat`` response contract is: ``reply`` + ``onsens[]`` + ``hotels[]`` +
 recommend-mode ``analyze_onsen`` brain populates; search/ask leave them empty/None.
 """
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class OnsenResult(BaseModel):
+    # Defense-in-depth: reject unexpected/injected keys instead of silently
+    # dropping them (Pydantic v2's default is extra="ignore"). Every construction
+    # site projects field-by-field onto an allow-list (pipeline._ONSEN_FIELDS,
+    # itinerary.onsen_results_from_itinerary), so no legitimate caller splats a
+    # dict carrying extras — a raise here means an unexpected/attacker key slipped in.
+    model_config = ConfigDict(extra="forbid")
+
     name: str = Field(description="Name in English")
     location: str | None = Field(default=None, description="City in English")
     spring_type: str
@@ -45,6 +52,11 @@ class OnsenResult(BaseModel):
 
 
 class HotelResult(BaseModel):
+    # Defense-in-depth: reject unexpected/injected keys (see OnsenResult). Both
+    # construction sites (_to_hotel in pipeline.py and itinerary.py) build this
+    # field-by-field, so extras never reach a legitimate call.
+    model_config = ConfigDict(extra="forbid")
+
     name: str = Field(description="Name in English")
     originalName: str = Field(description="Name in Original Language")
     location: str | None = Field(default=None, description="City and prefecture in English")
@@ -57,6 +69,11 @@ class HotelResult(BaseModel):
 
 
 class AgentResponse(BaseModel):
+    # Defense-in-depth: reject unexpected/injected keys (see OnsenResult). Every
+    # construction site (pipeline.py, trip/agent.py) sets fields explicitly, so a
+    # raise here signals an unexpected key rather than a legitimate response shape.
+    model_config = ConfigDict(extra="forbid")
+
     reply: str = Field(
         description=(
             "One sentence summary only. Example: 'Found 3 onsens and 10 nearby hotels in Naha, Okinawa.' "
