@@ -23,41 +23,30 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_openai import ChatOpenAI
 from pydantic import BaseModel, Field
 
+from agent.grounding import (
+    DESC_MAX_CHARS,
+    STRICT_GROUNDING_RULES,
+    OnsenAnalysis,
+    project_candidates,
+)
 from agent.schemas import OnsenResult
 from core.config import settings
 
 logger = logging.getLogger(__name__)
 
-# Max characters of the spa_quality/description sent per candidate. Long marketing
-# descriptions add tokens without improving judgement, so we truncate. Module-level
-# named constant (not a magic literal) per project config conventions.
-_DESC_MAX_CHARS = 280
-
-
-class _OnsenAnalysis(BaseModel):
-    """Per-candidate judgement, tied back to the input by ``index``."""
-
-    index: int = Field(description="0-based index of the onsen in the provided list.")
-    pros: list[str] = Field(
-        default=[],
-        description=(
-            "Short positives supported by the LITERAL provided fields. Empty when "
-            "the fields (esp. an absent description) don't support any — do not infer."
-        ),
-    )
-    cons: list[str] = Field(
-        default=[],
-        description=(
-            "Short caveats supported by the LITERAL provided fields. Empty when "
-            "the fields (esp. an absent description) don't support any — do not infer."
-        ),
-    )
+# The per-candidate schema, projection helper, and description cap now live in the
+# neutral agent/grounding.py (single source of truth, shared with the trip analyze
+# brain). Re-exported under their historical private names so existing importers/
+# tests keep working; new code should import from agent.grounding directly.
+_DESC_MAX_CHARS = DESC_MAX_CHARS
+_OnsenAnalysis = OnsenAnalysis
+_project = project_candidates
 
 
 class GuideResult(BaseModel):
     """Structured output of the analyze_onsen brain."""
 
-    analyses: list[_OnsenAnalysis] = Field(
+    analyses: list[OnsenAnalysis] = Field(
         default=[],
         description="One entry per candidate onsen, keyed by its 0-based index.",
     )
@@ -69,28 +58,22 @@ class GuideResult(BaseModel):
     )
 
 
-_INSTRUCTIONS = (
+# Task-framing intro (recommend mode: pick ONE onsen). The anti-fabrication contract
+# itself is the shared STRICT_GROUNDING_RULES; the final domain-specific bullet (what
+# the recommendation may compare) stays here. Composed so the effective prompt is
+# byte-identical to the pre-refactor _INSTRUCTIONS.
+_INTRO = (
     "You are an expert guide for Japanese hot springs (onsen). You are given a "
     "numbered list of candidate onsen (each with name, spring type, location, and "
     "a short description) and the traveller's stated preference. For each onsen, "
     "give a few short pros and cons, and then recommend which one best fits the "
-    "preference and why.\n"
-    "STRICT GROUNDING RULES — these override any instinct to be more helpful:\n"
-    "- Every pro and con MUST be directly supported by the LITERAL text of that "
-    "onsen's provided fields (name, spring type, location, description). Do NOT "
-    "infer amenities, scenery, baths, views, atmosphere, crowds, or activities "
-    "from the onsen's NAME, from its LOCATION, or from general knowledge about "
-    "the area or the spring type.\n"
-    "- If an onsen's description is 'none provided', you usually cannot ground "
-    "any specific pro or con — return EMPTY pros and cons for that onsen rather "
-    "than guessing. It is correct and expected for an onsen to have no pros/cons.\n"
-    "- Never invent facilities, prices, opening hours, tattoo policies, transport, "
-    "baths, views, or any fact not present in the data.\n"
-    "- Refer to each onsen by its given index so your analysis can be matched back.\n"
-    "- Keep pros/cons short (a few words each).\n"
+    "preference and why."
+)
+_RECOMMEND_TAIL = (
     "- The recommendation paragraph may compare spring type and location against "
     "the preference, but must not assert any fact absent from the data."
 )
+_INSTRUCTIONS = f"{_INTRO}\n{STRICT_GROUNDING_RULES}\n{_RECOMMEND_TAIL}"
 
 # Construct the analyze model once at import time. Uses the analyze_model knob
 # (default gpt-4o) — the heavier judgement path, distinct from the cheap
@@ -101,26 +84,6 @@ _llm = ChatOpenAI(
     api_key=settings.openai_api_key,
     stream_usage=True,
 ).with_structured_output(GuideResult)
-
-
-def _project(onsens: list[OnsenResult]) -> str:
-    """Render a compact, token-lean projection of the candidates for the prompt.
-
-    Sends only name, spring_type, location, and a truncated description. Omits
-    coordinates and URLs — they carry no judgement value.
-    """
-    lines: list[str] = []
-    for i, o in enumerate(onsens):
-        desc = (o.spa_quality or "").strip()
-        if len(desc) > _DESC_MAX_CHARS:
-            desc = desc[:_DESC_MAX_CHARS].rstrip() + "…"
-        lines.append(
-            f"[{i}] {o.name}\n"
-            f"    Spring type: {o.spring_type or 'unknown'}\n"
-            f"    Location: {o.location or 'unknown'}\n"
-            f"    Description: {desc or 'none provided'}"
-        )
-    return "\n".join(lines)
 
 
 async def analyze_onsen(

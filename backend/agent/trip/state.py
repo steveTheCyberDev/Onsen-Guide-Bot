@@ -73,3 +73,14 @@ class TripState(TypedDict, total=False):
     # Transient router signal: True when check_constraints wants the plan back-edge.
     # Read by the conditional edge, reset to False on the final (non-re-plan) pass.
     pending_replan: bool
+
+    # --- pc1 trip-analyze (grounded recommendation) ---------------------------
+    # Added as a new FIELD (not a new state concept), same additive discipline as the
+    # PR7 fields above. The analyze node (gated by ``analyze_enabled``) runs ONCE on
+    # the settled itinerary and writes the top-level grounded recommendation here
+    # ("why this itinerary suits you"). None when the gate is off or there were no
+    # stops. Per-stop pros/cons are attached onto ``itinerary['selected_onsens']``
+    # (carried through to OnsenResult by ``onsen_results_from_itinerary``). The
+    # ``agent.py`` boundary projects both onto ``AgentResponse``. JSON-serialisable
+    # for the future PostgresSaver.
+    recommendation: str | None

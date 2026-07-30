@@ -14,9 +14,11 @@ the follow-up question and ``onsens``/``hotels`` stay empty; on a plan turn the 
 is the naive-itinerary template, ``onsens`` is populated with the REAL selected
 in-region onsen, and ``hotels`` (PR5) with the REAL nearby lodging per stop (both
 projected from the graph's ``itinerary`` state; hotels are fail-soft, so a Rakuten
-outage just yields empty hotels). ``recommendation`` stays ``None`` (routing/Places
-are PR6/7). Slots are checkpointed per ``thread_id = session_id`` via ``MemorySaver``,
-so a follow-up answer on a later turn resumes with the prior slots intact.
+outage just yields empty hotels). ``recommendation`` is populated by the additive,
+``analyze_enabled``-gated pc1 analyze node ("why this itinerary suits you") on a plan
+turn, else ``None`` (gate off / elicit turn). Slots are checkpointed per
+``thread_id = session_id`` via ``MemorySaver``, so a follow-up answer on a later turn
+resumes with the prior slots intact.
 
 Layering: this module imports shared schemas from ``agent/`` (and, transitively via
 the graph's plan node, ``services/`` retrieval) but never from ``api/``.
@@ -57,8 +59,10 @@ async def plan_trip(
     Returns:
         An ``AgentResponse``: the graph's reply; ``onsens`` = the itinerary's real
         selected onsen and ``hotels`` = their real nearby lodging on a plan turn
-        (both empty on an elicit turn); ``recommendation=None``. The ``/chat``
-        response contract is unchanged (populating ``onsens``/``hotels`` is additive).
+        (both empty on an elicit turn); ``recommendation`` = the grounded pc1
+        "why this itinerary suits you" pick when ``analyze_enabled`` (else None).
+        The ``/chat`` response contract is unchanged (``onsens``/``hotels``/
+        ``recommendation``/pros/cons are all additive).
     """
     logger.info("plan_trip | session_id=%s", session_id)
     config: dict = {"configurable": {"thread_id": session_id}}
@@ -72,9 +76,14 @@ async def plan_trip(
     itinerary = result.get("itinerary")
     onsens = onsen_results_from_itinerary(itinerary) if itinerary else []
     hotels = hotel_results_from_itinerary(itinerary) if itinerary else []
+    # pc1: the additive analyze node (gated by analyze_enabled) sets a grounded
+    # top-level recommendation + per-stop pros/cons on the settled itinerary. When
+    # the gate is off (or on an elicit turn) recommendation is None and pros/cons are
+    # empty — the response is additive-identical to the pre-pc1 shape.
+    recommendation = result.get("recommendation")
     return AgentResponse(
         reply=reply,
         onsens=onsens,
         hotels=hotels,
-        recommendation=None,
+        recommendation=recommendation,
     )
