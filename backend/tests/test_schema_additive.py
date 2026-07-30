@@ -8,7 +8,10 @@ The recommend feature adds fields that must NOT regress existing outputs:
 These are pure constructor/serialization checks — no mocking.
 """
 
-from agent.schemas import AgentResponse, OnsenResult
+import pytest
+from pydantic import ValidationError
+
+from agent.schemas import AgentResponse, HotelResult, OnsenResult
 
 
 def _onsen(**overrides):
@@ -59,6 +62,33 @@ def test_agent_response_recommendation_roundtrips():
     # Assert
     assert resp.recommendation == "Pick Beppu."
     assert resp.model_dump()["recommendation"] == "Pick Beppu."
+
+
+# --- Defense-in-depth: extra="forbid" rejects stray/injected keys -----------
+
+
+def test_onsen_result_rejects_stray_key():
+    # Arrange / Act / Assert — an unexpected key (e.g. an injected/attacker field
+    # or a leaked raw record key) is REJECTED, not silently dropped.
+    with pytest.raises(ValidationError):
+        OnsenResult(
+            name="Beppu Onsen",
+            spring_type="Sulfur",
+            spa_quality="Sulfur spring",
+            detail_url="https://example.com/x",  # not a field on OnsenResult
+        )
+
+
+def test_hotel_result_rejects_stray_key():
+    # Arrange / Act / Assert
+    with pytest.raises(ValidationError):
+        HotelResult(name="Hotel", originalName="ホテル", injected="evil")
+
+
+def test_agent_response_rejects_stray_key():
+    # Arrange / Act / Assert
+    with pytest.raises(ValidationError):
+        AgentResponse(reply="ok", injected="evil")
 
 
 # --- ChatResponse carries recommendation -----------------------------------

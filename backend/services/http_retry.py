@@ -28,6 +28,8 @@ from tenacity import (
     wait_exponential_jitter,
 )
 
+from core.config import settings
+
 logger = logging.getLogger(__name__)
 
 # Retry tuning. 3 total attempts with jittered exponential backoff, capped so a
@@ -85,7 +87,14 @@ def get_with_retries(url: str, **kwargs) -> requests.Response:
     repeated 5xx responses, returns the last 5xx response (caller's existing
     error handling then runs). On repeated connection/timeout errors, re-raises
     the last ``requests`` exception (same as a non-retried call would).
+
+    A bounded ``timeout`` is ALWAYS applied: if the caller did not pass one, the
+    ``http_timeout_seconds`` config default is used so a hung/slow upstream can
+    never block a worker indefinitely (bandit B113). An explicit caller timeout
+    is left untouched.
     """
+    # Safety-net default — setdefault so an explicit caller timeout still wins.
+    kwargs.setdefault("timeout", settings.http_timeout_seconds)
     try:
         return _get_retrying(url, **kwargs)
     except _TransientHTTPError as exc:

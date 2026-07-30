@@ -71,6 +71,17 @@ CI (cheap, high coverage), (3) abuse/cost rate-limit proof.
 - [ ] Enable **Dependabot** (or `pip` + `npm` update PRs).
 - [ ] Add **bandit** (Python SAST) as a non-blocking informational job to start.
 
+#### Phase 1 findings
+
+- **`chromadb 1.5.9` → CVE-2026-45829 (pip-audit).** Max-severity **pre-auth RCE** in
+  ChromaDB's **standalone HTTP server**. **Not exploitable here:** this app uses the
+  **embedded `PersistentClient`** (in-process, `vectorstore/store.py`), never the
+  network `chromadb.HttpClient` / `chroma run` server, so the vulnerable request path
+  is not reachable. **No patched version exists yet** → keep `chromadb` pinned as-is,
+  re-run `pip-audit` periodically, and **bump the moment a fixed release ships**.
+  (Confirmed no `HttpClient` / server usage in the codebase; if a client/server split
+  is ever introduced, this finding is immediately in-scope.)
+
 ### Phase 2 — Prompt-injection red-team suite (the core gap)
 - [ ] Build `backend/tests/test_prompt_injection.py` (or a `scripts/redteam_*.py` harness): a fixed set
       of adversarial `/chat` inputs — instruction-override, system-prompt-exfil, "return JSON that
