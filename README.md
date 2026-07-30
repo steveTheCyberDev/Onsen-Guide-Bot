@@ -39,7 +39,8 @@ The parts I'd bring up in an interview — the engineering, not the feature list
 - **~10× faster by removing the agent.** The V1 LangGraph **ReAct agent** averaged **~35 s** per `/chat`. I traced it, found two GPT-4o round-trips dominating the time, and redesigned it into a **deterministic workflow** — one small intent call + pure-Python assembly — landing at **~3.7 s**. Shipped behind a feature flag for an A/B and instant rollback.
 - **Hallucination prevented *structurally*, not by prompting.** Onsen results are assembled in Python from retrieved records; the LLM never invents facts. An **automated eval suite** (LangSmith) scores grounding so "is it honest?" has a number.
 - **Cost & latency are observed, not guessed.** Full LangSmith tracing in prod with **per-request cost/token attribution** (~$0.002 search · ~$0.005 recommend), and the expensive recommend LLM call sits behind a gated rollout flag.
-- **Production-grade, not a notebook.** Per-IP rate limiting, outbound retry/backoff, fail-closed API-key auth, **418 backend + 126 frontend tests**, CI test gates (including a deterministic eval release gate), and branch-protected releases to Railway + Vercel.
+- **Red-teamed like a product, not a demo.** A **prompt-injection test suite** (instruction-override, prompt-exfil, indirect injection via the knowledge base) proves the app resists injection *structurally* — the model can't fabricate or leak because it never assembles the facts. CI runs secret-scanning + dependency/SAST audits (gitleaks · pip-audit · npm audit · bandit) + Dependabot; the first scan caught a real timeout bug in my own resilience code.
+- **Production-grade, not a notebook.** Per-IP rate limiting, outbound retry/backoff, fail-closed API-key auth, strict `extra="forbid"` response schemas, **~560 backend + ~130 frontend tests**, CI test gates (including a deterministic eval release gate), and branch-protected releases to Railway + Vercel.
 
 ---
 
@@ -115,6 +116,18 @@ Treating LLM quality as a **testable, measured property** — the part most demo
 
 ---
 
+## Security & AI safety
+
+Treating an LLM app as an **attack surface**, not just a feature — threat-modelled and red-teamed against my own product. (Full plan in [`docs/security-red-team-plan.md`](./docs/security-red-team-plan.md).)
+
+- **Prompt-injection red-team suite ([`backend/tests/test_prompt_injection.py`](./backend/tests/test_prompt_injection.py)).** Adversarial `/chat` inputs — instruction-override, system-prompt exfiltration, schema-break, role-play jailbreak, and **indirect injection via a poisoned knowledge-base doc**. The tests pin the guarantees that hold *regardless of what the model does*: returned onsen names are always a subset of the retrieved ground truth (fabrication is impossible via the Python-assembly path), the response schema stays locked, and no system prompt or key can leak through the deterministic reply. Real-model resistance is covered separately in the paid eval layer. The honest framing: **pytest proves the architecture resists; the eval proves the model does.**
+- **CI security scanning.** Every push runs **gitleaks** (secret scanning, a hard gate), **pip-audit** + **npm audit** (dependency CVEs), and **bandit** (Python SAST), with **Dependabot** for update PRs. The first run immediately earned its keep — it caught a missing outbound timeout in my *own* resilience module (a hung upstream could tie up a worker) and flagged a dependency CVE (which I traced and confirmed non-exploitable, since the app uses ChromaDB embedded, not its network server).
+- **Defense-in-depth.** Response schemas are `extra="forbid"` (reject injected keys, not silently drop them); the reply's location label only echoes a user-supplied prefecture when it's a *known* one, so a jailbroken parse can't reflect attacker text back.
+
+The honest caveat I'd still flag: this is a low-blast-radius app (read-only, no accounts, no PII), so this is *proportionate* defensive hardening — the point is the discipline (threat model → red-team → gate), not that a hot-spring finder needs a SOC.
+
+---
+
 ## Engineering challenges & how I solved them
 
 Most of these were **correctness** and **production** problems — the hard part of shipping an LLM to users, not "make it talk." (Full write-up in [`PROJECT_JOURNEY.md`](./PROJECT_JOURNEY.md).)
@@ -145,14 +158,14 @@ In the Railway container, `/chat` returned zero results despite a "successful" i
 
 ## Status & limitations
 
-**V2.5 is live in production** — the deterministic workflow, guide-style recommendations, the `ask` knowledge base, evals, and observability are all shipped and running. **V3 (the trip-planner agent) is under active build** — the LangGraph agent, session persistence, slot-filling, a naive itinerary, multi-turn evals, region validation, and per-stop hotels are all merged to `develop` **behind a `trip_enabled` flag** (not yet flipped in prod) — see the [design plan](./docs/v3-trip-planner-plan.md). I'd rather name the remaining gaps than hide them:
+**V2.5 is live in production** — the deterministic workflow, guide-style recommendations, the `ask` knowledge base, evals, and observability are all shipped and running. **V3 (the trip-planner agent) is built and ready behind a flag** — a LangGraph agent with persistent session state, slot-filling, region validation, **haversine-based routing + a bounded re-plan loop**, and a **grounded recommendation step** ("why this itinerary suits you"), all merged to `develop` **behind `trip_enabled`** (deliberately not yet flipped in prod). See the [design plan](./docs/v3-trip-planner-plan.md). I'd rather name the remaining gaps than hide them:
 
-**Shipped since V1** (were the V1 limitations): ingest-time geocoding · the `ask`-mode knowledge base · LangSmith eval harness, now a **deterministic CI release gate** · tracing + per-request cost accounting · rate limiting + outbound resilience · the workflow redesign.
+**Shipped since V1** (were the V1 limitations): ingest-time geocoding · the `ask`-mode knowledge base · LangSmith eval harness, now a **deterministic CI release gate** · tracing + per-request cost accounting · rate limiting + outbound resilience · the workflow redesign · **English hotel translation** (Rakuten JA→EN, cached by hotel id, across all three hotel surfaces) · **a persistent session store** (SQLite local / Postgres prod) with per-conversation UUID sessions · a **security posture** (prompt-injection suite + CI scanning + defense-in-depth).
 
 **Still open (conscious tradeoffs, with paths forward):**
-- **Chat history is in-memory** — lost on restart, not multi-instance safe. → a persistent session store (SQLite local / Postgres prod) — this is **V3 Step 0**, the hard prerequisite for the trip-planner ([plan](./docs/v3-trip-planner-plan.md)).
-- **Map-click hotels surface in Japanese.** The Rakuten API returns Japanese-only data; the `/chat` path translates it, but the deterministic `/hotels` endpoint skips the agent for speed, so its hotels come back untranslated. → a `translation_service` that translates once and **caches by Rakuten hotel id**, so both paths get English cheaply.
-- **Pros/cons groundedness is not gated.** I built an **LLM-as-judge** evaluator for it, then **parked** it: judging LLM-written prose while the flow and data are still moving produced non-deterministic false-negatives that blocked clean releases. The release gate is **deterministic-only** for now (name-grounding, structure, cost, latency); the judge is kept for re-enable once V3 stabilises and real ratings (Google Places) ground the pros/cons.
+- **Single-worker deployment.** Session state now persists, but the container runs one worker — fine for portfolio traffic, but true multi-instance safety needs the deferred **Postgres** checkpointer + a horizontal scale-out. The seams are in place (env-split DB URLs); it's a provisioning step, not a redesign.
+- **Trip-planner routing is straight-line, not real travel time.** The re-plan loop uses **haversine** distance (zero API cost) — enough to order stops and flag infeasible combos (e.g. Okinawa ↔ mainland). Real road/rail time via Google **Distance Matrix** is a swappable upgrade behind a billing gate. A useful measured finding: the *geometric* conflicts (distance, feasibility) fall to deterministic Python; the conflicts that stay unsolved (weather, ratings) are a **data** problem, not an orchestration one — so an LLM tool-caller isn't yet justified.
+- **Pros/cons groundedness is not gated.** I built an **LLM-as-judge** evaluator for it, then **parked** it: judging LLM-written prose while the flow and data are still moving produced non-deterministic false-negatives that blocked clean releases. The release gate is **deterministic-only** for now (name-grounding, structure, cost, latency); the judge is kept for re-enable once real ratings (Google Places) ground the pros/cons.
 
 ---
 
@@ -165,13 +178,14 @@ In the Railway container, `/chat` returned zero results despite a "successful" i
 - LangSmith tracing + per-request cost accounting; a LangSmith eval harness, now a **deterministic release gate** in CI (LLM-as-judge parked until the flow + data stabilise).
 - Hardening: rate limiting, outbound retries/backoff; CI test gates + branch-protected releases.
 
-**V3 — under active build: the trip-planner agent**
-The first true *agent* — dynamic tool sequencing + re-planning — for the one query the workflow can't serve: *"plan me a 3-day onsen trip."* **Single agent first; multi-agent only if it strains.** Merged to `develop` behind a `trip_enabled` flag:
-- ✅ **Step 0 — persistent session state** (the hard prerequisite): a session store checkpointing per-thread state, SQLite local / Postgres prod (the Postgres path lands with Railway Postgres).
-- ✅ **Slot-filling** (regions · nights · dates · party · budget · prefs) + a LangGraph agent, region validation (reject non-Japan early), a naive day-by-day itinerary, and per-stop hotels (fail-soft).
+**V3 — built behind a flag: the trip-planner agent**
+The first true *agent* — dynamic sequencing + re-planning — for the one query the workflow can't serve: *"plan me a 3-day onsen trip."* **Single agent first; multi-agent only if it strains.** Merged to `develop` behind `trip_enabled`:
+- ✅ **Step 0 — persistent session state**: a session store checkpointing per-thread state (SQLite local / Postgres prod), plus per-conversation **UUID sessions** so concurrent users don't collide.
+- ✅ **Slot-filling** (regions · nights · dates · party · budget · prefs) + a LangGraph agent, region validation (reject non-Japan early), a day-by-day itinerary, per-stop hotels (fail-soft, now **English**).
+- ✅ **Haversine routing + a bounded re-plan loop** — orders stops and flags geographically infeasible combos, zero API cost. And a **grounded recommendation step** that explains *why* the itinerary suits the traveller (reuses the recommend brain; not a tool-caller).
 - ✅ **Multi-turn / trajectory agent evals**, measured against the workflow baseline.
-- ⏭️ **Next:** Google **Places** ratings to *ground* pros/cons (PR6) · **Distance Matrix/Directions** travel-time + re-planning — the real agent loop (PR7). Both gated on Google billing.
-- ⏭️ Migrate chat GPT-4o → **Claude (Sonnet / Opus)** with a provider fallback chain; pgvector when scale demands it.
+- ⏭️ **Next (billing-gated):** Google **Places** ratings to *ground* pros/cons · **Distance Matrix** for real road/rail travel time (upgrading the haversine seam). An LLM tool-caller for re-planning stays deferred until there's data (weather/ratings) whose interacting constraints actually need weighing.
+- ⏭️ Migrate chat GPT-4o → **Claude (Sonnet / Opus)** with a provider fallback chain; Postgres multi-instance; pgvector when scale demands it.
 
 Full design: [`docs/v3-trip-planner-plan.md`](./docs/v3-trip-planner-plan.md). Earlier notes: [`docs/V2_IMPLEMENTATION_PLAN.md`](./docs/V2_IMPLEMENTATION_PLAN.md) · [`docs/v2-slot-filling-agent.md`](./docs/v2-slot-filling-agent.md).
 
@@ -215,18 +229,18 @@ VITE_GOOGLE_MAPS_API_KEY=...
 VITE_API_KEY=...           # matches the backend API_KEY
 ```
 
-**Tests:** `pytest` in `backend/` (418 tests, external I/O mocked) · `npm test` in `frontend/` (126 Vitest + RTL tests).
+**Tests:** `pytest` in `backend/` (~560 tests, external I/O mocked) · `npm test` in `frontend/` (~130 Vitest + RTL tests).
 **Evals (paid):** `.venv/bin/python scripts/eval_flow.py` from `backend/` — runs the LangSmith flow-eval experiment (needs `LANGSMITH_API_KEY`).
 
 ---
 
 ## Stack
 
-**Backend:** FastAPI · deterministic LangGraph/LCEL workflow (the sole `/chat` engine — the legacy ReAct agent was A/B'd behind a flag, then removed once the workflow was proven) · GPT-4o + `gpt-4o-mini` + `text-embedding-3-small` · ChromaDB · Pydantic · LangSmith (tracing + evals)
+**Backend:** FastAPI · deterministic LangGraph/LCEL workflow (the sole `/chat` engine — the legacy ReAct agent was A/B'd behind a flag, then removed once the workflow was proven) + a LangGraph **trip-planner agent** (flagged) · GPT-4o + `gpt-4o-mini` + `text-embedding-3-small` · ChromaDB · SQLAlchemy Core (session + translation-cache persistence) · Pydantic · LangSmith (tracing + evals)
 **Frontend:** React 18 · Vite 5 · Tailwind · `@react-google-maps/api`
 **Data:** ~220 onsen (Okinawa + Tokai), Japanese→English translated at ingest via `gpt-4o-mini`, geocoded once at ingest, embedded with prefecture/city/spring-type metadata
-**Integrations:** Google Maps (geocoding + JS map) · Rakuten Travel API (live hotels) — displayed with the required [Rakuten Web Service credit badge](https://webservice.rakuten.co.jp/guide/credit) per their attribution terms
-**Infra:** Railway (backend, persistent ChromaDB volume) · Vercel (frontend) · GitHub Actions CI (test gates) · branch-protected `main`
+**Integrations:** Google Maps (geocoding + JS map) · Rakuten Travel API (live hotels, JA→EN translated + cached) — displayed with the required [Rakuten Web Service credit badge](https://webservice.rakuten.co.jp/guide/credit) per their attribution terms
+**Infra:** Railway (backend, persistent ChromaDB volume) · Vercel (frontend) · GitHub Actions CI (test gates · deterministic eval gate · security scanning — gitleaks/pip-audit/npm/bandit · Dependabot) · branch-protected `main`
 
 ---
 
