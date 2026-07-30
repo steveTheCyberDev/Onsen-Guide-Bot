@@ -9,7 +9,7 @@ import { apiPost } from '../../services/api';
  * Owns the /chat API call and dispatches CHAT_RESULTS / SET_STATUS.
  */
 export default function ChatPanel({ state, dispatch }) {
-  const { messages, status } = state;
+  const { messages, status, sessionId } = state;
   // Note: messages is read-only here — mutations go through dispatch
   const isLoading = status === 'loading';
 
@@ -19,7 +19,9 @@ export default function ChatPanel({ state, dispatch }) {
     dispatch({ type: 'SET_STATUS', payload: 'loading' });
 
     try {
-      const data = await apiPost('/chat', { message: text, session_id: 'default' });
+      // sessionId comes from shared app state (appReducer) — stable across
+      // turns within a conversation, minted fresh on RESET/SELECT_PREFECTURE.
+      const data = await apiPost('/chat', { message: text, session_id: sessionId });
       const onsens = data.onsens ?? [];
       const hotels = data.hotels ?? [];
       const recommendation = data.recommendation ?? null;

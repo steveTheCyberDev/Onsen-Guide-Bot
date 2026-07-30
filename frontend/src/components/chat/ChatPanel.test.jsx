@@ -12,6 +12,9 @@ import { initialState } from '../../reducer/appReducer';
 // ---------------------------------------------------------------------------
 const FAKE_API_URL = 'http://localhost:8000';
 
+// v4 UUID — matches crypto.randomUUID() output.
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -136,8 +139,9 @@ describe('ChatPanel', () => {
         makeFetchOk({ reply: 'Done.', onsens: [], hotels: [] })
       );
 
+      const state = makeState();
       const user = userEvent.setup();
-      render(<ChatPanel state={makeState()} dispatch={dispatch} />);
+      render(<ChatPanel state={state} dispatch={dispatch} />);
 
       await user.type(screen.getByRole('textbox', { name: /ask about onsen/i }), 'test query');
       await user.click(screen.getByRole('button', { name: /send message/i }));
@@ -150,9 +154,44 @@ describe('ChatPanel', () => {
           // VITE_API_KEY is set, so assert the headers we care about, not an
           // exact match.
           headers: expect.objectContaining({ 'Content-Type': 'application/json' }),
-          body: JSON.stringify({ message: 'test query', session_id: 'default' }),
+          // session_id is a per-conversation UUID from app state — no longer
+          // the hardcoded 'default' — so assert on state.sessionId, not a
+          // literal string.
+          body: JSON.stringify({ message: 'test query', session_id: state.sessionId }),
         })
       );
+
+      const sentBody = JSON.parse(fetch.mock.calls[0][1].body);
+      expect(sentBody.session_id).not.toBe('default');
+      expect(sentBody.session_id).toMatch(UUID_RE);
+    });
+
+    it('sends the SAME session_id across two messages in one conversation', async () => {
+      fetch.mockReturnValue(makeFetchOk({ reply: 'ok', onsens: [], hotels: [] }));
+
+      const user = userEvent.setup();
+      // One fixed state object for the whole test — mirrors the real app,
+      // where dispatch mutates App's useReducer state but sessionId itself
+      // is untouched by ADD_MESSAGE/SET_STATUS/CHAT_RESULTS (only RESET /
+      // SELECT_PREFECTURE mint a new one, on a new conversation).
+      render(<ChatPanel state={makeState()} dispatch={dispatch} />);
+
+      const input = screen.getByRole('textbox', { name: /ask about onsen/i });
+      const sendButton = screen.getByRole('button', { name: /send message/i });
+
+      await user.type(input, 'first message');
+      await user.click(sendButton);
+
+      await user.type(input, 'second message');
+      await user.click(sendButton);
+
+      await waitFor(() => expect(fetch).toHaveBeenCalledTimes(2));
+
+      const firstBody = JSON.parse(fetch.mock.calls[0][1].body);
+      const secondBody = JSON.parse(fetch.mock.calls[1][1].body);
+
+      expect(firstBody.session_id).toMatch(UUID_RE);
+      expect(firstBody.session_id).toBe(secondBody.session_id);
     });
 
     it('dispatches CHAT_RESULTS with onsens and hotels after fetch resolves', async () => {
