@@ -11,7 +11,19 @@ export const initialState = {
   // the chat (via FOCUS_ONSEN). MapPanel watches this nonce — not selectedOnsen —
   // to trigger panTo+zoom, so hovering a marker never yanks the map.
   focusCounter: 0,
+  // Per-conversation id sent to /chat as `session_id`. Must stay STABLE across
+  // turns within one conversation (multi-turn history + the trip-planner's
+  // per-thread checkpointer key off it) but a FRESH uuid whenever a new
+  // conversation starts. RESET and SELECT_PREFECTURE both already clear
+  // `messages` (i.e. they ARE "new conversation" actions), so both mint a new
+  // sessionId below; every other action leaves it untouched.
+  sessionId: createSessionId(),
 };
+
+/** Mint a per-conversation session id. Exported for reuse (e.g. App.jsx). */
+export function createSessionId() {
+  return crypto.randomUUID();
+}
 
 export function appReducer(state, action) {
   switch (action.type) {
@@ -66,6 +78,8 @@ export function appReducer(state, action) {
       };
 
     case 'SELECT_PREFECTURE':
+      // Clears messages → this IS a new conversation, so mint a fresh
+      // sessionId (see comment on initialState.sessionId above).
       return {
         ...state,
         selectedPrefecture: action.payload,
@@ -76,6 +90,7 @@ export function appReducer(state, action) {
         activeMarkers: 'onsens',
         messages: [],
         status: 'idle',
+        sessionId: createSessionId(),
       };
 
     case 'FOCUS_ONSEN':
@@ -95,8 +110,12 @@ export function appReducer(state, action) {
       };
 
     case 'RESET':
+      // A brand-new conversation — mint a fresh sessionId rather than
+      // reusing the module-level initialState one (which was already sent
+      // to the backend for the conversation just reset).
       return {
         ...initialState,
+        sessionId: createSessionId(),
       };
 
     default:
