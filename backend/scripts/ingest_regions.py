@@ -6,7 +6,7 @@ Calls the existing ingest() function from ingest.py — no ingest logic lives he
 Usage (run from the backend/ directory so that the sys.path setup in ingest.py
 works correctly, or from the project root as shown below):
 
-  # Ingest only the launch subset (okinawa + tokai):
+  # Ingest only the launch subset (okinawa + tokai + hokuriku):
   python backend/scripts/ingest_regions.py
 
   # Ingest specific slugs:
@@ -60,8 +60,10 @@ DATA_DIR = settings.data_dir
 # Full slug list: okinawa, tokai, kanto, kinki, chugoku, shikoku,
 #                 kyushu, hokkaido, hokuriku, tohoku
 ACTIVE_REGIONS: list[str] = [
-    "okinawa",  # ~3 records
-    "tokai",    # ~217 records
+    "okinawa",   # ~3 records
+    "tokai",     # ~217 records — Aichi, Gifu, Mie, Shizuoka
+    "hokuriku",  # ~577 records — 北陸・甲信越: Nagano, Niigata, Toyama,
+                 #                Ishikawa, Yamanashi, Fukui
 ]
 
 # ── Known slugs ───────────────────────────────────────────────────────────────

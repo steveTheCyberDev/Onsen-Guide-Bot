@@ -110,6 +110,26 @@ def parse_location(location: str | None) -> tuple[str, str]:
     return prefecture_ja, city_ja
 
 
+def translate_prefecture(prefecture_ja: str | None) -> str:
+    """Map a Japanese prefecture label to English, handling cross-border onsen.
+
+    A handful of onsen straddle a prefecture line and the source site records
+    both, joined by an ideographic slash (e.g. "長野県／新潟県" for 姫川温泉).
+    Such a value is not a PREFECTURE_MAP key, so without this split it would
+    fall through verbatim and leak a Japanese string into `prefecture_en` —
+    which is the field `known_prefectures()` exposes as the canonical list of
+    plannable regions. We take the FIRST prefecture as the primary one (it is
+    the one the site files the onsen under). Unknown single values still fall
+    through unchanged, matching the spa-quality behaviour.
+    """
+    if not prefecture_ja:
+        return ""
+    if prefecture_ja in PREFECTURE_MAP:
+        return PREFECTURE_MAP[prefecture_ja]
+    primary = prefecture_ja.split("／", 1)[0].strip()
+    return PREFECTURE_MAP.get(primary, prefecture_ja)
+
+
 def translate_spa_quality(quality_ja: str | None) -> str:
     # Some records have a null/empty spa_quality; treat that as "no info".
     if not quality_ja:
@@ -164,7 +184,7 @@ def apply_static_fields(record: dict, region_slug: str) -> None:
     prefecture_ja, city_ja = parse_location(record["location"])
     record["prefecture_ja"] = prefecture_ja
     record["city_ja"] = city_ja
-    record["prefecture_en"] = PREFECTURE_MAP.get(prefecture_ja, prefecture_ja)
+    record["prefecture_en"] = translate_prefecture(prefecture_ja)
     record["spa_quality_en"] = translate_spa_quality(record["spa_quality"])
     record["region_slug"] = region_slug
 
