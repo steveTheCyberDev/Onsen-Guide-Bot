@@ -6,7 +6,7 @@ langchain>=0.3.0
 langgraph>=0.2.0
 langchain-anthropic>=0.2.0
 langchain-openai>=0.2.0
-langchain-community>=0.3.0
+langchain-community>=0.4.2
 chromadb>=0.6.0
 # Durable chat session store (V3 Step 0: services/chat/chat_service.py) via
 # SQLAlchemy Core. One query path serves SQLite (local) and Postgres (prod); the
