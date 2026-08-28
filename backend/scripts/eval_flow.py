@@ -552,24 +552,34 @@ def _expectation(ex: dict) -> dict:
 
 
 def get_or_create_dataset(client, allowed: dict[str, set[str]]):
-    """Idempotently get-or-create the ``onsen-flow-evals`` dataset, syncing new examples.
+    """Idempotently get-or-create the ``onsen-flow-evals`` dataset, syncing examples.
 
     Creates and seeds the dataset if missing. If it already exists, it is reused
-    (so existing examples and their experiment history are preserved) and any
-    ``_EXAMPLES`` not already present — keyed by message text — are ADDED. This
-    lets new evals be appended to ``_EXAMPLES`` and picked up on the next run
-    without deleting/re-seeding the dataset (which would orphan past experiments).
+    (so existing examples and their experiment history are preserved): any
+    ``_EXAMPLES`` not already present — keyed by message text — are ADDED, and any
+    ALREADY-present example whose freshly-reconciled expectation (``has_data`` /
+    ``no_data_regions``, both derived from live ChromaDB truth) has drifted from
+    what is stored is UPDATED in place. The update step exists because
+    :func:`reconcile_has_data` only reconciles the in-memory ``examples`` list on
+    every run — without it, an example seeded BEFORE a region was ingested keeps
+    asserting that region has no data FOREVER (the dataset itself is never
+    re-synced), which silently breaks ``plan_validity``/``grounding`` the moment
+    the region gets real data. Concretely: examples naming Nagano were seeded
+    while Nagano was ingested-empty; ingesting it (see docs/PROJECT_JOURNEY.md)
+    left their stored ``no_data_regions: ["Nagano"]`` stale until this update path
+    was added, which is exactly the class of bug this function's docstring always
+    claimed to prevent.
     """
     examples = reconcile_has_data(_EXAMPLES, allowed)
 
     if client.has_dataset(dataset_name=DATASET_NAME):
         dataset = client.read_dataset(dataset_name=DATASET_NAME)
-        existing_keys = {
-            _example_key(e.inputs or {})
+        existing = {
+            _example_key(e.inputs or {}): e
             for e in client.list_examples(dataset_id=dataset.id)
         }
         missing = [
-            ex for ex in examples if _example_key(_example_input(ex)) not in existing_keys
+            ex for ex in examples if _example_key(_example_input(ex)) not in existing
         ]
         if missing:
             client.create_examples(
@@ -582,6 +592,22 @@ def get_or_create_dataset(client, allowed: dict[str, set[str]]):
                 f"Added {len(missing)} new example(s) to existing dataset: "
                 f"{[_example_key(_example_input(ex)) for ex in missing]}"
             )
+
+        stale = [
+            (existing[key].id, _expectation(ex))
+            for ex in examples
+            if (key := _example_key(_example_input(ex))) in existing
+            and existing[key].outputs != _expectation(ex)
+        ]
+        if stale:
+            client.update_examples(
+                dataset_id=dataset.id,
+                updates=[
+                    {"id": example_id, "outputs": expectation, "metadata": expectation}
+                    for example_id, expectation in stale
+                ],
+            )
+            print(f"Reconciled {len(stale)} stale example(s) — expectation had drifted.")
         return dataset
 
     dataset = client.create_dataset(
