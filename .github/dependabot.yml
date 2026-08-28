@@ -1,0 +1,46 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Onsen Guide Bot — Dependabot
+#
+# Weekly automated PRs for dependency updates in both deployable units. Part of
+# docs/security-red-team-plan.md §3 Phase 1 (CI hygiene). Paired with the
+# pip-audit / npm audit jobs in .github/workflows/security.yml — Dependabot
+# proposes the fix, the audit jobs verify the current state.
+#
+# NOTE (frontend pin): Vitest 2.x + jsdom 25.x are deliberately pinned because
+# newer versions break on this project's dev machine (see CLAUDE.md /
+# frontend/.nvmrc). Dependabot will still open PRs bumping them — do NOT merge
+# those without confirming the breakage is resolved; close/ignore instead if
+# it recurs.
+# ─────────────────────────────────────────────────────────────────────────────
+
+version: 2
+updates:
+  # Backend — Python dependencies (backend/requirements.txt)
+  - package-ecosystem: "pip"
+    directory: "/backend"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 10
+    labels:
+      - "dependencies"
+      - "backend"
+
+  # Frontend — npm dependencies (frontend/package.json)
+  - package-ecosystem: "npm"
+    directory: "/frontend"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 10
+    labels:
+      - "dependencies"
+      - "frontend"
+
+  # GitHub Actions — keep the CI/security workflow actions themselves patched
+  # (actions/checkout, actions/setup-python, gitleaks-action, etc.)
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    labels:
+      - "dependencies"
+      - "ci"

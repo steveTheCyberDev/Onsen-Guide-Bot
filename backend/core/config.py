@@ -30,6 +30,15 @@ class Settings(BaseSettings):
     # Override via env var CHROMA_PATH in production (Railway sets it to /app/chroma_db,
     # the mount point of the persistent volume) so the app and ingest job agree.
     chroma_path: str = "chroma_db"
+    # SQLAlchemy database URL for the durable chat session store (V3 Step 0:
+    # services/chat/chat_service.py). Default is "" which means "use the computed
+    # local default" — a SQLite file at backend/sessions.db, resolved from this
+    # config file's own location so it is CWD-independent AND survives restart (see
+    # resolved_session_db_url below). The URL string selects the dialect: the local
+    # default is sqlite:///..., and production overrides via env var SESSION_DB_URL
+    # to a Postgres URL (Railway: SESSION_DB_URL=postgresql+psycopg://...). One code
+    # path serves both engines; only the URL changes. Mirrors chroma_path/data_path.
+    session_db_url: str = ""
     # Filesystem path to the onsen data directory (the *_springs.jsonl files the
     # ingest scripts read). Default is "" which means "use the computed local
     # default" — backend/data, resolved from this file's own location so it is
@@ -37,16 +46,11 @@ class Settings(BaseSettings):
     # sets it to /app/data, where COPY data/ data/ lands) so the ingest job finds
     # the files regardless of the source-tree layout. Mirrors chroma_path above.
     data_path: str = ""
-    # Chat LLM used by the agent. Override via env var CHAT_MODEL (e.g. to swap
-    # "gpt-4o" for "gpt-4o-mini" and measure the difference via the fabrication
-    # eval at scripts/eval_fabrication.py).
+    # Chat LLM knob. Not referenced on the live workflow path today (the routing/
+    # extraction hop uses intent_model, the recommend brain uses analyze_model);
+    # retained as the top-level model knob for the planned model migration (PR8).
+    # Override via env var CHAT_MODEL.
     chat_model: str = "gpt-4o"
-    # Which engine the /chat dispatcher (agent/agent.py::run_agent) routes to.
-    # "react"    → the legacy GPT-4o ReAct agent (run_react_agent) — current live behavior.
-    # "workflow" → the deterministic V2 pipeline (agent/workflow/pipeline.py::run_workflow).
-    # Default MUST stay "react" so live behavior is unchanged until explicitly flipped.
-    # This is the A/B + instant-rollback seam. Override via env var CHAT_ENGINE.
-    chat_engine: str = "react"
     # Small, fast LLM used by the V2 workflow's intent-parsing node
     # (agent/workflow/intent.py) to extract {prefecture, query, wants_hotels}.
     # Kept separate from chat_model so the cheap routing call can use a smaller
@@ -60,8 +64,7 @@ class Settings(BaseSettings):
     analyze_model: str = "gpt-4o"
     # Gate for the RECOMMEND brain. When False (default) the recommend branch skips
     # the analyze_onsen LLM call and returns candidates without pros/cons (safe/dead
-    # until flipped) — this is the A/B rollout seam, mirroring chat_engine above.
-    # Override via env var ANALYZE_ENABLED.
+    # until flipped) — an A/B rollout seam. Override via env var ANALYZE_ENABLED.
     analyze_enabled: bool = False
     # Separate ChromaDB collection for Layer 2 KB prose (etiquette, spring-type
     # benefits, …). Kept apart from the onsen_springs collection so an onsen search
@@ -75,6 +78,67 @@ class Settings(BaseSettings):
     # safe "coming soon" stub; True → real grounded RAG answer. A/B + instant
     # rollback seam, mirrors analyze_enabled above. Override via ASK_ENABLED.
     ask_enabled: bool = False
+    # Gate for trip mode (V3 multi-day trip-planner agent). False (default) →
+    # a trip-classified query falls through to the normal search/recommend path
+    # (graceful degradation, no dead-end); True → the trip branch runs. A/B +
+    # instant rollback seam, mirrors ask_enabled/analyze_enabled above. Ships dead
+    # until flipped. Override via env var TRIP_ENABLED.
+    trip_enabled: bool = False
+    # Which LangGraph checkpointer backs the trip-planner agent's working state
+    # (agent/trip/graph.py). The checkpointer persists the graph's TripState per
+    # thread_id=session_id (distinct from the Step-0 transcript store).
+    #   "memory"   → in-process MemorySaver (local default; state lives for the
+    #                process lifetime, resets on restart). Correct for local dev
+    #                and the single-worker Dockerfile.
+    #   "postgres" → PostgresSaver against the same DB as Step 0 — NOT YET
+    #                IMPLEMENTED. Deferred behind this flag until Railway Postgres
+    #                (PR1) exists; selecting it today raises NotImplementedError.
+    # Override via env var TRIP_CHECKPOINTER_BACKEND. Default MUST stay "memory".
+    trip_checkpointer_backend: str = "memory"
+    # --- Trip-planner routing thresholds (V3 PR7, deterministic haversine) ------
+    # Both are STRAIGHT-LINE (haversine) kilometre thresholds over the ingest-time
+    # onsen coordinates — no Google/Distance-Matrix billing (see
+    # services/routing/routing_service.py). Tunable heuristics, so surfaced as
+    # settings (env-overridable) rather than hard-coded, per the local/prod split.
+    #
+    # Above this inter-region distance a trip is treated as geographically
+    # INFEASIBLE by land (needs a flight / crosses water) and the plan node flags it
+    # + suggests a reshape instead of silently emitting a broken itinerary. 500 km
+    # cleanly separates the island case (Okinawa↔mainland ≈ 1,300 km) from every
+    # adjacent-Honshu pair in the ingested data (all < ~200 km). Override via
+    # TRIP_INFEASIBLE_LEG_KM.
+    trip_infeasible_leg_km: float = 500.0
+    # A trip counts as geographically DISPERSED (a factor in the over-constrained
+    # check) when its largest inter-region hop is at least this far. Combined with
+    # "≥3 regions AND nights ≤ regions" so a compact 3-region cluster is NOT flagged;
+    # only genuinely spread-out regions trigger dropping the farthest outlier.
+    # Override via TRIP_DISPERSED_LEG_KM.
+    trip_dispersed_leg_km: float = 100.0
+    # --- Hotel name/detail JA→EN translation (product-completeness hardening) ---
+    # Gate for translating Rakuten hotel name/details from Japanese to English.
+    # When False (DEFAULT) hotels are returned with their original Japanese text
+    # exactly as today — NO LLM call, NO cache lookup, a clean no-op. /hotels is
+    # LIVE in prod, so turning this on is a real behaviour change that must be
+    # flipped deliberately (Railway env) after review. When True the workflow
+    # translates each hotel's name/hotelSpecial/location once (gpt-4o-mini) and
+    # caches the result by Rakuten hotel id, so a given hotel is only translated
+    # once ever. Fail-soft: any translation/LLM/DB error falls back to the original
+    # Japanese text and NEVER breaks the hotel response. Mirrors the analyze_enabled/
+    # ask_enabled/trip_enabled rollout-gate seam. Override via HOTEL_TRANSLATION_ENABLED.
+    hotel_translation_enabled: bool = False
+    # Model used to translate hotel name/details. Defaults to the cheap gpt-4o-mini
+    # (same model + discipline as the ingest translate-at-ingest pattern in
+    # scripts/ingest.py) since the strings are short and the call is batched across
+    # all hotels in one request. Override via env var HOTEL_TRANSLATION_MODEL.
+    hotel_translation_model: str = "gpt-4o-mini"
+    # SQLAlchemy URL for the hotel-translation cache (services/translation). Default
+    # "" means "reuse resolved_session_db_url" (same DB as the chat session store) —
+    # zero-config locally. In prod you MAY split this off (env HOTEL_TRANSLATION_DB_URL,
+    # e.g. its own Postgres/SQLite) so the high-frequency, FULLY fail-soft, non-PII
+    # hotel cache does not contend for write locks (esp. SQLite) with the
+    # non-fail-soft per-user session store (chat_service.save_message). See
+    # resolved_hotel_translation_db_url. Override via env var HOTEL_TRANSLATION_DB_URL.
+    hotel_translation_db_url: str = ""
     # Top-k KB chunks retrieved for an ask answer. Override via ASK_TOP_K.
     ask_top_k: int = 4
     # DISTANCE ceiling for KB chunks (Chroma returns distance, lower = closer).
@@ -91,11 +155,19 @@ class Settings(BaseSettings):
     # "" → fall back to settings.intent_model at the call site. Override via ASK_MODEL.
     ask_model: str = ""
     # Bounded retry count for outbound LLM calls (ChatOpenAI). Passed as
-    # `max_retries` to every ChatOpenAI instance (the ReAct llm in agent/agent.py
-    # and the intent llm in agent/workflow/intent.py) so transient OpenAI errors
-    # (timeouts, 429/5xx) are retried a few times instead of failing the request,
-    # without retrying forever. Override via env var LLM_MAX_RETRIES.
+    # `max_retries` to every ChatOpenAI instance (e.g. the intent llm in
+    # agent/workflow/intent.py) so transient OpenAI errors (timeouts, 429/5xx)
+    # are retried a few times instead of failing the request, without retrying
+    # forever. Override via env var LLM_MAX_RETRIES.
     llm_max_retries: int = 2
+    # --- Outbound HTTP timeout (services/http_retry.py) ---
+    # Default per-request timeout (seconds) applied to outbound `requests.get` calls
+    # made through services.http_retry.get_with_retries when the CALLER does not pass
+    # its own `timeout`. A bounded timeout is mandatory so a hung/slow upstream can
+    # never tie up a worker indefinitely (bandit B113). Callers that pass an explicit
+    # `timeout` keep it (this is only the safety-net default). Override via
+    # env var HTTP_TIMEOUT_SECONDS.
+    http_timeout_seconds: float = 10.0
     # --- Inbound rate limiting (slowapi) ---
     # Per-client-IP limits applied to the PAID endpoints only (POST /chat and
     # POST /hotels); /health and other infra routes stay unlimited. Values use
@@ -166,6 +238,37 @@ class Settings(BaseSettings):
         if self.data_path:
             return Path(self.data_path)
         return Path(__file__).resolve().parent.parent / "data"
+
+    @property
+    def resolved_session_db_url(self) -> str:
+        """Resolved SQLAlchemy URL for the chat session store.
+
+        Returns ``session_db_url`` verbatim when SESSION_DB_URL is set (prod
+        override, typically ``postgresql+psycopg://...``), else a SQLite URL
+        pointing at ``backend/sessions.db`` resolved from this config file's own
+        location (config.py lives at backend/core/config.py, so parent.parent ==
+        backend/). Resolving from __file__ keeps the file path stable regardless of
+        the current working directory, so history survives a process restart.
+        Mirrors the data_path/data_dir split above.
+        """
+        if self.session_db_url:
+            return self.session_db_url
+        db_path = Path(__file__).resolve().parent.parent / "sessions.db"
+        return f"sqlite:///{db_path}"
+
+    @property
+    def resolved_hotel_translation_db_url(self) -> str:
+        """Resolved SQLAlchemy URL for the hotel-translation cache.
+
+        Returns ``hotel_translation_db_url`` when HOTEL_TRANSLATION_DB_URL is set
+        (prod may split the non-PII hotel cache onto its own database to avoid
+        write-lock contention with the non-fail-soft chat session store), else falls
+        back to ``resolved_session_db_url`` — the SAME DB as the session store, so
+        local dev stays zero-config. Mirrors the resolved_session_db_url env-split.
+        """
+        if self.hotel_translation_db_url:
+            return self.hotel_translation_db_url
+        return self.resolved_session_db_url
 
     @property
     def kb_data_dir(self) -> Path:

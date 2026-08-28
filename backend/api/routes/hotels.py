@@ -9,6 +9,7 @@ from api.limiter import limiter
 from core.config import settings
 from core.exceptions import OnsenBotError
 from services.rakuten.rakuten_service import search_hotels
+from services.translation.translation_service import translate_hotels
 
 logger = logging.getLogger(__name__)
 
@@ -50,8 +51,11 @@ def _haversine_km(lat1: float, lng1: float, lat2: float, lng2: float) -> float:
 def _to_item(h: dict, origin_lat: float, origin_lng: float) -> HotelItem:
     """Map a Rakuten service hotel dict to the frontend HotelItem shape.
 
-    Rakuten returns Japanese-only names (V1: shown as-is, no translation), so
-    name and originalName are the same Japanese string.
+    Rakuten returns Japanese-only text. When hotel translation is enabled the dict
+    carries ``name_en`` / ``hotelSpecial_en`` / ``location_en`` (added by
+    ``translate_hotels``); we surface those in the visible fields and keep the
+    Japanese name in ``originalName``. Each ``*_en`` read falls back to the Japanese
+    source, so gate-off / fail-soft cleanly shows Japanese exactly as before.
     """
     name = h.get("name") or ""
     lat = h.get("lat")
@@ -63,10 +67,10 @@ def _to_item(h: dict, origin_lat: float, origin_lng: float) -> HotelItem:
         else None
     )
     return HotelItem(
-        name=name,
+        name=h.get("name_en") or name,
         originalName=name,
-        location=h.get("address"),
-        hotelSpecial=h.get("hotelSpecial"),
+        location=h.get("location_en") or h.get("address"),
+        hotelSpecial=h.get("hotelSpecial_en") or h.get("hotelSpecial"),
         price=str(price) if price is not None else None,
         image=h.get("hotelImageUrl"),
         url=h.get("url"),
@@ -94,6 +98,10 @@ async def get_hotels(request: Request, payload: HotelsRequest):
         raw = await asyncio.to_thread(
             search_hotels, payload.latitude, payload.longitude, payload.radius
         )
+        # Translate name/details JA→EN (cache-aware, batched). Gated + fail-soft:
+        # off = Japanese passthrough (no-op); any error falls back to Japanese, so
+        # this never adds a failure mode to the response. Sync (LLM+DB) → off-loop.
+        raw = await asyncio.to_thread(translate_hotels, raw)
     except OnsenBotError as e:
         logger.error("POST /hotels service error | %s", e)
         raise HTTPException(status_code=502, detail=str(e))

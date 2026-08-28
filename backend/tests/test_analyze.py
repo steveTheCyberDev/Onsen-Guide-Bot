@@ -12,7 +12,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from agent.agent import OnsenResult
+from agent.schemas import OnsenResult
 from agent.workflow import analyze as analyze_module
 from agent.workflow.analyze import GuideResult, _OnsenAnalysis, _project, analyze_onsen
 

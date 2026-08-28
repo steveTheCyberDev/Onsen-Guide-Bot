@@ -39,7 +39,8 @@ The parts I'd bring up in an interview — the engineering, not the feature list
 - **~10× faster by removing the agent.** The V1 LangGraph **ReAct agent** averaged **~35 s** per `/chat`. I traced it, found two GPT-4o round-trips dominating the time, and redesigned it into a **deterministic workflow** — one small intent call + pure-Python assembly — landing at **~3.7 s**. Shipped behind a feature flag for an A/B and instant rollback.
 - **Hallucination prevented *structurally*, not by prompting.** Onsen results are assembled in Python from retrieved records; the LLM never invents facts. An **automated eval suite** (LangSmith) scores grounding so "is it honest?" has a number.
 - **Cost & latency are observed, not guessed.** Full LangSmith tracing in prod with **per-request cost/token attribution** (~$0.002 search · ~$0.005 recommend), and the expensive recommend LLM call sits behind a gated rollout flag.
-- **Production-grade, not a notebook.** Per-IP rate limiting, outbound retry/backoff, fail-closed API-key auth, **206 backend + 126 frontend tests**, CI test gates, and branch-protected releases to Railway + Vercel.
+- **Red-teamed like a product, not a demo.** A **prompt-injection test suite** (instruction-override, prompt-exfil, indirect injection via the knowledge base) proves the app resists injection *structurally* — the model can't fabricate or leak because it never assembles the facts. CI runs secret-scanning + dependency/SAST audits (gitleaks · pip-audit · npm audit · bandit) + Dependabot; the first scan caught a real timeout bug in my own resilience code.
+- **Production-grade, not a notebook.** Per-IP rate limiting, outbound retry/backoff, fail-closed API-key auth, strict `extra="forbid"` response schemas, **~560 backend + ~130 frontend tests**, CI test gates (including a deterministic eval release gate), and branch-protected releases to Railway + Vercel.
 
 ---
 
@@ -57,7 +58,7 @@ React (Vite + Tailwind)  ──HTTP──>  FastAPI  ──>  Workflow pipeline
   ⑤ reply          template             →  typed AgentResponse  { reply, onsens[], hotels[], recommendation }
 ```
 
-The factual data layer (② ④) never calls an LLM, so it **can't fabricate** — the model only routes (①) and reasons over already-retrieved candidates (③). The original ReAct agent is retained behind a `CHAT_ENGINE` flag for A/B comparison and rollback.
+The factual data layer (② ④) never calls an LLM, so it **can't fabricate** — the model only routes (①) and reasons over already-retrieved candidates (③). The original ReAct agent was A/B'd against this workflow behind a feature flag, then removed once the workflow was proven in prod — the deterministic workflow is now the only engine.
 
 **Strict, one-directional layering** — each layer only knows the one below it:
 
@@ -81,9 +82,9 @@ api/  ──>  agent/ (workflow + tools)  ──>  services/  ──>  ChromaDB 
 The judgement calls I'd defend in a design review.
 
 ### 1. A deterministic workflow, *not* an agent — after measuring the agent
-**Why I started with ReAct:** query shapes were unknown, so I wrapped geocoding/search/hotels as tools and let `create_react_agent` reason → call tool → observe → repeat. The right call while I didn't yet know what users would ask.
+**Why I started with ReAct:** query shapes were unknown, so I wrapped geocoding/search/hotels as tools and let a LangGraph ReAct agent reason → call tool → observe → repeat. The right call while I didn't yet know what users would ask.
 **What measurement showed:** with LangSmith tracing I attributed a 20-onsen query's ~35 s almost entirely to **two GPT-4o round-trips** — one to "observe" the tool output, one to re-serialize it into the response schema. The agent's freedom *was* the latency.
-**The redesign:** I replaced the loop with a fixed pipeline — one cheap `gpt-4o-mini` intent call, then **pure-Python assembly** of the retrieved records (no second LLM hop). Same grounded results, **~35 s → ~3.7 s (~10×)**, shipped behind a `CHAT_ENGINE` flag so I could A/B the two engines in prod and roll back instantly.
+**The redesign:** I replaced the loop with a fixed pipeline — one cheap `gpt-4o-mini` intent call, then **pure-Python assembly** of the retrieved records (no second LLM hop). Same grounded results, **~35 s → ~3.7 s (~10×)**, shipped behind a feature flag so I could A/B the two engines in prod and roll back instantly. Once proven, the flag and the ReAct engine were removed — the workflow is the only engine.
 **The insight I'd articulate:** for V1/V2 this is a *workflow*, not an *agent* — and treating it as one made it faster, cheaper, and impossible to hallucinate facts. True agency (an LLM choosing its own tool path) earns its place back at **V3**, not before.
 
 ### 2. The one LLM judgement call that earns its place: the recommend brain
@@ -112,6 +113,18 @@ Treating LLM quality as a **testable, measured property** — the part most demo
 
   It exits non-zero on failures (CI-gateable), and routes results to a dedicated LangSmith project so eval traffic stays separate from prod.
 - **Tracing & cost.** Every prod `/chat` is a LangSmith trace tagged with engine/version/deploy SHA, with **per-request token cost** attached and sliced by mode — so "what does the recommend feature cost?" is answerable with a number, and model swaps (e.g. gpt-4o vs gpt-4o-mini) can be compared on cost *and* grounding.
+
+---
+
+## Security & AI safety
+
+Treating an LLM app as an **attack surface**, not just a feature — threat-modelled and red-teamed against my own product. (Full plan in [`docs/security-red-team-plan.md`](./docs/security-red-team-plan.md).)
+
+- **Prompt-injection red-team suite ([`backend/tests/test_prompt_injection.py`](./backend/tests/test_prompt_injection.py)).** Adversarial `/chat` inputs — instruction-override, system-prompt exfiltration, schema-break, role-play jailbreak, and **indirect injection via a poisoned knowledge-base doc**. The tests pin the guarantees that hold *regardless of what the model does*: returned onsen names are always a subset of the retrieved ground truth (fabrication is impossible via the Python-assembly path), the response schema stays locked, and no system prompt or key can leak through the deterministic reply. Real-model resistance is covered separately in the paid eval layer. The honest framing: **pytest proves the architecture resists; the eval proves the model does.**
+- **CI security scanning.** Every push runs **gitleaks** (secret scanning, a hard gate), **pip-audit** + **npm audit** (dependency CVEs), and **bandit** (Python SAST), with **Dependabot** for update PRs. The first run immediately earned its keep — it caught a missing outbound timeout in my *own* resilience module (a hung upstream could tie up a worker) and flagged a dependency CVE (which I traced and confirmed non-exploitable, since the app uses ChromaDB embedded, not its network server).
+- **Defense-in-depth.** Response schemas are `extra="forbid"` (reject injected keys, not silently drop them); the reply's location label only echoes a user-supplied prefecture when it's a *known* one, so a jailbroken parse can't reflect attacker text back.
+
+The honest caveat I'd still flag: this is a low-blast-radius app (read-only, no accounts, no PII), so this is *proportionate* defensive hardening — the point is the discipline (threat model → red-team → gate), not that a hot-spring finder needs a SOC.
 
 ---
 
@@ -145,15 +158,14 @@ In the Railway container, `/chat` returned zero results despite a "successful" i
 
 ## Status & limitations
 
-**V2.5 is live in production** — the deterministic workflow, guide-style recommendations, evals, and observability are all shipped and running. I'd rather name the remaining gaps than hide them:
+**V2.5 is live in production** — the deterministic workflow, guide-style recommendations, the `ask` knowledge base, evals, and observability are all shipped and running. **V3 (the trip-planner agent) is built and ready behind a flag** — a LangGraph agent with persistent session state, slot-filling, region validation, **haversine-based routing + a bounded re-plan loop**, and a **grounded recommendation step** ("why this itinerary suits you"), all merged to `develop` **behind `trip_enabled`** (deliberately not yet flipped in prod). See the [design plan](./docs/v3-trip-planner-plan.md). I'd rather name the remaining gaps than hide them:
 
-**Shipped since V1** (were the V1 limitations): ingest-time geocoding · LangSmith eval harness · tracing + per-request cost accounting · rate limiting + outbound resilience · the workflow redesign.
+**Shipped since V1** (were the V1 limitations): ingest-time geocoding · the `ask`-mode knowledge base · LangSmith eval harness, now a **deterministic CI release gate** · tracing + per-request cost accounting · rate limiting + outbound resilience · the workflow redesign · **English hotel translation** (Rakuten JA→EN, cached by hotel id, across all three hotel surfaces) · **a persistent session store** (SQLite local / Postgres prod) with per-conversation UUID sessions · a **security posture** (prompt-injection suite + CI scanning + defense-in-depth).
 
 **Still open (conscious tradeoffs, with paths forward):**
-- **Chat history is in-memory** — lost on restart, not multi-instance safe. → persistent session store (Redis).
-- **Map-click hotels surface in Japanese.** The Rakuten API returns Japanese-only data; the `/chat` path translates it, but the deterministic `/hotels` endpoint skips the agent for speed, so its hotels come back untranslated. → a `translation_service` that translates once and **caches by Rakuten hotel id**, so both paths get English cheaply.
-- **Pros/cons groundedness isn't eval-checked yet.** The eval suite scores *name* grounding; free-text pros/cons would need an LLM-as-judge evaluator. → on the eval roadmap.
-- **`ask` mode is a stub.** Knowledge questions ("tattoo etiquette?") aren't answered yet. → V2.5 Layer 2: a markdown knowledge base in a separate Chroma collection with semantic RAG.
+- **Single-worker deployment.** Session state now persists, but the container runs one worker — fine for portfolio traffic, but true multi-instance safety needs the deferred **Postgres** checkpointer + a horizontal scale-out. The seams are in place (env-split DB URLs); it's a provisioning step, not a redesign.
+- **Trip-planner routing is straight-line, not real travel time.** The re-plan loop uses **haversine** distance (zero API cost) — enough to order stops and flag infeasible combos (e.g. Okinawa ↔ mainland). Real road/rail time via Google **Distance Matrix** is a swappable upgrade behind a billing gate. A useful measured finding: the *geometric* conflicts (distance, feasibility) fall to deterministic Python; the conflicts that stay unsolved (weather, ratings) are a **data** problem, not an orchestration one — so an LLM tool-caller isn't yet justified.
+- **Pros/cons groundedness is not gated.** I built an **LLM-as-judge** evaluator for it, then **parked** it: judging LLM-written prose while the flow and data are still moving produced non-deterministic false-negatives that blocked clean releases. The release gate is **deterministic-only** for now (name-grounding, structure, cost, latency); the judge is kept for re-enable once real ratings (Google Places) ground the pros/cons.
 
 ---
 
@@ -161,16 +173,21 @@ In the Railway container, `/chat` returned zero results despite a "successful" i
 
 **V2 / V2.5 — done & live**
 - ReAct → deterministic workflow (measured ~10× latency win, flagged for A/B).
-- 3-mode router (search · recommend · ask) + the recommend brain (grounded pros/cons + recommendation).
-- LangSmith tracing + per-request cost accounting; a LangSmith eval harness.
+- 3-mode router (search · recommend · **ask**) + the recommend brain (grounded pros/cons + recommendation).
+- **`ask` knowledge base** — markdown onsen knowledge (etiquette, tattoo policy, spring-type benefits) in a separate Chroma collection, served by semantic RAG (live, `ASK_ENABLED=true`).
+- LangSmith tracing + per-request cost accounting; a LangSmith eval harness, now a **deterministic release gate** in CI (LLM-as-judge parked until the flow + data stabilise).
 - Hardening: rate limiting, outbound retries/backoff; CI test gates + branch-protected releases.
 
-**V3 — next**
-- **`ask` mode / knowledge base** — markdown onsen knowledge (etiquette, tattoo policy, spring-type benefits) in a separate Chroma collection.
-- **Multi-agent** — an orchestrator coordinating specialised search / rank / personalise agents via LangGraph (where true agency earns its place back).
-- Migrate chat from GPT-4o to **Claude Sonnet**; pgvector when scale demands it; an Azure (Azure OpenAI) deployment story.
+**V3 — built behind a flag: the trip-planner agent**
+The first true *agent* — dynamic sequencing + re-planning — for the one query the workflow can't serve: *"plan me a 3-day onsen trip."* **Single agent first; multi-agent only if it strains.** Merged to `develop` behind `trip_enabled`:
+- ✅ **Step 0 — persistent session state**: a session store checkpointing per-thread state (SQLite local / Postgres prod), plus per-conversation **UUID sessions** so concurrent users don't collide.
+- ✅ **Slot-filling** (regions · nights · dates · party · budget · prefs) + a LangGraph agent, region validation (reject non-Japan early), a day-by-day itinerary, per-stop hotels (fail-soft, now **English**).
+- ✅ **Haversine routing + a bounded re-plan loop** — orders stops and flags geographically infeasible combos, zero API cost. And a **grounded recommendation step** that explains *why* the itinerary suits the traveller (reuses the recommend brain; not a tool-caller).
+- ✅ **Multi-turn / trajectory agent evals**, measured against the workflow baseline.
+- ⏭️ **Next (billing-gated):** Google **Places** ratings to *ground* pros/cons · **Distance Matrix** for real road/rail travel time (upgrading the haversine seam). An LLM tool-caller for re-planning stays deferred until there's data (weather/ratings) whose interacting constraints actually need weighing.
+- ⏭️ Migrate chat GPT-4o → **Claude (Sonnet / Opus)** with a provider fallback chain; Postgres multi-instance; pgvector when scale demands it.
 
-Design notes: [`docs/V2_IMPLEMENTATION_PLAN.md`](./docs/V2_IMPLEMENTATION_PLAN.md) · [`docs/v2-slot-filling-agent.md`](./docs/v2-slot-filling-agent.md) (the original V2 design that evolved into the workflow).
+Full design: [`docs/v3-trip-planner-plan.md`](./docs/v3-trip-planner-plan.md). Earlier notes: [`docs/V2_IMPLEMENTATION_PLAN.md`](./docs/V2_IMPLEMENTATION_PLAN.md) · [`docs/v2-slot-filling-agent.md`](./docs/v2-slot-filling-agent.md).
 
 ---
 
@@ -193,7 +210,6 @@ RAKUTEN_APP_ID=...          # Rakuten Travel API
 RAKUTEN_ACCESS_KEY=...
 API_KEY=...                 # the X-API-Key guard
 # Optional — feature flags & observability (sensible local defaults):
-CHAT_ENGINE=workflow        # "workflow" (default in prod) | "react" (legacy, for A/B)
 ANALYZE_ENABLED=true        # on = recommend brain returns pros/cons + recommendation
 LANGSMITH_TRACING=true      # + LANGSMITH_API_KEY to trace runs / run evals
 ```
@@ -213,18 +229,18 @@ VITE_GOOGLE_MAPS_API_KEY=...
 VITE_API_KEY=...           # matches the backend API_KEY
 ```
 
-**Tests:** `pytest` in `backend/` (206 tests, external I/O mocked) · `npm test` in `frontend/` (126 Vitest + RTL tests).
+**Tests:** `pytest` in `backend/` (~560 tests, external I/O mocked) · `npm test` in `frontend/` (~130 Vitest + RTL tests).
 **Evals (paid):** `.venv/bin/python scripts/eval_flow.py` from `backend/` — runs the LangSmith flow-eval experiment (needs `LANGSMITH_API_KEY`).
 
 ---
 
 ## Stack
 
-**Backend:** FastAPI · deterministic LangGraph/LCEL workflow (legacy ReAct agent retained behind a flag) · GPT-4o + `gpt-4o-mini` + `text-embedding-3-small` · ChromaDB · Pydantic · LangSmith (tracing + evals)
+**Backend:** FastAPI · deterministic LangGraph/LCEL workflow (the sole `/chat` engine — the legacy ReAct agent was A/B'd behind a flag, then removed once the workflow was proven) + a LangGraph **trip-planner agent** (flagged) · GPT-4o + `gpt-4o-mini` + `text-embedding-3-small` · ChromaDB · SQLAlchemy Core (session + translation-cache persistence) · Pydantic · LangSmith (tracing + evals)
 **Frontend:** React 18 · Vite 5 · Tailwind · `@react-google-maps/api`
 **Data:** ~220 onsen (Okinawa + Tokai), Japanese→English translated at ingest via `gpt-4o-mini`, geocoded once at ingest, embedded with prefecture/city/spring-type metadata
-**Integrations:** Google Maps (geocoding + JS map) · Rakuten Travel API (live hotels) — displayed with the required [Rakuten Web Service credit badge](https://webservice.rakuten.co.jp/guide/credit) per their attribution terms
-**Infra:** Railway (backend, persistent ChromaDB volume) · Vercel (frontend) · GitHub Actions CI (test gates) · branch-protected `main`
+**Integrations:** Google Maps (geocoding + JS map) · Rakuten Travel API (live hotels, JA→EN translated + cached) — displayed with the required [Rakuten Web Service credit badge](https://webservice.rakuten.co.jp/guide/credit) per their attribution terms
+**Infra:** Railway (backend, persistent ChromaDB volume) · Vercel (frontend) · GitHub Actions CI (test gates · deterministic eval gate · security scanning — gitleaks/pip-audit/npm/bandit · Dependabot) · branch-protected `main`
 
 ---
 

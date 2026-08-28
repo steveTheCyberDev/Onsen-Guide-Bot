@@ -1,4 +1,31 @@
+from functools import lru_cache
+
 from vectorstore.store import get_collection, get_kb_collection
+
+
+@lru_cache(maxsize=1)
+def known_prefectures() -> frozenset[str]:
+    """Return the distinct English prefectures actually INGESTED in the onsen collection.
+
+    The single source of truth for "which regions can we plan an onsen trip in":
+    the set of ``prefecture_en`` values present in the ``onsen_springs`` Chroma
+    metadata. Used by the trip-planner's slot layer to reject unknown/non-Japan
+    regions early (before the plan node), and mirrors the grouping in
+    ``scripts/eval_flow.build_ground_truth`` — but lives HERE in ``services/`` so
+    ``agent/`` never has to depend on the eval script.
+
+    Cached (``lru_cache``) because the ingested set is process-static: it only
+    changes on a re-ingest, which requires a restart anyway. Returns a
+    ``frozenset`` so the cached value is immutable. Empty prefecture values are
+    skipped. Case is preserved as stored (e.g. "Gifu"); callers match
+    case-insensitively.
+    """
+    collection = get_collection()
+    data = collection.get(include=["metadatas"])
+    metadatas = data.get("metadatas", []) or []
+    return frozenset(
+        pref for meta in metadatas if (pref := (meta or {}).get("prefecture_en"))
+    )
 
 
 def _nonempty_query(query: str) -> str:

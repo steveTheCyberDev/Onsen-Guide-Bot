@@ -22,14 +22,17 @@ logger = logging.getLogger(__name__)
 class Intent(BaseModel):
     """Routing signals extracted from a user's onsen request."""
 
-    mode: Literal["search", "recommend", "ask"] = Field(
+    mode: Literal["search", "recommend", "ask", "trip"] = Field(
         default="search",
         description=(
             "How to handle the request. 'search': location- or fact-based listing "
             "('find onsen in Okinawa'). 'recommend': preference/vibe-based, wants a "
             "judged pick ('a relaxing onsen with mountain views', 'good for families'). "
             "'ask': general onsen knowledge Q&A not tied to a result set ('do they "
-            "allow tattoos?', 'what should I bring?', etiquette)."
+            "allow tattoos?', 'what should I bring?', etiquette). 'trip': a multi-day "
+            "or multi-stop onsen trip/itinerary spanning nights or several areas "
+            "('plan a 3-day onsen trip in Gifu and Nagano', '5 nights, hot springs "
+            "with mountain views, not too much driving')."
         ),
     )
     prefecture: str | None = Field(
@@ -68,6 +71,11 @@ _INSTRUCTIONS = (
     "   - 'ask': the user asks a general onsen knowledge question not tied to a "
     "specific result set (e.g. 'do onsen allow tattoos?', 'what should I bring?', "
     "etiquette/rules/customs). \n"
+    "   - 'trip': the user wants a multi-day or multi-stop onsen trip/itinerary "
+    "spanning nights or several areas (e.g. 'plan a 3-day onsen trip in Gifu and "
+    "Nagano', '5 nights, hot springs with mountain views, not too much driving "
+    "between stops'). Signals: number of nights/days, multiple regions, or "
+    "'itinerary'/'trip'/'plan' framing.\n"
     "1. prefecture: if the user names a location, return its English prefecture "
     "name only (e.g. 'Shizuoka', 'Okinawa', 'Tokyo'). Use just the prefecture "
     "name without the word 'Prefecture'. If the user names no location, return "
@@ -97,7 +105,8 @@ _llm = ChatOpenAI(
     temperature=0,
     stream_usage=True,
     # Bounded retries on transient OpenAI errors (timeouts, 429/5xx); the OpenAI
-    # SDK handles the backoff. Same knob as the main chat llm in agent/agent.py.
+    # SDK handles the backoff. Same knob (settings.llm_max_retries) as every
+    # other ChatOpenAI instance in the workflow.
     max_retries=settings.llm_max_retries,
 ).with_structured_output(Intent)
 
@@ -109,9 +118,9 @@ async def parse_intent(
 
     Args:
         message: The latest user message.
-        history: Conversation history as a list of LangChain messages (same
-            shape ``run_agent`` gets from ``get_history``), passed through so
-            follow-up questions resolve against prior turns.
+        history: Conversation history as a list of LangChain messages (the shape
+            ``get_history`` returns), passed through so follow-up questions
+            resolve against prior turns.
         callbacks: Optional LangChain callbacks (e.g. a
             ``UsageMetadataCallbackHandler``) so the caller can capture token
             usage — this call uses ``.with_structured_output``, so usage is not

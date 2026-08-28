@@ -8,6 +8,12 @@ langchain-anthropic>=0.2.0
 langchain-openai>=0.2.0
 langchain-community>=0.3.0
 chromadb>=0.6.0
+# Durable chat session store (V3 Step 0: services/chat/chat_service.py) via
+# SQLAlchemy Core. One query path serves SQLite (local) and Postgres (prod); the
+# URL selects the dialect. psycopg (v3) is the Postgres driver used only when
+# SESSION_DB_URL points at postgresql+psycopg://... — SQLite needs no driver.
+sqlalchemy>=2.0.0,<3.0.0
+psycopg[binary]>=3.1.0,<4.0.0
 openai>=1.50.0
 anthropic>=0.34.0
 requests>=2.32.0

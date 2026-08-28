@@ -178,9 +178,42 @@ describe('appReducer', () => {
   });
 
   describe('RESET', () => {
-    it('returns the initial state', () => {
+    it('returns the initial state (except sessionId, which is freshly minted)', () => {
       const start = { ...initialState, onsens: [onsen], hotels: [hotel], status: 'error' };
-      expect(appReducer(start, { type: 'RESET' })).toEqual(initialState);
+      const next = appReducer(start, { type: 'RESET' });
+      expect(next).toEqual({ ...initialState, sessionId: next.sessionId });
+    });
+
+    it('mints a NEW sessionId distinct from the one it reset from', () => {
+      const start = { ...initialState, onsens: [onsen], sessionId: 'prior-session-id' };
+      const next = appReducer(start, { type: 'RESET' });
+      expect(next.sessionId).toBeTruthy();
+      expect(next.sessionId).not.toBe('prior-session-id');
+    });
+  });
+
+  describe('sessionId', () => {
+    const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+    it('initialState carries a v4 UUID sessionId', () => {
+      expect(initialState.sessionId).toMatch(UUID_RE);
+    });
+
+    it('is left untouched by actions that do not start a new conversation', () => {
+      const start = { ...initialState };
+      const next = appReducer(start, {
+        type: 'CHAT_RESULTS',
+        payload: { onsens: [onsen], assistantMessage: { role: 'assistant', content: 'hi' } },
+      });
+      expect(next.sessionId).toBe(start.sessionId);
+    });
+
+    it('SELECT_PREFECTURE mints a new sessionId (it clears messages → new conversation)', () => {
+      const start = { ...initialState, sessionId: 'prior-session-id' };
+      const pref = { name: 'Okinawa', lat: 26.2, lng: 127.6 };
+      const next = appReducer(start, { type: 'SELECT_PREFECTURE', payload: pref });
+      expect(next.sessionId).toBeTruthy();
+      expect(next.sessionId).not.toBe('prior-session-id');
     });
   });
 });

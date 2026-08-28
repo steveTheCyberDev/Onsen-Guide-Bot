@@ -2,6 +2,10 @@
 __pycache__/
 *.pyc
 chroma_db/
+# Local chat session store (SQLite default of services/chat/chat_service.py).
+# Prod uses Postgres via SESSION_DB_URL, so this file is local-only state.
+sessions.db
+sessions.db-*
 .venv/
 venv/
 .DS_Store

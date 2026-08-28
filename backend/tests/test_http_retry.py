@@ -60,8 +60,20 @@ def test_forwards_kwargs_to_requests_get():
     with patch.object(http_retry.requests, "get", return_value=ok) as mock_get:
         # Act
         get_with_retries("http://x", params={"q": 1}, timeout=5)
-    # Assert — caller's kwargs pass straight through
+    # Assert — caller's explicit timeout is preserved (setdefault does not clobber it)
     mock_get.assert_called_once_with("http://x", params={"q": 1}, timeout=5)
+
+
+def test_applies_default_timeout_when_caller_omits_it():
+    # Arrange — a caller that forgets `timeout` must still get a bounded one so a
+    # hung upstream can't tie up a worker forever (bandit B113).
+    ok = _response(200)
+    with patch.object(http_retry.requests, "get", return_value=ok) as mock_get:
+        # Act
+        get_with_retries("http://x")
+    # Assert — the config default was injected on the underlying requests.get call.
+    _, kwargs = mock_get.call_args
+    assert kwargs["timeout"] == http_retry.settings.http_timeout_seconds
 
 
 # --- 5xx retry path --------------------------------------------------------

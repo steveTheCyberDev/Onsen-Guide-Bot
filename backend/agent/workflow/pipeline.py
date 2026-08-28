@@ -1,24 +1,21 @@
-"""Deterministic V2 onsen workflow — the ``run_workflow`` pipeline.
+"""Deterministic onsen workflow — the ``run_workflow`` pipeline.
 
-Replaces the ReAct agent's expensive routing loop with an explicit ``async def``
-pipeline that ties together the already-merged Step 1 (``query_onsen_structured``)
-and Step 2 (``parse_intent``):
+The ONLY /chat engine: an explicit ``async def`` pipeline that ties together the
+intent parse and the structured retrieval (no autonomous routing loop):
 
     run_workflow(message)
       ① parse_intent(message)          LLM (small)  → {prefecture, query, wants_hotels}
       ② query_onsen_structured(...)    Python       → onsens[]  (no LLM; kills fabrication)
-      ⑤ analyze_onsen(...)             DEFERRED     → gated seam only (see TODO below)
+      ⑤ analyze_onsen(...)             gated        → recommend-mode brain (analyze_enabled)
       ③ if wants_hotels and onsens:    code branch  → search_hotels (passthrough)
       ④ reply = template               no LLM
 
 The DATA layer (onsens[], hotels[]) is assembled in pure Python from Chroma
 metadata and the Rakuten service, so there is no LLM round-trip that could
-fabricate facts. The only LLM call is the small intent-parse hop.
+fabricate facts. The only LLM call on the search path is the small intent-parse hop.
 
-The response contract is IDENTICAL to ``run_agent`` (reply, onsens[], hotels[])
-so ``api/routes/chat.py`` and the frontend work unchanged — a clean A/B against
-the ReAct baseline. ``run_workflow`` is NOT wired into the API yet (that's the
-``chat_engine`` flag step); for now it is reachable only by tests.
+``run_workflow`` is called directly by ``api/routes/chat.py``; its return shape is
+``AgentResponse.model_dump()`` (reply, onsens[], hotels[], recommendation).
 """
 
 import asyncio
@@ -27,15 +24,20 @@ import time
 
 from langchain_core.callbacks import UsageMetadataCallbackHandler
 
-from agent.agent import AgentResponse, HotelResult, OnsenResult
+from agent.schemas import AgentResponse, HotelResult, OnsenResult
+from agent.trip.agent import plan_trip
 from agent.workflow.analyze import analyze_onsen
 from agent.workflow.ask import answer_question
 from agent.workflow.cost import summarize_usage
 from agent.workflow.intent import parse_intent
-from core.config import settings
+from core.config import export_langsmith_env, settings
 from services.chat.chat_service import get_history, save_message
 from services.rakuten.rakuten_service import search_hotels
-from services.retrieval.retrieval_service import query_onsen_structured
+from services.translation.translation_service import translate_hotels
+from services.retrieval.retrieval_service import (
+    known_prefectures,
+    query_onsen_structured,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -48,19 +50,36 @@ _ASK_STUB_REPLY = (
 
 # Keys on the query_onsen_structured records that OnsenResult accepts. The
 # records carry EXTRA keys (description, detail_url) that are NOT fields on
-# OnsenResult; since OnsenResult forbids extras (Pydantic v2 default),
-# OnsenResult(**record) would raise. We project onto this allow-list instead.
+# OnsenResult. Pydantic v2's DEFAULT is extra="ignore" (unknown keys are silently
+# dropped, not rejected), but OnsenResult sets extra="forbid" EXPLICITLY
+# (agent/schemas.py, defense-in-depth), so OnsenResult(**record) with those extra
+# keys would raise ValidationError. We project onto this allow-list instead.
 _ONSEN_FIELDS = ("name", "location", "spring_type", "spa_quality", "lat", "lng")
 
 # Default/ceiling for how many onsen retrieval returns. Used when the user names
 # no count, and as the upper clamp when they do (e.g. 'top 100' → _MAX_RESULTS).
 _MAX_RESULTS = 20
 
+# Export LangSmith tracing env vars (if enabled) BEFORE importing/constructing the
+# @traceable decorator below. langsmith reads these env vars and caches them, so
+# they must be present in os.environ before the first langsmith import fires. This
+# is the live engine module, imported on the /chat path via api/routes/chat.py, so
+# it is the right home for the export now that the ReAct agent module is gone.
+# No-op + tracing disabled unless LANGSMITH_TRACING=true and an API key are set.
+_TRACING_ENABLED = export_langsmith_env()
+if _TRACING_ENABLED:
+    logger.info(
+        "LangSmith tracing ENABLED | project=%s | endpoint=%s",
+        settings.langsmith_project,
+        settings.langsmith_endpoint,
+    )
+else:
+    logger.info("LangSmith tracing disabled (no-op)")
+
 # --- LangSmith tracing (import-guarded, no-op when disabled) ---
-# Wrap run_workflow with langsmith's @traceable so the V2 workflow run is
-# distinguishable from the v1-baseline ReAct run in the LangSmith UI. Tracing
-# only actually emits when the LangSmith env vars are exported (see
-# core.config.export_langsmith_env, called at agent import time); otherwise the
+# Wrap run_workflow with langsmith's @traceable so the workflow run is grouped and
+# labelled in the LangSmith UI. Tracing only actually emits when the LangSmith env
+# vars are exported (see the export_langsmith_env call just above); otherwise the
 # decorator is a transparent pass-through. The import guard keeps the module
 # importable even if langsmith is ever absent.
 try:
@@ -111,20 +130,23 @@ def _build_onsens(records: list[dict]) -> list[OnsenResult]:
 
 
 def _to_hotel(h: dict) -> HotelResult:
-    """Map a Rakuten service hotel dict to a HotelResult (V1 passthrough).
+    """Map a Rakuten service hotel dict to a HotelResult.
 
     Mirrors ``api/routes/hotels.py::_to_item`` field-for-field so /chat and
-    /hotels produce identical hotel shapes. Rakuten returns Japanese-only names
-    (no translation in V1), so name == originalName == the Japanese string.
-    HotelResult has no ``distance`` field, so distance is not computed here.
+    /hotels produce identical hotel shapes. When hotel translation is enabled the
+    dict carries ``name_en`` / ``hotelSpecial_en`` / ``location_en`` (added by
+    ``translate_hotels`` in the hotel branch below); we surface those and keep the
+    Japanese name in ``originalName``. Each ``*_en`` read falls back to the Japanese
+    source, so gate-off / fail-soft shows Japanese exactly as before. HotelResult
+    has no ``distance`` field, so distance is not computed here.
     """
     name = h.get("name") or ""
     price = h.get("price")
     return HotelResult(
-        name=name,
+        name=h.get("name_en") or name,
         originalName=name,
-        location=h.get("address"),
-        hotelSpecial=h.get("hotelSpecial"),
+        location=h.get("location_en") or h.get("address"),
+        hotelSpecial=h.get("hotelSpecial_en") or h.get("hotelSpecial"),
         price=str(price) if price is not None else None,
         image=h.get("hotelImageUrl"),
         url=h.get("url"),
@@ -133,9 +155,25 @@ def _to_hotel(h: dict) -> HotelResult:
     )
 
 
+def _safe_location_label(prefecture: str | None) -> str:
+    """Return a location label safe to interpolate into the user-facing reply.
+
+    Only echoes ``prefecture`` when it matches an INGESTED prefecture (the
+    ``known_prefectures()`` allow-list, matched case-insensitively); anything else
+    — including a jailbroken/injected intent parse that smuggled attacker text into
+    ``intent.prefecture`` — is generalized to ``"Japan"`` so unvalidated text never
+    reaches the reply (reflected-echo hardening). Legitimate real prefectures render
+    unchanged, in their canonical ingested casing.
+    """
+    if not prefecture:
+        return "Japan"
+    canonical = {p.lower(): p for p in known_prefectures()}
+    return canonical.get(prefecture.strip().lower(), "Japan")
+
+
 def _build_reply(prefecture: str | None, onsens: list[OnsenResult], hotels: list[HotelResult]) -> str:
     """Build the template reply (no LLM). Preserves the no-result UX."""
-    where = prefecture or "Japan"
+    where = _safe_location_label(prefecture)
     if not onsens:
         return f"No onsen found in {where} matching your query."
     reply = f"Found {len(onsens)} onsen in {where}"
@@ -207,17 +245,15 @@ def _log_cost(
 
 @_trace
 async def run_workflow(message: str, session_id: str) -> dict:
-    """Run the deterministic V2 onsen workflow.
-
-    Mirrors ``run_agent``'s signature and return shape (reply, onsens[],
-    hotels[]) so callers and the API contract are unchanged.
+    """Run the deterministic onsen workflow — the /chat engine.
 
     Args:
         message: The latest user message.
         session_id: Conversation/session identifier for history + persistence.
 
     Returns:
-        ``AgentResponse.model_dump()`` — the same dict shape as ``run_agent``.
+        ``AgentResponse.model_dump()`` — the dict ``api/routes/chat.py`` returns as
+        the ChatResponse (reply, onsens[], hotels[], recommendation).
     """
     logger.info("run_workflow | session_id=%s", session_id)
 
@@ -261,6 +297,19 @@ async def run_workflow(message: str, session_id: str) -> dict:
             reply=reply, onsens=onsens, hotels=hotels, recommendation=recommendation
         ).model_dump()
 
+    # trip-mode: V3 multi-day trip-planner, gated by trip_enabled (A/B + instant
+    # rollback, mirrors ask_enabled above). IMPORTANT — unlike ask, the branch is
+    # taken ONLY when the gate is ON: `mode == "trip" AND settings.trip_enabled`.
+    # When the gate is OFF (prod default) we do NOT early-return; a trip-classified
+    # query FALLS THROUGH to the normal retrieval path below so it degrades to a
+    # regular onsen search rather than dead-ending. PR2 ships the plan_trip stub
+    # (no service/LLM calls); the real agent lands in later PRs.
+    if intent.mode == "trip" and settings.trip_enabled:
+        response = await plan_trip(message, session_id, callbacks=callbacks)
+        _log_cost(session_id, intent.mode, usage_cb, started)
+        save_message(session_id, message, response.reply)
+        return response.model_dump()
+
     # ② Retrieval — pure Python, no LLM, no fabrication (search + recommend).
     # Honour an explicit count from the user ('top 5' → 5), clamped to a sane
     # [1, _MAX_RESULTS] range; default to _MAX_RESULTS when no count was asked.
@@ -300,6 +349,11 @@ async def run_workflow(message: str, session_id: str) -> dict:
             # run off the event loop.
             try:
                 raw = await asyncio.to_thread(search_hotels, lat, lng)
+                # Translate name/details JA→EN (cache-aware, batched). Gated +
+                # fail-soft: off = Japanese passthrough (no-op, byte-identical to the
+                # old behaviour); any error falls back to Japanese. Keeps /chat
+                # consistent with /hotels + trips. Sync (LLM+DB) → off the event loop.
+                raw = await asyncio.to_thread(translate_hotels, raw)
                 hotels = [_to_hotel(h) for h in raw]
                 logger.info("run_workflow | hotels=%d (lat=%s lng=%s)", len(hotels), lat, lng)
             except Exception as e:

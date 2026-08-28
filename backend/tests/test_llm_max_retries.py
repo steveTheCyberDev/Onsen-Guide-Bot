@@ -1,26 +1,16 @@
-"""Wiring tests: ChatOpenAI instances use settings.llm_max_retries.
+"""Wiring test: the intent ChatOpenAI uses settings.llm_max_retries.
 
-Both the ReAct llm (agent/agent.py) and the intent llm
-(agent/workflow/intent.py) must construct their ChatOpenAI with
-`max_retries == settings.llm_max_retries` so transient OpenAI errors are
-retried a bounded number of times. These are light wiring checks — no real
-network call. The already-constructed module-level instance is inspected for
-agent.agent; for the structured-output-wrapped intent llm we reload the module
-under a patched ChatOpenAI and assert the constructor kwargs.
+The intent llm (agent/workflow/intent.py) must construct its ChatOpenAI with
+`max_retries == settings.llm_max_retries` so transient OpenAI errors are retried
+a bounded number of times. This is a light wiring check — no real network call:
+the module is reloaded under a patched ChatOpenAI so the module-level `_llm` is
+rebuilt against the mock and we can assert the constructor kwargs.
 """
 
 import importlib
 from unittest.mock import MagicMock, patch
 
 from core.config import settings
-
-
-def test_agent_llm_uses_settings_max_retries():
-    # Arrange / Act — the module-level instance is built at import time
-    import agent.agent as agent_mod
-
-    # Assert
-    assert agent_mod.llm.max_retries == settings.llm_max_retries
 
 
 def test_intent_llm_constructed_with_settings_max_retries():

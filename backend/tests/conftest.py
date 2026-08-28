@@ -5,6 +5,7 @@ all imports are relative to that root, e.g. `from services.chat...`.
 """
 
 import os
+from unittest.mock import patch
 
 import pytest
 
@@ -22,14 +23,72 @@ os.environ.setdefault("API_KEY", "test-api-key")
 # The valid key for the test suite, kept in sync with the API_KEY env above.
 TEST_API_KEY = "test-api-key"
 
+# A realistic set of ingested Japanese prefectures for tests. The trip-planner
+# graph validates regions against services.retrieval.known_prefectures (the
+# ingested set) — see the region-validation feature (2026-07-12 "reject early").
+# We never want the graph to hit real Chroma for that in the suite, so the autouse
+# fixture below patches the name the graph imported to this fixed set. It INCLUDES
+# every prefecture the existing trip tests use (so their routing is unchanged) and
+# EXCLUDES non-Japan places (so region-validation tests can assert rejection).
+TEST_KNOWN_PREFECTURES = frozenset(
+    {"Gifu", "Nagano", "Shizuoka", "Oita", "Kyoto", "Hokkaido", "Okinawa"}
+)
+
+
+@pytest.fixture(autouse=True)
+def _patch_known_prefectures():
+    """Patch the known-prefecture lookup to a fixed set (no Chroma).
+
+    Autouse so every test that validates a region against the ingested set uses
+    ``TEST_KNOWN_PREFECTURES`` instead of the live collection. Two consumers resolve
+    the name at call time and are patched here:
+      - the trip graph (``agent.trip.graph``) — region validation before the plan
+        node (both the singleton graph and fresh ``build_trip_graph`` instances);
+      - the workflow pipeline (``agent.workflow.pipeline``) — the reflected-echo
+        guard in ``_build_reply`` only echoes a prefecture that is in this set.
+    Region-validation tests override the graph binding with their own ``patch`` when
+    they need a specific valid/invalid split. The real service function — and its own
+    unit test — stay untouched.
+    """
+    from agent.trip import graph as trip_graph_module
+    from agent.workflow import pipeline as workflow_pipeline
+
+    with patch.object(
+        trip_graph_module,
+        "known_prefectures",
+        return_value=TEST_KNOWN_PREFECTURES,
+    ), patch.object(
+        workflow_pipeline,
+        "known_prefectures",
+        return_value=TEST_KNOWN_PREFECTURES,
+    ):
+        yield
+
+
+@pytest.fixture(autouse=True)
+def _patch_trip_search_hotels():
+    """Stub the trip plan node's hotel lookup so the suite never hits Rakuten.
+
+    PR5's ``plan`` node calls ``search_hotels`` (Rakuten) for each selected onsen
+    stop. Autouse-patch the name bound INSIDE ``agent.trip.itinerary`` to return no
+    hotels by default, so existing trip tests stay deterministic + free (no network)
+    and behave as "no hotels found nearby". PR5 hotel tests override this with their
+    own ``patch`` to return hotels or raise (fail-soft). Leaves the real Rakuten
+    service — and its own tests — untouched.
+    """
+    from agent.trip import itinerary as trip_itinerary
+
+    with patch.object(trip_itinerary, "search_hotels", return_value=[]):
+        yield
+
 
 @pytest.fixture
 def client():
     """FastAPI TestClient that authenticates by default.
 
-    Importing the app pulls in `agent.agent`, which constructs a ChatOpenAI
-    client and a LangGraph react agent at import time. No network call is made
-    on import, so this is safe; tests that hit `/chat` mock `run_agent`.
+    Importing the app pulls in the workflow engine (`agent/workflow/pipeline.py`),
+    which constructs ChatOpenAI clients at import time. No network call is made on
+    import, so this is safe; tests that hit `/chat` mock `run_workflow`.
 
     The valid X-API-Key header is attached to every request so existing route
     tests don't each have to set it; auth-specific behaviour is covered by the

@@ -41,6 +41,15 @@ def _mock_llm(return_intent: Intent) -> MagicMock:
             "do onsen allow tattoos? what should I bring?",
             Intent(mode="ask", prefecture=None, query="onsen etiquette tattoos", wants_hotels=False),
         ),
+        (
+            "plan a 3-day onsen trip in Gifu and Nagano",
+            Intent(
+                mode="trip",
+                prefecture="Gifu",
+                query="onsen trip mountain",
+                wants_hotels=False,
+            ),
+        ),
     ],
 )
 @pytest.mark.asyncio
@@ -79,3 +88,10 @@ def test_intent_mode_defaults_to_search():
     assert intent.mode == "search"
     assert intent.prefecture is None
     assert intent.wants_hotels is False
+
+
+def test_intent_accepts_trip_mode():
+    # Arrange / Act — the V3 seam: "trip" is a valid 4th mode value.
+    intent = Intent(mode="trip", query="3-day onsen trip in Gifu and Nagano")
+    # Assert
+    assert intent.mode == "trip"
