@@ -15,6 +15,10 @@
 # macOS
 **/.DS_Store
 
+# Stray root-level ChromaDB store — the app reads backend/chroma_db/ (already
+# gitignored via backend/.gitignore); this root copy is local scratch only.
+/chroma_db/
+
 # Local full-dataset archive — not used by the build (code reads backend/data/).
 # Copy region files from here into backend/data/ when expanding coverage.
 /data/

@@ -1355,6 +1355,33 @@ _DROP_MARKERS = (
     "narrow to", "narrow down", "cut ",
 )
 
+# Conflict factors with REAL detection wired into agent/trip/constraints.py.
+# The four PR7 multi-factor evaluators below only apply their expect_* checks when
+# every conflict_factor an example carries is in this set — otherwise they ABSTAIN
+# (score=None), not FAIL, because there is genuinely no signal built yet to satisfy
+# them (an honest "not ready", not a broken plan — see constraints.py's own "Honest
+# boundary" docstring). To re-activate an example, add its factor here the moment
+# the supporting service lands; no other eval_flow.py edit is needed — the example
+# starts being scored again automatically. Nothing else references this set, so
+# adding/removing a factor cannot silently affect an unrelated evaluator.
+_IMPLEMENTED_CONFLICT_FACTORS = {
+    "pace_x_nights_x_spread",     # constraints.py: haversine spread/pace rule
+    "geographic_infeasibility",   # constraints.py: haversine infeasible-leg rule
+    # "weather_x_outdoor_x_season",  # needs a weather signal (Open-Meteo, V3.1)
+    # "budget_x_ratings_x_party",    # needs Places ratings (PR6, ingest-time)
+}
+
+
+def _factors_ready(reference_outputs: dict) -> bool:
+    """True iff every conflict_factor this example carries has real detection.
+
+    An example with no ``conflict_factors`` (i.e. not a PR7 multi-factor example)
+    vacuously passes — this gate only ever narrows the four PR7 evaluators, never
+    the pre-PR7 ones, which don't call it.
+    """
+    factors = reference_outputs.get("conflict_factors") or []
+    return all(f in _IMPLEMENTED_CONFLICT_FACTORS for f in factors)
+
 
 def _reply_lower(outputs: dict) -> str:
     """The response reply text lowercased — the surface the markers scan."""
@@ -1369,13 +1396,20 @@ def _markers_present(text: str, markers: tuple[str, ...]) -> list[str]:
 def constraint_conflict_acknowledged(outputs: dict, reference_outputs: dict) -> dict:
     """Score 1 iff the reply ACKNOWLEDGES the over-constraint (trip PR7 target).
 
-    Applies only to examples flagged ``expect_constraint_conflict_ack`` (the four
-    multi-factor examples); ABSTAINS (None) otherwise. The naive plan node crams
-    the trip silently and never signals the conflict, so this FAILS on today's
-    output BY DESIGN — PR7 makes it green.
+    Applies only to examples flagged ``expect_constraint_conflict_ack`` AND whose
+    conflict_factor(s) are in ``_IMPLEMENTED_CONFLICT_FACTORS``; ABSTAINS (None)
+    otherwise. Once ready, the naive plan node crams the trip silently and never
+    signals the conflict, so this FAILS on unfixed output BY DESIGN — the real
+    conflict-detection logic in ``agent/trip/constraints.py`` makes it green.
     """
     if not reference_outputs.get("expect_constraint_conflict_ack"):
         return {"key": "constraint_conflict_acknowledged", "score": None, "comment": "n/a"}
+    if not _factors_ready(reference_outputs):
+        return {
+            "key": "constraint_conflict_acknowledged",
+            "score": None,
+            "comment": "conflict factor not yet implemented — see _IMPLEMENTED_CONFLICT_FACTORS",
+        }
     hits = _markers_present(_reply_lower(outputs), _CONFLICT_ACK_MARKERS)
     if hits:
         return {
@@ -1401,6 +1435,12 @@ def no_infeasible_plan(outputs: dict, reference_outputs: dict) -> dict:
     """
     if not reference_outputs.get("expect_feasibility_flag"):
         return {"key": "no_infeasible_plan", "score": None, "comment": "n/a"}
+    if not _factors_ready(reference_outputs):
+        return {
+            "key": "no_infeasible_plan",
+            "score": None,
+            "comment": "conflict factor not yet implemented — see _IMPLEMENTED_CONFLICT_FACTORS",
+        }
     hits = _markers_present(_reply_lower(outputs), _FEASIBILITY_MARKERS)
     if hits:
         return {
@@ -1426,6 +1466,12 @@ def tradeoff_explained(outputs: dict, reference_outputs: dict) -> dict:
     """
     if not reference_outputs.get("expect_tradeoff_explanation"):
         return {"key": "tradeoff_explained", "score": None, "comment": "n/a"}
+    if not _factors_ready(reference_outputs):
+        return {
+            "key": "tradeoff_explained",
+            "score": None,
+            "comment": "conflict factor not yet implemented — see _IMPLEMENTED_CONFLICT_FACTORS",
+        }
     hits = _markers_present(_reply_lower(outputs), _TRADEOFF_MARKERS)
     if hits:
         return {
@@ -1454,6 +1500,12 @@ def dropped_region_reasoned(outputs: dict, reference_outputs: dict) -> dict:
     expected = reference_outputs.get("expect_dropped_regions") or []
     if not expected:
         return {"key": "dropped_region_reasoned", "score": None, "comment": "n/a"}
+    if not _factors_ready(reference_outputs):
+        return {
+            "key": "dropped_region_reasoned",
+            "score": None,
+            "comment": "conflict factor not yet implemented — see _IMPLEMENTED_CONFLICT_FACTORS",
+        }
     text = _reply_lower(outputs)
     drop_hits = _markers_present(text, _DROP_MARKERS)
     named = [r for r in expected if r.lower() in text]

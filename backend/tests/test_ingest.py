@@ -5,7 +5,12 @@ reached `translate_spa_quality()` and raised
 `AttributeError: 'NoneType' object has no attribute 'split'`.
 """
 
-from scripts.ingest import build_document, parse_location, translate_spa_quality
+from scripts.ingest import (
+    build_document,
+    parse_location,
+    translate_prefecture,
+    translate_spa_quality,
+)
 
 
 class TestTranslateSpaQuality:
@@ -38,6 +43,25 @@ class TestParseLocation:
 
     def test_prefecture_only(self):
         assert parse_location("沖縄県") == ("沖縄県", "")
+
+
+class TestTranslatePrefecture:
+    def test_none_returns_empty_string(self):
+        assert translate_prefecture(None) == ""
+
+    def test_empty_string_returns_empty_string(self):
+        assert translate_prefecture("") == ""
+
+    def test_known_prefecture_is_translated(self):
+        assert translate_prefecture("長野県") == "Nagano"
+
+    def test_cross_border_takes_first_prefecture(self):
+        # Real nagano data: 姫川温泉 straddles the Nagano/Niigata line.
+        # Without the split this leaked Japanese into known_prefectures().
+        assert translate_prefecture("長野県／新潟県") == "Nagano"
+
+    def test_unknown_prefecture_passes_through(self):
+        assert translate_prefecture("謎県") == "謎県"
 
 
 class TestBuildDocument:
