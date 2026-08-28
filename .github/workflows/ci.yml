@@ -78,7 +78,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Set up Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           # Reads the exact version from frontend/.nvmrc (currently 20.16.0).
           # Vitest 2.x + jsdom 25.x are pinned in package.json — do NOT bump
