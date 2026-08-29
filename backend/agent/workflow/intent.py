@@ -53,7 +53,10 @@ class Intent(BaseModel):
         default=None,
         description=(
             "The number of onsen the user explicitly asked for (e.g. 'top 5', "
-            "'show me 3') as a positive integer; null if the user named no count"
+            "'show me 3') as a positive integer; null if the user named no count. "
+            "Do NOT use a trip's duration for this (e.g. 'a two-day trip', "
+            "'5 nights') — days/nights describe the trip length, not how many "
+            "onsen to return; leave this null for those."
         ),
     )
 
@@ -87,7 +90,9 @@ _INSTRUCTIONS = (
     "or where to stay; otherwise false.\n"
     "4. limit: if the user asks for a specific number of onsen (e.g. 'top 5', "
     "'show me 3', 'list 10'), return that number as a positive integer; if the "
-    "user names no count, return null.\n"
+    "user names no count, return null. A number describing TRIP LENGTH (e.g. "
+    "'a two-day trip', '5 nights') is NOT a count of onsen — leave limit null "
+    "for those; it is a mode=trip signal (see 0), not a limit.\n"
     "Use the conversation history to resolve follow-up references."
 )
 
