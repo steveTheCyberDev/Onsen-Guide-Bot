@@ -1,10 +1,18 @@
 # V3 Trip-Planner Agent — Design Plan
 
-> Status: **draft / scoping** (2026-06-21). The trip-planner is the **4th capability** added to the
+> Status: **SHIPPED & LIVE IN PROD** (`trip_enabled=true`, flipped and smoke-tested 2026-08-29).
+> Originally drafted 2026-06-21. The trip-planner is the **4th capability** added to the
 > existing 3-mode workflow (`backend/agent/workflow/pipeline.py`), and the **first true agent** in the
 > project (dynamic tool sequencing + re-planning) — justified by the autonomy ladder because the tool
 > order for a multi-day trip is not knowable up front. **Single agent first**; multi-agent only if one
-> agent visibly strains.
+> agent visibly strains (not yet needed).
+>
+> **What shipped:** PR1 (persistence) → PR2 (routing stub) → PR3a/b/c (LangGraph skeleton, slots +
+> elicit-loop, naive itinerary) → PR4 (multi-turn eval) → PR5 (hotels) → PR7 (haversine routing +
+> re-planning, done *before* PR6 — see §6 note) → pc1 (grounded `analyze` recommendation step) are all
+> live. **Deferred:** PR6 (Places ratings — billing decision), PR8 (Claude migration), PR9 (weather).
+> See §6 for the full per-PR checklist and `PROJECT_JOURNEY.md` challenge #12 for *why* PR7 shipped
+> deterministic rather than an LLM tool-caller. Next-step planning: `docs/next-steps.md`.
 
 ---
 
@@ -260,29 +268,30 @@ mechanism once the flow stabilises.
 
 ## 6. Single-agent-first build sequence (PR-sized, each into `develop`)
 
-1. **PR 1 — Step 0 persistence (prerequisite).** Bespoke tables; SQLite local + Postgres prod behind `session_store_backend`; preserve the seam. **STOP: Railway Postgres provisioning.**
-2. **PR 2 — routing seam + `trip` mode stub.** Add `"trip"` to `Intent.mode` + a `run_workflow` branch to `agent/trip/agent.py` placeholder, gated by `trip_enabled=False` (mirror `analyze_enabled`). Ships dead.
-3. **PR 3 — minimal trip-planner: slots + onsen tool only.** Split into three reviewable slices, each into `develop`, so the framework lands on the simple flow before the hard one (see the LangGraph adoption decision in §0). Every slice must preserve the four re-planning-readiness properties.
-   - **PR 3a — LangGraph skeleton for `trip` mode.** Hand-built `StateGraph` with one stub node, checkpointer (`MemorySaver` local), `thread_id = session_id`; still behind `trip_enabled=False`. *First LangGraph in the live path.* **Done =** graph runs in the live engine and working state persists across two turns of the same session.
-   - **PR 3b — slots + elicit-loop.** `TripSlots`, extraction call (`with_structured_output`), elicit node (ask ONE follow-up, end the turn). **Done =** multi-turn slot-filling proven — a missing required slot yields one question; the next turn resumes with prior slots intact.
-   - **PR 3c — naive itinerary.** Assemble an itinerary from `query_onsen_structured` once required slots are complete; the discrete `plan` node becomes real (no re-plan yet). **Done =** end-to-end trip reply for a complete request, leaving the `plan` node PR7 hangs the re-plan back-edge on.
-   - `MemorySaver` local throughout; `PostgresSaver` prod stays behind `trip_checkpointer_backend` until Railway Postgres (PR1) lands.
-4. **PR 4 — agent eval (multi-turn).** Extend `eval_flow.py` to thread examples + the §5 deterministic evaluators. Baseline vs recommend mode. Gate before adding tools.
-5. **PR 5 — add hotels (`search_hotels`)** per lodging night; add "hotels exist" eval check.
-6. **PR 6 — Places enrichment (ingest-time).** `services/places/` + `scripts/enrich_places.py`. Surface + ground ratings. **STOP: Google Places billing/SKU.**
-7. **PR 7 — routing + re-planning.** `services/routing/`; re-plan loop on long legs + re-plan eval. **STOP if Distance Matrix/Directions SKU off.**
-8. **PR 8 — model migration (GPT-4o → Claude Sonnet 4.6 / Opus 4.8) + fallback chain.** Heaviest reasoning path is the natural hook; `langchain-anthropic` already present; env-split `chat_model`/`analyze_model`. Measure before flipping. **STOP: cost/behavior decision.**
-9. **PR 9 — weather (V3.1, optional).** `services/weather/` (Open-Meteo, keyless), advisory annotations.
-10. **Future — multi-agent (NOT now).** Only if the single agent visibly strains (prompt balloons past reliable tool-selection; genuinely parallel sub-goals). Prove the single agent first.
+1. ✅ **PR 1 — Step 0 persistence (prerequisite).** Bespoke tables; SQLite local + Postgres prod behind `session_store_backend`; preserve the seam. Shipped as SQLAlchemy Core, `session_db_url`. **`PostgresSaver` still unimplemented** (raises `NotImplementedError`) — Railway Postgres never got provisioned; local `MemorySaver` is what's actually running in prod today (fine at current traffic/single-worker; revisit if scale demands it).
+2. ✅ **PR 2 — routing seam + `trip` mode stub.** Shipped, then superseded by PR3.
+3. ✅ **PR 3 — minimal trip-planner: slots + onsen tool only.** All three slices shipped.
+   - ✅ **PR 3a — LangGraph skeleton for `trip` mode.**
+   - ✅ **PR 3b — slots + elicit-loop.**
+   - ✅ **PR 3c — naive itinerary.**
+   - `MemorySaver` local/prod (see PR1 note above — Postgres checkpointer still deferred).
+4. ✅ **PR 4 — agent eval (multi-turn).** Live in `eval_flow.py`; dataset grew to 20 examples incl. 4 PR7 multi-factor red-baseline examples.
+5. ✅ **PR 5 — hotels (`search_hotels`)** per lodging night, fail-soft. Shipped, plus later English-translated (hotel_translation_enabled).
+6. ⏭️ **PR 6 — Places enrichment (ingest-time).** NOT started. **STOP: Google Places billing/SKU** — still the open decision, see `docs/next-steps.md`.
+7. ✅ **PR 7 — routing + re-planning.** Shipped **deterministic** (haversine, `services/routing/` + `agent/trip/constraints.py`), built and merged **before** PR6 (a deliberate reorder — PR6 vs PR7 order was decided 2026-07-13, see `PROJECT_JOURNEY.md` challenge #12). Turns the two *geometric* conflicts (over-constrained pace×nights×spread, geographic infeasibility) green with zero LLM/API cost; weather/ratings-based conflicts stay an honest gap (no data source yet) — evaluators for those now **abstain** rather than hard-fail (`eval_flow.py::_IMPLEMENTED_CONFLICT_FACTORS`, added 2026-08-28).
+8. ⏭️ **PR 8 — model migration (GPT-4o → Claude Sonnet / Opus) + fallback chain.** NOT started.
+9. ⏭️ **PR 9 — weather (V3.1, optional).** NOT started.
+10. **Future — multi-agent (NOT now).** Still not needed — the single agent hasn't strained.
 
-**Consolidated STOP-and-ask points:** Postgres provisioning (PR1); Google Places billing/SKU (PR6);
-Distance Matrix/Directions SKU (PR7); model migration (PR8); any non-additive change to the `/chat`
-response contract (adding a `plan` field must stay additive).
+**Also shipped, not originally in this sequence:** the security/red-team hardening sprint (prompt-injection suite, CI scanning, defense-in-depth — `PROJECT_JOURNEY.md` challenge #13); the "pc1" grounded `analyze` recommendation step on the settled itinerary; Nagano prefecture ingest (fixed the last real data gap in the eval suite, 2026-08-28); an intent-parser fix for trip-duration numbers being misread as a result-count `limit` (2026-08-29).
+
+**Consolidated STOP-and-ask points remaining:** Google Places billing/SKU (PR6, also gates a real Distance Matrix upgrade to PR7's haversine seam); model migration (PR8); Railway Postgres provisioning (only matters once traffic needs multi-worker).
 
 ---
 
 ## Open product decisions (not yet settled)
-- **`session_id` per-conversation UUID** — today `session_id` defaults to `"default"` (`api/routes/chat.py`), so all users share one history bucket. Once history is durable, the frontend must send a unique id. Settle before PR1's prod cutover.
-- **Google API billing** — confirm Places + Distance Matrix/Directions SKUs are enabled (may share the existing Maps key/project).
-- **Model migration timing** — whether to migrate to Claude during V3 (PR8) or hold.
+- ✅ **`session_id` per-conversation UUID** — RESOLVED. Frontend mints a UUID per conversation.
+- **Google API billing** — still open. Confirm Places + Distance Matrix/Directions SKUs are enabled (may share the existing Maps key/project). See `docs/next-steps.md` for what it unlocks.
+- **Model migration timing** — whether to migrate to Claude during V3 (PR8) or hold. Still open.
 - **Long-term user memory** — deferred; revisit if/when accounts exist.
+- **NEW (found via real user testing, 2026-08-29): region ADD-vs-REPLACE ambiguity.** Mid-conversation, "I prefer Nagano" (narrowing to one already-gathered region) is misread the same as "also add Nagano" (accumulating) — `extract_slots`'s instructions only teach the ADD case. Not yet fixed; candidate approaches in `docs/next-steps.md`.
