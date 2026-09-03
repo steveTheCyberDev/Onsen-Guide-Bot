@@ -10,7 +10,11 @@ AI agent that helps English-speaking travellers find Japanese hot spring (onsen)
 V1 is **live in production** and feature-complete. V2's performance redesign (ingest-time
 geocoding + ReAct→workflow, ~10× faster) and V2.5's 3-mode router + `analyze_onsen` guide
 layer are **live**. The `ask`-mode knowledge base is also **live in production**
-(`ASK_ENABLED=True`). See Version Roadmap below and `PROJECT_JOURNEY.md`.
+(`ASK_ENABLED=True`). **V3's trip-planner agent is now also live in production**
+(`TRIP_ENABLED=true`, flipped and smoke-tested 2026-08-29) — a 4th `/chat` mode with a
+LangGraph elicit-loop, deterministic haversine conflict/re-planning, per-stop hotels, and a
+grounded recommendation. See Version Roadmap below, `PROJECT_JOURNEY.md`, and
+`docs/v3-trip-planner-plan.md`.
 
 ---
 
@@ -24,7 +28,7 @@ without bloating this file). Read it for orientation instead of scanning the tre
 ## Architecture
 
 `POST /chat` runs the deterministic **workflow** engine (`agent/workflow/pipeline.py`). One small
-LLM call (`parse_intent`) classifies the query into one of **3 modes** and branches:
+LLM call (`parse_intent`) classifies the query into one of **4 modes** and branches:
 
 ```
                          POST /chat  (message)
@@ -32,30 +36,38 @@ LLM call (`parse_intent`) classifies the query into one of **3 modes** and branc
                       +----------+-----------+
                       |  ROUTER (parse_intent + mode)  |   1 small LLM call
                       +----------+-----------+
-          +----------------------+-----------------------+
-          v                      v                       v
-       SEARCH                RECOMMEND                  ASK
-   "onsen in Shizuoka"   "relaxing, mountains,    "what do I bring?
-                          outdoor"                 do they allow tattoos?"
-          |                      |                       |
-          v                      v                       v
-   query_onsen_structured   query_onsen_structured   semantic RAG over
-   -> assemble (Python)     (candidates)             KNOWLEDGE docs
-   -> template reply        -> ANALYTIC AGENT        -> grounded answer
-   [built OK]                  (LLM: rank + pros/cons  [Layer 2]
-                               grounded in prefs +
-                               Layer-2 knowledge)
-                             -> onsens + recommendation
-                             [analyze_onsen]
+     +----------------------+-----------------------+------------------------+
+     v                      v                       v                        v
+  SEARCH                RECOMMEND                  ASK                     TRIP
+"onsen in Shizuoka"  "relaxing, mountains,   "what do I bring?     "plan a 3-day onsen
+                       outdoor"               do they allow tattoos?"  trip in Gifu"
+     |                      |                       |                        |
+     v                      v                       v                        v
+query_onsen_structured  query_onsen_structured  semantic RAG over    agent/trip/graph.py
+-> assemble (Python)    (candidates)            KNOWLEDGE docs       (LangGraph: elicit-loop
+-> template reply       -> ANALYTIC AGENT       -> grounded answer   -> plan -> conflict-check
+[built OK]                 (LLM: rank + pros/cons  [Layer 2]         -> re-plan -> analyze)
+                           grounded in prefs +                       -> itinerary + hotels +
+                           Layer-2 knowledge)                           recommendation
+                         -> onsens + recommendation                  [gated: trip_enabled]
+                         [analyze_onsen]
 ```
 
 - **search** — deterministic structured query + Python assembly (no LLM in the data path).
 - **recommend** — retrieve candidates, then `analyze_onsen` (one analytical LLM call over a compact
   projection + prefs) returns a ranked recommendation + per-onsen `pros[]`/`cons[]`. Live via `ANALYZE_ENABLED=true`.
 - **ask** — semantic RAG over the knowledge-base markdown docs (separate Chroma collection). Live via `ASK_ENABLED=True`.
+- **trip** — the only mode that's a real **agent** (dynamic tool sequencing + re-planning), not a
+  fixed-branch workflow. A hand-built LangGraph `StateGraph` (`agent/trip/graph.py`) runs a multi-turn
+  elicit-loop (asks for missing `regions`/`nights`/`dates_or_season`), assembles a naive itinerary once
+  slots are complete, deterministically detects multi-region conflicts via haversine distance
+  (`agent/trip/constraints.py` — over-constrained pace/spread, geographic infeasibility) and re-plans by
+  dropping the farthest outlier, then runs the same `analyze` grounding step as recommend. Live via
+  `trip_enabled=true`. When the gate is off, a trip-classified query falls through to plain `search`
+  instead of dead-ending.
 
-Output: recommend/ask add `pros[]`/`cons[]` + a top-level `recommendation` string (additive); search leaves them empty.
-The deterministic **workflow** (`agent/workflow/pipeline.py::run_workflow`) is the ONLY `/chat` engine.
+Output: recommend/ask/trip add `pros[]`/`cons[]` + a top-level `recommendation` string (additive); search leaves them empty.
+The deterministic **workflow** (`agent/workflow/pipeline.py::run_workflow`) is the ONLY `/chat` engine — the trip agent is one branch inside it, not a separate entry point.
 
 ---
 
@@ -258,8 +270,8 @@ Run the smoke only when the suite is green and code changed, not on every tick.
 ## Current State (full roadmap + measured results in `PROJECT_JOURNEY.md`)
 
 - Live `/chat` engine is the deterministic **workflow** (`run_workflow`) — the only engine (the legacy ReAct agent and its engine-select flag were removed).
-- 3 router modes all **live in prod**: `search`, `recommend` (`ANALYZE_ENABLED=true`), and `ask` (`ASK_ENABLED=True`).
-- Agent / multi-agent (trip-planner), API-driven agent comms, and the GPT-4o→Claude Sonnet (`claude-sonnet-4-6`) migration are all **V3** — don't reach for them early.
+- 4 router modes all **live in prod**: `search`, `recommend` (`ANALYZE_ENABLED=true`), `ask` (`ASK_ENABLED=True`), and `trip` (`TRIP_ENABLED=true`, live since 2026-08-29).
+- The trip-planner is the project's first true **agent** (dynamic tool sequencing + re-planning via LangGraph) — see `docs/v3-trip-planner-plan.md`. Still V3-future / don't reach for early: **multi-agent** (an orchestrator over specialised sub-agents — only if the single trip agent visibly strains), Google Places ratings/Distance Matrix (billing-gated), and the GPT-4o→Claude Sonnet migration.
 - Guiding principle: the **autonomy ladder** (`rules → pipeline → workflow → agent → multi-agent`) — use the least autonomy that solves the task; climb a rung only when a concrete case can't be served below.
 
 ---
