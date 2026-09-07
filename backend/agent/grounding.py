@@ -37,13 +37,20 @@ DESC_MAX_CHARS = 280
 STRICT_GROUNDING_RULES = (
     "STRICT GROUNDING RULES — these override any instinct to be more helpful:\n"
     "- Every pro and con MUST be directly supported by the LITERAL text of that "
-    "onsen's provided fields (name, spring type, location, description). Do NOT "
-    "infer amenities, scenery, baths, views, atmosphere, crowds, or activities "
-    "from the onsen's NAME, from its LOCATION, or from general knowledge about "
-    "the area or the spring type.\n"
-    "- If an onsen's description is 'none provided', you usually cannot ground "
-    "any specific pro or con — return EMPTY pros and cons for that onsen rather "
-    "than guessing. It is correct and expected for an onsen to have no pros/cons.\n"
+    "onsen's provided fields (name, spring type, location, description, review "
+    "summary). Do NOT infer amenities, scenery, baths, views, atmosphere, crowds, "
+    "or activities from the onsen's NAME, from its LOCATION, or from general "
+    "knowledge about the area or the spring type.\n"
+    "- The review summary (when provided) is Google's AI-generated synthesis of "
+    "OTHER PEOPLE'S reviews, not a verified fact. EVERY pro or con drawn from it "
+    "MUST begin with an explicit attribution phrase such as 'Reviewers mention...', "
+    "'Visitors note...', or 'According to reviews...' — e.g. write 'Reviewers "
+    "mention fresh sashimi', NOT 'Fresh sashimi'. Never state review-derived "
+    "content as a flat, unattributed fact.\n"
+    "- If an onsen has neither a description nor a review summary, you usually "
+    "cannot ground any specific pro or con — return EMPTY pros and cons for that "
+    "onsen rather than guessing. It is correct and expected for an onsen to have "
+    "no pros/cons.\n"
     "- Never invent facilities, prices, opening hours, tattoo policies, transport, "
     "baths, views, or any fact not present in the data.\n"
     "- Refer to each onsen by its given index so your analysis can be matched back.\n"
@@ -63,14 +70,20 @@ class OnsenAnalysis(BaseModel):
         default=[],
         description=(
             "Short positives supported by the LITERAL provided fields. Empty when "
-            "the fields (esp. an absent description) don't support any — do not infer."
+            "the fields (esp. an absent description) don't support any — do not infer. "
+            "Any pro sourced from the review summary MUST start with an attribution "
+            "phrase, e.g. 'Reviewers mention fresh sashimi' — NEVER a bare fact like "
+            "'Fresh sashimi'."
         ),
     )
     cons: list[str] = Field(
         default=[],
         description=(
             "Short caveats supported by the LITERAL provided fields. Empty when "
-            "the fields (esp. an absent description) don't support any — do not infer."
+            "the fields (esp. an absent description) don't support any — do not infer. "
+            "Any con sourced from the review summary MUST start with an attribution "
+            "phrase, e.g. 'Reviewers mention slow service' — NEVER a bare fact like "
+            "'Slow service'."
         ),
     )
 
@@ -78,19 +91,29 @@ class OnsenAnalysis(BaseModel):
 def project_candidates(onsens: list[OnsenResult]) -> str:
     """Render a compact, token-lean projection of the candidates for the prompt.
 
-    Sends only name, spring_type, location, and a truncated description. Omits
-    coordinates and URLs — they carry no judgement value, just tokens. Shared by
-    both brains so the projection format has one definition.
+    Sends name, spring_type, location, a truncated description, and (when
+    present) a truncated review summary. Omits coordinates, URLs, rating, and
+    review count — rating/count are deliberately NOT sent: they carry no
+    grounding value for pros/cons (a number isn't a fact the model can quote),
+    and are surfaced to the end user directly instead, untouched by the LLM
+    (see agent/schemas.py::OnsenResult.rating). Shared by both brains so the
+    projection format has one definition.
     """
     lines: list[str] = []
     for i, o in enumerate(onsens):
         desc = (o.spa_quality or "").strip()
         if len(desc) > DESC_MAX_CHARS:
             desc = desc[:DESC_MAX_CHARS].rstrip() + "…"
-        lines.append(
-            f"[{i}] {o.name}\n"
-            f"    Spring type: {o.spring_type or 'unknown'}\n"
-            f"    Location: {o.location or 'unknown'}\n"
-            f"    Description: {desc or 'none provided'}"
-        )
+        block = [
+            f"[{i}] {o.name}",
+            f"    Spring type: {o.spring_type or 'unknown'}",
+            f"    Location: {o.location or 'unknown'}",
+            f"    Description: {desc or 'none provided'}",
+        ]
+        summary = (o.review_summary or "").strip()
+        if summary:
+            if len(summary) > DESC_MAX_CHARS:
+                summary = summary[:DESC_MAX_CHARS].rstrip() + "…"
+            block.append(f"    Review summary: {summary}")
+        lines.append("\n".join(block))
     return "\n".join(lines)

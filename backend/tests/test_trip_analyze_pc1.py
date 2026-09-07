@@ -93,38 +93,6 @@ def _retrieval_by_region(mapping: dict[str, list[dict]]) -> MagicMock:
 
 # --- single-source grounding contract (anti-drift guard) ---------------------
 
-# The recommend brain's effective prompt BEFORE the grounding refactor. This test
-# is a behaviour-preserving guard: the live recommend (analyze_onsen) prompt must be
-# byte-identical to this after the extraction into agent/grounding.py.
-_RECOMMEND_INSTRUCTIONS_PRE_REFACTOR = (
-    "You are an expert guide for Japanese hot springs (onsen). You are given a "
-    "numbered list of candidate onsen (each with name, spring type, location, and "
-    "a short description) and the traveller's stated preference. For each onsen, "
-    "give a few short pros and cons, and then recommend which one best fits the "
-    "preference and why.\n"
-    "STRICT GROUNDING RULES — these override any instinct to be more helpful:\n"
-    "- Every pro and con MUST be directly supported by the LITERAL text of that "
-    "onsen's provided fields (name, spring type, location, description). Do NOT "
-    "infer amenities, scenery, baths, views, atmosphere, crowds, or activities "
-    "from the onsen's NAME, from its LOCATION, or from general knowledge about "
-    "the area or the spring type.\n"
-    "- If an onsen's description is 'none provided', you usually cannot ground "
-    "any specific pro or con — return EMPTY pros and cons for that onsen rather "
-    "than guessing. It is correct and expected for an onsen to have no pros/cons.\n"
-    "- Never invent facilities, prices, opening hours, tattoo policies, transport, "
-    "baths, views, or any fact not present in the data.\n"
-    "- Refer to each onsen by its given index so your analysis can be matched back.\n"
-    "- Keep pros/cons short (a few words each).\n"
-    "- The recommendation paragraph may compare spring type and location against "
-    "the preference, but must not assert any fact absent from the data."
-)
-
-
-def test_recommend_live_prompt_is_byte_identical_after_refactor():
-    # Behaviour-preserving: extracting the grounding contract must NOT change the
-    # live recommend path's effective prompt.
-    assert recommend_module._INSTRUCTIONS == _RECOMMEND_INSTRUCTIONS_PRE_REFACTOR
-
 
 def test_both_brains_share_one_grounding_constant():
     # Single source of truth: the SAME grounding constant object is embedded in both

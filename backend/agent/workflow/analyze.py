@@ -64,10 +64,10 @@ class GuideResult(BaseModel):
 # byte-identical to the pre-refactor _INSTRUCTIONS.
 _INTRO = (
     "You are an expert guide for Japanese hot springs (onsen). You are given a "
-    "numbered list of candidate onsen (each with name, spring type, location, and "
-    "a short description) and the traveller's stated preference. For each onsen, "
-    "give a few short pros and cons, and then recommend which one best fits the "
-    "preference and why."
+    "numbered list of candidate onsen (each with name, spring type, location, a "
+    "short description, and — when available — a summary of visitor reviews) and "
+    "the traveller's stated preference. For each onsen, give a few short pros and "
+    "cons, and then recommend which one best fits the preference and why."
 )
 _RECOMMEND_TAIL = (
     "- The recommendation paragraph may compare spring type and location against "

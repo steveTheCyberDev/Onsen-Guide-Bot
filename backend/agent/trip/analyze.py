@@ -80,10 +80,10 @@ _INTRO = (
     "You are an expert guide for Japanese hot-spring (onsen) trips. You are given a "
     "traveller's trip parameters (regions, nights, pace, and any spring/scenery "
     "preferences) and the SETTLED itinerary: a numbered list of the real onsen "
-    "stops it visits (each with name, spring type, location, and a short "
-    "description). For each stop give a few short pros and cons, then write ONE "
-    "short recommendation explaining why this itinerary as a whole suits the "
-    "traveller."
+    "stops it visits (each with name, spring type, location, a short description, "
+    "and — when available — a summary of visitor reviews). For each stop give a "
+    "few short pros and cons, then write ONE short recommendation explaining why "
+    "this itinerary as a whole suits the traveller."
 )
 _TRIP_TAIL = (
     "- NEVER introduce an onsen or stop that is not in the provided numbered list.\n"
