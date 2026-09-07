@@ -225,7 +225,8 @@ async def test_pipeline_response_is_fixed_key_contract_under_injection(message):
     # And every nested onsen is itself the fixed OnsenResult shape.
     for onsen in result["onsens"]:
         assert set(onsen) == {"name", "location", "spring_type", "spa_quality",
-                              "lat", "lng", "pros", "cons"}
+                              "lat", "lng", "pros", "cons",
+                              "rating", "user_rating_count", "review_summary"}
 
 
 def test_build_onsens_projection_ignores_injected_record_keys():

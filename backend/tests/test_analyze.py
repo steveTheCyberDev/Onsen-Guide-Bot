@@ -136,3 +136,33 @@ def test_projection_truncates_long_description():
     # Assert — truncated to the cap plus an ellipsis, not the full 500 chars.
     assert "x" * 500 not in projection
     assert "…" in projection
+
+
+def test_projection_includes_review_summary_when_present():
+    onsens = [_onsen("Reviewed", review_summary="Guests love the outdoor bath.")]
+    projection = _project(onsens)
+    assert "Review summary:" in projection
+    assert "Guests love the outdoor bath." in projection
+
+
+def test_projection_omits_review_summary_line_when_absent():
+    onsens = [_onsen("Unreviewed")]
+    projection = _project(onsens)
+    assert "Review summary:" not in projection
+
+
+def test_projection_never_includes_rating_or_review_count():
+    # Rating is a pure display field for the end user — the model must never
+    # see it (see agent/grounding.py::project_candidates docstring).
+    onsens = [_onsen("Rated", rating=4.7, user_rating_count=1234)]
+    projection = _project(onsens)
+    assert "4.7" not in projection
+    assert "1234" not in projection
+    assert "rating" not in projection.lower()
+
+
+def test_grounding_rules_require_attribution_for_review_summary():
+    from agent.grounding import STRICT_GROUNDING_RULES
+
+    assert "review summary" in STRICT_GROUNDING_RULES.lower()
+    assert "not a verified fact" in STRICT_GROUNDING_RULES.lower()

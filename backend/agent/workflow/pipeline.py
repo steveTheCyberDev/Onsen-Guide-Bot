@@ -54,7 +54,10 @@ _ASK_STUB_REPLY = (
 # dropped, not rejected), but OnsenResult sets extra="forbid" EXPLICITLY
 # (agent/schemas.py, defense-in-depth), so OnsenResult(**record) with those extra
 # keys would raise ValidationError. We project onto this allow-list instead.
-_ONSEN_FIELDS = ("name", "location", "spring_type", "spa_quality", "lat", "lng")
+_ONSEN_FIELDS = (
+    "name", "location", "spring_type", "spa_quality", "lat", "lng",
+    "rating", "user_rating_count", "review_summary",
+)
 
 # Default/ceiling for how many onsen retrieval returns. Used when the user names
 # no count, and as the upper clamp when they do (e.g. 'top 100' → _MAX_RESULTS).

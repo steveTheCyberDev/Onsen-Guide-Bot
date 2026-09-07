@@ -218,6 +218,12 @@ def build_metadata(record: dict) -> dict:
 
     ChromaDB rejects None metadata values, so latitude/longitude are only
     included when BOTH are non-null (geocoding writes null on failure).
+    Google Places fields (place_id/rating/user_rating_count/review_summary/
+    review_summary_disclosure, from scripts/backfill_place_ids.py +
+    scripts/backfill_place_ratings.py) are each included independently when
+    present — a place can have a place_id with no rating (too few reviews),
+    or a rating with no review summary, so they are NOT gated together the
+    way latitude/longitude are.
     """
     meta = {
         "name": record["name"],
@@ -232,6 +238,17 @@ def build_metadata(record: dict) -> dict:
     if lat is not None and lng is not None:
         meta["latitude"] = lat
         meta["longitude"] = lng
+
+    if record.get("place_id") is not None:
+        meta["place_id"] = record["place_id"]
+    if record.get("rating") is not None:
+        meta["rating"] = record["rating"]
+    if record.get("user_rating_count") is not None:
+        meta["user_rating_count"] = record["user_rating_count"]
+    if record.get("review_summary") is not None:
+        meta["review_summary"] = record["review_summary"]
+    if record.get("review_summary_disclosure") is not None:
+        meta["review_summary_disclosure"] = record["review_summary_disclosure"]
     return meta
 
 

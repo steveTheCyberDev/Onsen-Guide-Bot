@@ -228,6 +228,9 @@ def test_structured_maps_all_fields_from_metadata_and_document():
             "detail_url": "https://example.com/beppu",
             "lat": 33.2846,
             "lng": 131.4914,
+            "rating": None,
+            "user_rating_count": None,
+            "review_summary": None,
         }
     ]
     # Regression guard (A/B bug): when the spring-type label and the document
@@ -236,6 +239,22 @@ def test_structured_maps_all_fields_from_metadata_and_document():
     assert records[0]["spring_type"] != records[0]["spa_quality"]
     assert "description" not in records[0]
     assert "sales_point" not in records[0]
+
+
+def test_structured_carries_rating_when_present():
+    docs = ["A relaxing sulfur spring."]
+    metas = [{"name_en": "Beppu Onsen", "rating": 4.3}]
+    with patch.object(retrieval_service, "get_collection", return_value=_fake_collection(docs, metas)):
+        records = retrieval_service.query_onsen_structured("relaxing spring")
+    assert records[0]["rating"] == 4.3
+
+
+def test_structured_rating_none_when_absent_from_metadata():
+    docs = ["A relaxing sulfur spring."]
+    metas = [{"name_en": "Beppu Onsen"}]
+    with patch.object(retrieval_service, "get_collection", return_value=_fake_collection(docs, metas)):
+        records = retrieval_service.query_onsen_structured("relaxing spring")
+    assert records[0]["rating"] is None
 
 
 def test_structured_name_uses_name_en_when_present():

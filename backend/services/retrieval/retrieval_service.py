@@ -143,6 +143,12 @@ def query_onsen_structured(
                 "detail_url": meta.get("detail_url"),
                 "lat": lat,
                 "lng": lng,
+                # Google Places fields (scripts/backfill_place_ratings.py) — only
+                # present for the subset of records that have been backfilled +
+                # re-ingested; absent means "no rating data yet", not "rated zero".
+                "rating": meta.get("rating"),
+                "user_rating_count": meta.get("user_rating_count"),
+                "review_summary": meta.get("review_summary"),
             }
         )
     return records
