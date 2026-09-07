@@ -9,6 +9,12 @@ class Settings(BaseSettings):
     openai_api_key: str
     anthropic_api_key: str
     google_maps_api_key: str
+    # Separate key/SKU from google_maps_api_key — Places API (New) is billed and
+    # enabled independently of Geocoding API. Defaults to "" (not required) since
+    # it's only used by the one-off scripts/backfill_place_ids.py script, not any
+    # live /chat path — an empty key just fails that script's calls, it never
+    # breaks app startup.
+    google_places_api_key: str = ""
     rakuten_app_id: str
     rakuten_access_key: str
     rakuten_hotel_url: str

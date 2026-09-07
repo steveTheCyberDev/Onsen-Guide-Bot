@@ -68,8 +68,11 @@ class _TransientHTTPError(Exception):
     ),
     reraise=True,
 )
-def _get_retrying(url: str, **kwargs) -> requests.Response:
-    response = requests.get(url, **kwargs)
+def _request_retrying(method, url: str, **kwargs) -> requests.Response:
+    """Shared retrying core for both GET and POST — ``method`` is
+    ``requests.get`` or ``requests.post``, injected by the two public
+    wrappers below so the tenacity config lives in exactly one place."""
+    response = method(url, **kwargs)
     if response.status_code >= 500:
         logger.warning(
             "transient upstream %s from %s — retrying", response.status_code, url
@@ -96,8 +99,20 @@ def get_with_retries(url: str, **kwargs) -> requests.Response:
     # Safety-net default — setdefault so an explicit caller timeout still wins.
     kwargs.setdefault("timeout", settings.http_timeout_seconds)
     try:
-        return _get_retrying(url, **kwargs)
+        return _request_retrying(requests.get, url, **kwargs)
     except _TransientHTTPError as exc:
         # Exhausted retries on 5xx — hand the response back so the caller's
         # existing status/body handling stays in charge (no new crash).
+        return exc.response
+
+
+def post_with_retries(url: str, **kwargs) -> requests.Response:
+    """``requests.post`` with the same bounded-retry behaviour as
+    ``get_with_retries`` (see above) — same timeout default, same 5xx/
+    connection/timeout retry policy, same "hand back the last response on
+    exhausted retries" contract."""
+    kwargs.setdefault("timeout", settings.http_timeout_seconds)
+    try:
+        return _request_retrying(requests.post, url, **kwargs)
+    except _TransientHTTPError as exc:
         return exc.response
