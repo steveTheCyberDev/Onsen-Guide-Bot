@@ -49,6 +49,25 @@ class OnsenResult(BaseModel):
         default=[],
         description="Grounded caveats for this onsen (recommend mode only).",
     )
+    # Google Places additions (scripts/backfill_place_ids.py +
+    # backfill_place_ratings.py, ingested into Chroma metadata). Only populated
+    # for the subset of onsen that have been backfilled — absent elsewhere, same
+    # additive/optional discipline as lat/lng.
+    rating: float | None = Field(
+        default=None,
+        description="Google rating (1.0-5.0), when available.",
+    )
+    user_rating_count: int | None = Field(
+        default=None,
+        description="Number of Google ratings this onsen has, when available.",
+    )
+    review_summary: str | None = Field(
+        default=None,
+        description=(
+            "Google's AI-generated (Gemini) synthesis of visitor reviews, when "
+            "available — reported visitor sentiment, not a verified fact."
+        ),
+    )
 
 
 class HotelResult(BaseModel):

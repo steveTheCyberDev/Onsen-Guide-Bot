@@ -136,6 +136,39 @@ def test_build_itinerary_caps_picks_at_available_candidates():
     assert len(itin["regions"][0]["onsens"]) == 1
 
 
+def test_build_itinerary_prefers_higher_rated_onsen_within_region():
+    # Retrieval order deliberately puts the lower-rated onsen first — the
+    # rating-based rank must still surface the higher-rated one as the stop.
+    low = _onsen("Low Rated", "Gifu")
+    low["rating"] = 3.2
+    high = _onsen("High Rated", "Gifu")
+    high["rating"] = 4.8
+    candidates = {"Gifu": [low, high]}
+    slots = {"regions": ["Gifu"], "nights": 1, "pace": "relaxed"}
+    itin = build_itinerary(slots, candidates)
+    assert [o["name"] for o in itin["regions"][0]["onsens"]] == ["High Rated"]
+
+
+def test_build_itinerary_missing_rating_sorts_last_but_is_not_excluded():
+    rated = _onsen("Rated", "Gifu")
+    rated["rating"] = 4.0
+    unrated = _onsen("Unrated", "Gifu")  # no "rating" key at all
+    candidates = {"Gifu": [unrated, rated]}
+    slots = {"regions": ["Gifu"], "nights": 2, "pace": "relaxed"}
+    itin = build_itinerary(slots, candidates)
+    # Both fit (2 stops wanted, 2 candidates) — rated one still ranks first.
+    assert [o["name"] for o in itin["regions"][0]["onsens"]] == ["Rated", "Unrated"]
+
+
+def test_build_itinerary_equal_or_missing_ratings_keep_relevance_order():
+    # No rating field at all on any candidate (today's common case pre-backfill)
+    # — the pre-existing relevance/retrieval order must be preserved exactly.
+    candidates = {"Gifu": [_onsen(f"Gifu {i}", "Gifu") for i in range(3)]}
+    slots = {"regions": ["Gifu"], "nights": 3, "pace": "relaxed"}
+    itin = build_itinerary(slots, candidates)
+    assert [o["name"] for o in itin["regions"][0]["onsens"]] == ["Gifu 0", "Gifu 1", "Gifu 2"]
+
+
 def test_build_itinerary_flags_no_data_region_and_omits_its_onsen():
     candidates = {"Gifu": [_onsen("Gero Onsen", "Gifu")]}  # Hokkaido absent → no data
     slots = {"regions": ["Gifu", "Hokkaido"], "nights": 4, "pace": "relaxed"}

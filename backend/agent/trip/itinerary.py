@@ -68,7 +68,10 @@ _DEFAULT_STOPS_PER_NIGHT = 1  # relaxed
 # OnsenResult forbids extras (Pydantic v2 default), so we project onto this
 # allow-list rather than ``OnsenResult(**record)``. Mirrors ``pipeline._ONSEN_FIELDS``
 # — kept local so agent/trip/ does not couple to agent/workflow internals.
-_ONSEN_FIELDS = ("name", "location", "spring_type", "spa_quality", "lat", "lng")
+_ONSEN_FIELDS = (
+    "name", "location", "spring_type", "spa_quality", "lat", "lng",
+    "rating", "user_rating_count", "review_summary",
+)
 
 # How many hotel names to name per onsen stop in the deterministic reply. The full
 # hotel set is always carried in state + AgentResponse.hotels; this only bounds the
@@ -79,6 +82,29 @@ _HOTELS_IN_REPLY = 3
 def _stops_per_night(pace: str) -> int:
     """Onsen-stops per night for a pace, defaulting to relaxed (1) if unknown."""
     return _STOPS_PER_NIGHT.get(pace, _DEFAULT_STOPS_PER_NIGHT)
+
+
+def _rank_by_rating(pool: list[dict]) -> list[dict]:
+    """Prefer higher-rated onsen among an already-relevant candidate pool.
+
+    ``pool`` is already filtered/ranked by semantic relevance to the
+    traveller's stated preference (``query_onsen_structured``'s top-N —
+    see ``_CANDIDATES_PER_REGION``). This RE-RANKS within that relevant pool
+    by real Google rating (``scripts/backfill_place_ratings.py``), so a
+    highly-rated match wins the stop slot over a lower/unrated one the
+    vector search happened to return first — instead of the previous
+    behaviour of blindly taking retrieval order.
+
+    A missing rating sorts LAST, never excluded — a region whose candidates
+    have no rating data yet still gets a stop; ``sorted`` is stable, so onsen
+    with equal (including missing) ratings keep their original relevance
+    order relative to each other.
+    """
+    return sorted(
+        pool,
+        key=lambda r: r["rating"] if r.get("rating") is not None else -1,
+        reverse=True,
+    )
 
 
 def allocate_nights(nights: int, num_regions: int) -> list[int]:
@@ -215,7 +241,7 @@ def build_itinerary(slots: dict, candidates: dict[str, list[dict]]) -> dict:
         # At least one stop even for a 0-night region (day trip); otherwise ~pace
         # stops per allocated night, capped by how many candidates actually exist.
         want = max(1, region_nights * stops_per_night)
-        picked = pool[:want]
+        picked = _rank_by_rating(pool)[:want]
         legs.append(
             {"region": region, "nights": region_nights, "no_data": False, "onsens": picked}
         )

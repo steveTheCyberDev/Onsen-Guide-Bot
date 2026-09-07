@@ -12,3 +12,7 @@ class GeocodingError(OnsenBotError):
 
 class RakutenError(OnsenBotError):
     pass
+
+
+class PlacesError(OnsenBotError):
+    pass
