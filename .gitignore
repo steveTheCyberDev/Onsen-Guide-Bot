@@ -22,3 +22,7 @@
 # Local full-dataset archive — not used by the build (code reads backend/data/).
 # Copy region files from here into backend/data/ when expanding coverage.
 /data/
+
+# Personal working notes — not for the public repo.
+/docs/delivery-log.md
+/docs/next-steps.md
