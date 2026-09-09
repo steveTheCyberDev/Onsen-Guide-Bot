@@ -76,29 +76,26 @@
 The ingest runs inside the deployed Railway container, writing directly to the
 persistent volume mounted at `/app/chroma_db`.  No local-to-remote copy needed.
 
-**Launch subset: okinawa + tokai only (~220 records total).**
-The remaining 8 regions are deferred until after initial launch validation.
+**Launch subset (historical, 2026-06): okinawa + tokai only (~220 records).**
+All 10 regions are now the live baseline (2026-09) — `ingest_regions.py` no
+longer defaults to a subset (that default was the root cause of a real prod
+incident: a "successful" no-flags ingest silently only touched 3 regions).
 
 Run as a Railway one-off job (Railway dashboard → your service → "Run Job",
 or via Railway CLI `railway run`):
 
 ```bash
-# From the project root inside the Railway container:
-python scripts/ingest_regions.py
+# From the project root inside the Railway container — ingests ALL regions +
+# the knowledge base in one command (no flags needed, this is now the default):
+python -m scripts.ingest_all
 ```
 
-This ingests `okinawa_springs.jsonl` (~3 records) and `tokai_springs.jsonl`
-(~217 records) in 20-record translation batches.  The call is idempotent
-(ChromaDB upsert keyed on `detail_url`) — safe to re-run without duplicating data.
+The call is idempotent (ChromaDB upsert keyed on `detail_url`) — safe to
+re-run without duplicating data.
 
-To expand coverage later, either add slugs to `ACTIVE_REGIONS` in
-`backend/scripts/ingest_regions.py` and re-run, or run:
+To ingest only a subset (e.g. while testing a new region before merging it):
 
 ```bash
-# Ingest all 10 regions at once:
-python scripts/ingest_regions.py --all
-
-# Or ingest specific additional regions:
 python scripts/ingest_regions.py --regions kanto kinki kyushu
 ```
 
