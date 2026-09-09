@@ -6,9 +6,7 @@ back to "I don't have that information" against an empty KB collection while
 search/recommend look fine. Running them together makes the deploy "ingest
 gate" a single command.
 
-    python -m scripts.ingest_all
-    python -m scripts.ingest_all --all           # every region, not just the
-                                                  # ACTIVE_REGIONS launch subset
+    python -m scripts.ingest_all                 # every region (the default)
     python -m scripts.ingest_all --regions kanto kinki
 
 Any CLI args are forwarded VERBATIM to ``scripts.ingest_regions`` only (its
@@ -16,8 +14,11 @@ Any CLI args are forwarded VERBATIM to ``scripts.ingest_regions`` only (its
 takes an unrelated ``--dir`` override and is always called bare, since there is
 no knowledge-base analogue of "which regions". Previously this script silently
 ignored every CLI arg (no ``sys.argv`` read at all), so `ingest_all --all`
-always ran the bare 3-region ``ACTIVE_REGIONS`` subset no matter what was
-passed — a real gap, not a doc/usage mistake.
+always ran ``ingest_regions``' old 3-region ``ACTIVE_REGIONS`` launch-subset
+default no matter what was passed — a real gap, not a doc/usage mistake. That
+subset default has since been removed from ``ingest_regions.py`` entirely
+(2026-09-09) — no flags now means "every region" there too, so this script's
+own bare `python -m scripts.ingest_all` has meant the full dataset ever since.
 
 Both sub-ingests are idempotent (Chroma ``upsert`` with deterministic ids), so
 re-running on every deploy is safe. Each reads the SAME settings the app reads
