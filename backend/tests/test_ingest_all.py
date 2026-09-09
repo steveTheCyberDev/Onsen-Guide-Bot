@@ -39,3 +39,37 @@ def test_aborts_if_first_ingest_fails():
         except RuntimeError:
             pass
     assert run.call_count == 1
+
+
+def test_forwards_region_args_to_ingest_regions_only():
+    # Regression guard: ingest_all previously read no args at all (not even
+    # sys.argv), so `ingest_all --all` silently ran the bare ACTIVE_REGIONS
+    # subset no matter what was passed. --all/--regions must reach
+    # ingest_regions; ingest_knowledge (unrelated --dir flag) stays bare.
+    with patch.object(ingest_all.subprocess, "run") as run:
+        ingest_all.main(["--all"])
+
+    calls = [call.args[0] for call in run.call_args_list]
+    assert calls[0] == [ingest_all.sys.executable, "-m", "scripts.ingest_regions", "--all"]
+    assert calls[1] == [ingest_all.sys.executable, "-m", "scripts.ingest_knowledge"]
+
+
+def test_forwards_regions_flag_with_multiple_slugs():
+    with patch.object(ingest_all.subprocess, "run") as run:
+        ingest_all.main(["--regions", "kanto", "kinki"])
+
+    first_call_args = run.call_args_list[0].args[0]
+    assert first_call_args == [
+        ingest_all.sys.executable, "-m", "scripts.ingest_regions",
+        "--regions", "kanto", "kinki",
+    ]
+
+
+def test_no_args_still_runs_ingest_regions_bare():
+    # Calling main() with no args (the pre-fix default) must still behave
+    # exactly as before: ingest_regions gets no extra flags.
+    with patch.object(ingest_all.subprocess, "run") as run:
+        ingest_all.main()
+
+    first_call_args = run.call_args_list[0].args[0]
+    assert first_call_args == [ingest_all.sys.executable, "-m", "scripts.ingest_regions"]
