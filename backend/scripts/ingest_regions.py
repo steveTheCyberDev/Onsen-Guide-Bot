@@ -1,22 +1,31 @@
 """
-Subset-aware ingest wrapper for Onsen Guide Bot.
+Region-selectable ingest wrapper for Onsen Guide Bot.
 
 Calls the existing ingest() function from ingest.py — no ingest logic lives here.
 
 Usage (run from the backend/ directory so that the sys.path setup in ingest.py
 works correctly, or from the project root as shown below):
 
-  # Ingest only the launch subset (okinawa + tokai + hokuriku):
+  # Ingest every *_springs.jsonl in backend/data/ (the default, no flags needed):
   python backend/scripts/ingest_regions.py
 
-  # Ingest specific slugs:
+  # Ingest specific slugs only:
   python backend/scripts/ingest_regions.py --regions okinawa tokai kanto
 
-  # Ingest every *_springs.jsonl in backend/data/:
+  # --all is accepted too (identical to the no-flags default, kept for
+  # explicitness/back-compat with existing docs and scripts):
   python backend/scripts/ingest_regions.py --all
 
   # Pass a custom batch size through to ingest():
   python backend/scripts/ingest_regions.py --batch-size 10
+
+There used to be a smaller ACTIVE_REGIONS "launch subset" that ran by default
+with no flags — removed (2026-09-09) now that all 10 regions are the live
+baseline, not a subset. That default was the root cause of a real prod
+incident: a "successful" ingest run with no flags silently only touched 3
+regions, and the wrapper's own --all flag had a SEPARATE bug (scripts/ingest_all.py
+not forwarding it) that made the gap invisible until live-tested. Use
+--regions explicitly if you ever need to ingest a true subset again.
 
 Runtime note:
   Importing ingest.py triggers module-level code that constructs an OpenAI client
@@ -54,17 +63,6 @@ load_dotenv(BACKEND_DIR / ".env")
 from core.config import settings  # noqa: E402
 
 DATA_DIR = settings.data_dir
-
-# ── Launch subset ─────────────────────────────────────────────────────────────
-# The current launch subset — add slugs here to expand coverage.
-# Full slug list: okinawa, tokai, kanto, kinki, chugoku, shikoku,
-#                 kyushu, hokkaido, hokuriku, tohoku
-ACTIVE_REGIONS: list[str] = [
-    "okinawa",   # ~3 records
-    "tokai",     # ~217 records — Aichi, Gifu, Mie, Shizuoka
-    "hokuriku",  # ~577 records — 北陸・甲信越: Nagano, Niigata, Toyama,
-                 #                Ishikawa, Yamanashi, Fukui
-]
 
 # ── Known slugs ───────────────────────────────────────────────────────────────
 # These are the only slugs with a *_springs.jsonl file.  Anything outside this
@@ -110,8 +108,9 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
             "Ingest one or more onsen regions into ChromaDB.\n"
-            "With no arguments, ingests the ACTIVE_REGIONS launch subset "
-            f"({', '.join(ACTIVE_REGIONS)})."
+            "With no arguments, ingests every *_springs.jsonl found in "
+            "backend/data/ (same as --all) — pass --regions to ingest a "
+            "subset instead."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -129,7 +128,10 @@ def parse_args() -> argparse.Namespace:
     target_group.add_argument(
         "--all",
         action="store_true",
-        help="Ingest every *_springs.jsonl found in backend/data/.",
+        help=(
+            "Ingest every *_springs.jsonl found in backend/data/. "
+            "Identical to the no-flags default — kept for explicitness."
+        ),
     )
 
     parser.add_argument(
@@ -148,19 +150,15 @@ def parse_args() -> argparse.Namespace:
 if __name__ == "__main__":
     args = parse_args()
 
-    # Determine which slugs to process
-    if args.all:
-        slugs = discover_all_slugs()
-        print(f"[ingest_regions] --all: discovered {len(slugs)} region(s): {', '.join(slugs)}")
-    elif args.regions:
+    # Determine which slugs to process. --all and no-flags are the same thing;
+    # only --regions narrows to a subset.
+    if args.regions:
         slugs = args.regions
         print(f"[ingest_regions] --regions: processing {len(slugs)} region(s): {', '.join(slugs)}")
     else:
-        slugs = list(ACTIVE_REGIONS)
-        print(
-            f"[ingest_regions] No flags — using ACTIVE_REGIONS launch subset: "
-            f"{', '.join(slugs)}"
-        )
+        slugs = discover_all_slugs()
+        flag_note = "--all" if args.all else "no flags"
+        print(f"[ingest_regions] {flag_note}: discovered {len(slugs)} region(s): {', '.join(slugs)}")
 
     # Validate all slugs before importing ingest (which costs an OpenAI client init)
     data_files: list[Path] = []
