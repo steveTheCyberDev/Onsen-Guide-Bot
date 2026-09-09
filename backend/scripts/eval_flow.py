@@ -219,10 +219,15 @@ _EXAMPLES: list[dict] = [
         "expect_no_info": True,
     },
     {
+        # RECONCILED (2026-09-09): Hokkaido used to be uningested, exercising the
+        # "no onsen found for X" template reply. It's now one of the 10 live
+        # regions (see docs/delivery-log.md's Places/ratings work) — Tokyo is the
+        # only prefecture still genuinely uningested, so it alone covers the
+        # no-data case below.
         "message": "Find onsen in Hokkaido",
-        "expected_mode": "no-data",
+        "expected_mode": "search",
         "prefecture": "Hokkaido",
-        "has_data": False,
+        "has_data": True,
         "wants_hotels": False,
     },
     {
