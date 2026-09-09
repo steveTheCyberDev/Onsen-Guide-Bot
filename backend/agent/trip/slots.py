@@ -2,9 +2,9 @@
 
 Two Pydantic models and the extraction call that feeds the elicit-loop:
 
-  * ``TripSlots``  — the canonical, ACCUMULATING trip state (§2 of
-    docs/archive/v3-trip-planner-plan.md). It is what ``TripState.slots`` holds, so it is
-    checkpointed per ``thread_id = session_id`` and carried across turns. The three
+  * ``TripSlots``  — the canonical, ACCUMULATING trip state. It is what
+    ``TripState.slots`` holds, so it is checkpointed per
+    ``thread_id = session_id`` and carried across turns. The three
     "required" slots (``regions``/``nights``/``dates_or_season``) are nullable here
     on purpose: partial state must be representable while a multi-turn conversation
     fills them. "Required" is enforced by :func:`missing_required` (the elicit

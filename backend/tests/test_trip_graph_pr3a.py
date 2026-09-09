@@ -5,9 +5,8 @@ Originally pinned PR3a's inert canned-reply behaviour. PR3b reshaped the graph
 output extraction LLM every turn; the old "canned reply, no LLM call" assumptions no
 longer hold. What SURVIVES unchanged from PR3a and is still pinned here:
 
-  * the four re-planning-readiness properties from docs/archive/v3-trip-planner-plan.md §0
-    (discrete ``plan`` node, compiled-with-checkpointer, MemorySaver default,
-    Postgres guarded); and
+  * the four re-planning-readiness properties (discrete ``plan`` node,
+    compiled-with-checkpointer, MemorySaver default, Postgres guarded); and
   * the checkpointer persistence PROOF — working state accumulates across two turns
     of the SAME ``session_id`` (``turn_count`` bumped by ``gather`` every turn).
 
