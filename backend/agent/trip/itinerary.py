@@ -3,7 +3,7 @@
 This is the deterministic data + assembly layer the discrete ``plan`` node runs
 once every required slot is present. It mirrors the **deterministic-assembly
 discipline** of the ``search`` mode (``agent/workflow/pipeline.py``) and §5 of
-docs/v3-trip-planner-plan.md: the itinerary is built from REAL retrieved onsen
+docs/archive/v3-trip-planner-plan.md: the itinerary is built from REAL retrieved onsen
 records — never LLM-generated, never fabricated — so there is NO LLM call in the
 plan path. The only judgement is a simple Python distribution of ``nights`` across
 ``regions`` and a top-N pick of onsen per region.

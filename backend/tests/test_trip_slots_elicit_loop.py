@@ -1,6 +1,6 @@
 """PR3b tests — TripSlots + the multi-turn elicit-loop.
 
-The Done condition (docs/v3-trip-planner-plan.md §6 PR3b): multi-turn slot-filling
+The Done condition (docs/archive/v3-trip-planner-plan.md §6 PR3b): multi-turn slot-filling
 works. A message missing a required slot yields exactly ONE follow-up and ends the
 turn; the NEXT turn on the SAME ``session_id`` resumes with the prior slots intact
 and merges the new info; once all required slots are present, the flow proceeds past

@@ -4,7 +4,7 @@ The **only use of LangGraph in the live /chat path** (the deterministic search/
 recommend/ask workflow is LangGraph-free). This is a hand-built ``StateGraph``
 compiled with a checkpointer — deliberately NOT a prebuilt agent graph — so PR7
 re-planning is purely additive (an edge + a node, not a reshape). See
-docs/v3-trip-planner-plan.md §0 "LangGraph adoption decision" for the four
+docs/archive/v3-trip-planner-plan.md §0 "LangGraph adoption decision" for the four
 re-planning-readiness properties this module honours:
 
   1. Hand-built ``StateGraph`` (this file), not a prebuilt agent graph.

@@ -1,6 +1,6 @@
 """PR3c tests — the naive itinerary builder (the real ``plan`` node).
 
-The Done condition (docs/v3-trip-planner-plan.md §6 PR3c): an end-to-end trip reply
+The Done condition (docs/archive/v3-trip-planner-plan.md §6 PR3c): an end-to-end trip reply
 for a COMPLETE request. Given all required slots (in one message or accumulated
 across turns), the flow proceeds past elicitation and the discrete ``plan`` node
 assembles a naive itinerary from REAL retrieved onsen — never fabricated. This file

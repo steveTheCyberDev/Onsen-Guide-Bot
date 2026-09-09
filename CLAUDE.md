@@ -14,7 +14,7 @@ layer are **live**. The `ask`-mode knowledge base is also **live in production**
 (`TRIP_ENABLED=true`, flipped and smoke-tested 2026-08-29) — a 4th `/chat` mode with a
 LangGraph elicit-loop, deterministic haversine conflict/re-planning, per-stop hotels, and a
 grounded recommendation. See Version Roadmap below, `PROJECT_JOURNEY.md`, and
-`docs/v3-trip-planner-plan.md`.
+`docs/archive/v3-trip-planner-plan.md`.
 
 ---
 
@@ -271,7 +271,7 @@ Run the smoke only when the suite is green and code changed, not on every tick.
 
 - Live `/chat` engine is the deterministic **workflow** (`run_workflow`) — the only engine (the legacy ReAct agent and its engine-select flag were removed).
 - 4 router modes all **live in prod**: `search`, `recommend` (`ANALYZE_ENABLED=true`), `ask` (`ASK_ENABLED=True`), and `trip` (`TRIP_ENABLED=true`, live since 2026-08-29).
-- The trip-planner is the project's first true **agent** (dynamic tool sequencing + re-planning via LangGraph) — see `docs/v3-trip-planner-plan.md`. Still V3-future / don't reach for early: **multi-agent** (an orchestrator over specialised sub-agents — only if the single trip agent visibly strains), Google Places ratings/Distance Matrix (billing-gated), and the GPT-4o→Claude Sonnet migration.
+- The trip-planner is the project's first true **agent** (dynamic tool sequencing + re-planning via LangGraph) — see `docs/archive/v3-trip-planner-plan.md`. Still V3-future / don't reach for early: **multi-agent** (an orchestrator over specialised sub-agents — only if the single trip agent visibly strains), Google Places ratings/Distance Matrix (billing-gated), and the GPT-4o→Claude Sonnet migration.
 - Guiding principle: the **autonomy ladder** (`rules → pipeline → workflow → agent → multi-agent`) — use the least autonomy that solves the task; climb a rung only when a concrete case can't be served below.
 
 ---

@@ -1,7 +1,7 @@
 """Trip-planner agent working state — the LangGraph ``StateGraph`` schema.
 
 This is the **agent working state** the LangGraph checkpointer persists per
-``thread_id = session_id`` (docs/v3-trip-planner-plan.md §0/§4). It is distinct
+``thread_id = session_id`` (docs/archive/v3-trip-planner-plan.md §0/§4). It is distinct
 from the Step-0 session store (``services/chat/chat_service.py``), which holds the
 raw conversation *transcript*: this schema holds the *structured* state the agent
 accumulates while planning (slots, candidates, itinerary).

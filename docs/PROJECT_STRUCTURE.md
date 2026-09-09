@@ -67,7 +67,7 @@ Onsen-Guide-Bot/
 │   ├── package.json
 │   └── .env                     # VITE_API_URL, VITE_GOOGLE_MAPS_API_KEY (never commit!)
 │
-├── docs/                        # V2_IMPLEMENTATION_PLAN, ask-mode-plan, eval-model-comparison, …
+├── docs/                        # eval-model-comparison, security-red-team-plan, … + docs/archive/ (superseded V2/V3/ask plans)
 ├── PROJECT_JOURNEY.md           # full roadmap + engineering-challenge narrative
 ├── DEPLOYMENT.md
 ├── schema.sql                   # reserved pgvector migration path

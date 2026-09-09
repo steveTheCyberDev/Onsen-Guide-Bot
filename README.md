@@ -158,7 +158,7 @@ In the Railway container, `/chat` returned zero results despite a "successful" i
 
 ## Status & limitations
 
-**V2.5 is live in production** — the deterministic workflow, guide-style recommendations, the `ask` knowledge base, evals, and observability are all shipped and running. **V3 (the trip-planner agent) is built and ready behind a flag** — a LangGraph agent with persistent session state, slot-filling, region validation, **haversine-based routing + a bounded re-plan loop**, and a **grounded recommendation step** ("why this itinerary suits you"), all merged to `develop` **behind `trip_enabled`** (deliberately not yet flipped in prod). See the [design plan](./docs/v3-trip-planner-plan.md). I'd rather name the remaining gaps than hide them:
+**V2.5 is live in production** — the deterministic workflow, guide-style recommendations, the `ask` knowledge base, evals, and observability are all shipped and running. **V3 (the trip-planner agent) is built and ready behind a flag** — a LangGraph agent with persistent session state, slot-filling, region validation, **haversine-based routing + a bounded re-plan loop**, and a **grounded recommendation step** ("why this itinerary suits you"), all merged to `develop` **behind `trip_enabled`** (deliberately not yet flipped in prod). See the [design plan](./docs/archive/v3-trip-planner-plan.md). I'd rather name the remaining gaps than hide them:
 
 **Shipped since V1** (were the V1 limitations): ingest-time geocoding · the `ask`-mode knowledge base · LangSmith eval harness, now a **deterministic CI release gate** · tracing + per-request cost accounting · rate limiting + outbound resilience · the workflow redesign · **English hotel translation** (Rakuten JA→EN, cached by hotel id, across all three hotel surfaces) · **a persistent session store** (SQLite local / Postgres prod) with per-conversation UUID sessions · a **security posture** (prompt-injection suite + CI scanning + defense-in-depth).
 
@@ -187,7 +187,7 @@ The first true *agent* — dynamic sequencing + re-planning — for the one quer
 - ⏭️ **Next (billing-gated):** Google **Places** ratings to *ground* pros/cons · **Distance Matrix** for real road/rail travel time (upgrading the haversine seam). An LLM tool-caller for re-planning stays deferred until there's data (weather/ratings) whose interacting constraints actually need weighing.
 - ⏭️ Migrate chat GPT-4o → **Claude (Sonnet / Opus)** with a provider fallback chain; Postgres multi-instance; pgvector when scale demands it.
 
-Full design: [`docs/v3-trip-planner-plan.md`](./docs/v3-trip-planner-plan.md). Earlier notes: [`docs/V2_IMPLEMENTATION_PLAN.md`](./docs/V2_IMPLEMENTATION_PLAN.md) · [`docs/v2-slot-filling-agent.md`](./docs/v2-slot-filling-agent.md).
+Full design: [`docs/archive/v3-trip-planner-plan.md`](./docs/archive/v3-trip-planner-plan.md). Earlier notes: [`docs/archive/V2_IMPLEMENTATION_PLAN.md`](./docs/archive/V2_IMPLEMENTATION_PLAN.md) · [`docs/archive/v2-slot-filling-agent.md`](./docs/archive/v2-slot-filling-agent.md).
 
 ---
 
