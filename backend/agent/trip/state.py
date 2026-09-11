@@ -60,6 +60,12 @@ class TripState(TypedDict, total=False):
     # property #2: the check_constraints node reads/writes these and the plan node
     # consumes ``dropped_regions``. All JSON-serialisable for the future PostgresSaver.
     #
+    # These four are PER-TURN SCRATCH, not accumulating conversation state: they
+    # describe one planning pass (the plan↔check_constraints loop) and are RESET by
+    # the gather node at the start of every turn, then re-derived from the current
+    # slots. Persisting them across turns is what made a narrowed region set
+    # ("Hokkaido only") replay the previous turn's conflict verdict.
+    #
     # Regions removed by the over-constrained corrective rule, each
     # ``{region, reason}``. The plan node excludes these on a re-plan pass; the reply
     # explains them. Empty on a normal (non-re-planned) trip.
