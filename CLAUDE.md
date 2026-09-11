@@ -18,6 +18,18 @@ grounded recommendation. See Version Roadmap below, `PROJECT_JOURNEY.md`, and
 
 ---
 
+## Delivery Plan Gate
+
+`docs/onsen-guide-bot-delivery-plan.md` (gitignored — personal working doc,
+not in the public repo) is the gate for what gets built or fixed next.
+Before starting new work, check it: Requirements (F#/N#), MoSCoW priority,
+Milestones, and the RAID Log all live there. **Every time a requirement or
+milestone is completed, come back and update that document** — flip its
+Status, tick the milestone, and log any new decision in the Key Decisions
+Log. Treat it as a living gate, not a one-time snapshot.
+
+---
+
 ## Folder Structure
 
 The full folder/file map lives in **`docs/PROJECT_STRUCTURE.md`** (kept separate so it can grow
