@@ -68,16 +68,38 @@ async def _gather_node(state: TripState) -> dict:
     runs the structured-output extraction, and writes the merged slots back. Also
     bumps ``turn_count`` here — ``gather`` runs on EVERY turn regardless of which
     branch follows, so it is the single place accumulating-state proof lives.
+
+    It is also where the PR7 re-plan SCRATCH state is reset. ``dropped_regions`` /
+    ``replan_count`` / ``infeasible`` / ``pending_replan`` describe ONE planning pass
+    (the plan↔check_constraints loop inside a turn), not the conversation — they are
+    re-derived deterministically from the slots on every turn. Letting them persist
+    was the second half of the region ADD-vs-REPLACE defect: after a turn that
+    dropped Hokkaido as the farthest outlier, a follow-up NARROWING the trip to
+    Hokkaido still found it in ``dropped_regions`` (so the plan node filtered it out
+    and built nothing) and still carried the previous turn's ``infeasible`` flag (so
+    the reply repeated the stale "combining Nagano with Hokkaido isn't feasible"
+    prose verbatim), with the bounded re-plan budget already spent. Clearing them
+    here means each turn re-derives its own conflicts from the CURRENT regions: an
+    unchanged region set re-derives the identical verdict, a narrowed one gets a
+    fresh, honest plan.
     """
     current = TripSlots(**(state.get("slots") or {}))
     merged = await extract_slots(state.get("message", ""), current)
     turn = state.get("turn_count", 0) + 1
     logger.info(
-        "trip.gather node | turn_count=%d | missing_required=%s",
+        "trip.gather node | turn_count=%d | missing_required=%s | regions=%s",
         turn,
         missing_required(merged),
+        merged.regions,
     )
-    return {"slots": merged.model_dump(), "turn_count": turn}
+    return {
+        "slots": merged.model_dump(),
+        "turn_count": turn,
+        "dropped_regions": [],
+        "replan_count": 0,
+        "infeasible": None,
+        "pending_replan": False,
+    }
 
 
 def _route_after_gather(state: TripState) -> str:

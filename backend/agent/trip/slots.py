@@ -42,6 +42,20 @@ Budget = Literal["budget", "mid", "luxury"]
 Transport = Literal["car", "train", "mixed"]
 Pace = Literal["relaxed", "packed"]
 
+# How a message's named regions apply to the regions gathered so far. The LLM
+# classifies the INTENT (language understanding); :func:`merge_slots` does the set
+# arithmetic in Python (deterministic state merge) — see the module docstring.
+#   "replace" — the message states the complete new set ("Hokkaido only").
+#   "add"     — the message adds to what we have ("what about Hokkaido too?").
+#   "remove"  — the message drops some of what we have ("drop Nagano").
+RegionOp = Literal["replace", "add", "remove"]
+
+# Applied when the extraction returns regions WITHOUT an explicit op. "replace" is
+# the historical (pre-fix) behaviour and the safest default: a bare region list is
+# taken as the complete set, so a mis-classified turn narrows rather than silently
+# accumulating regions the traveller never asked to keep.
+_DEFAULT_REGION_OP: RegionOp = "replace"
+
 # The slots that BLOCK planning, in elicit priority order. The elicit node asks for
 # the first one still missing (regions → nights → dates_or_season). Single source of
 # truth for both missing_required() and next_question().
@@ -103,16 +117,33 @@ class SlotUpdate(BaseModel):
 
     The structured-output target for :func:`extract_slots`. ``None`` means "the
     latest message said nothing about this slot", so :func:`merge_slots` leaves the
-    prior value untouched. The LLM is shown the current slots, so for an additive
-    message like "also add Nagano" it returns the FULL intended ``regions`` list.
+    prior value untouched.
+
+    ``regions`` carries ONLY the prefectures the latest message names, paired with
+    ``regions_op`` saying how they apply to the regions gathered so far. The LLM
+    therefore never has to do set arithmetic (it used to be asked to "return the
+    full merged list", which made "Hokkaido only" indistinguishable from "Hokkaido
+    too") — :func:`merge_slots` computes the new list deterministically in Python.
     """
 
     regions: list[str] | None = Field(
         default=None,
         description=(
-            "Full list of English prefecture name(s) the trip should cover, if the "
-            "message names or changes them; null if the message says nothing about "
-            "location. When adding to existing regions, return the complete merged list."
+            "The English prefecture name(s) THIS message names — not the merged "
+            "list; null if the message says nothing about location. Pair with "
+            "regions_op to say whether they replace, add to, or are removed from "
+            "the regions gathered so far."
+        ),
+    )
+    regions_op: RegionOp | None = Field(
+        default=None,
+        description=(
+            "How `regions` applies to the regions gathered so far: 'replace' when "
+            "the message states the complete new set ('Hokkaido only', 'just "
+            "Hokkaido', 'actually make it Gifu'); 'add' when it adds to them ('what "
+            "about Hokkaido too', 'also include Nagano'); 'remove' when it drops "
+            "some of them ('drop Nagano', 'not Shizuoka'). Null when regions is "
+            "null; defaults to 'replace' when regions is given without an op."
         ),
     )
     nights: int | None = Field(
@@ -255,6 +286,47 @@ def elicit_message(slots: TripSlots, known: frozenset[str]) -> str | None:
     return next_question(slots)
 
 
+def _dedupe(regions: list[str]) -> list[str]:
+    """Drop case-insensitive duplicates, keeping the FIRST spelling and the order."""
+    seen: set[str] = set()
+    out: list[str] = []
+    for r in regions:
+        key = r.strip().lower()
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        out.append(r.strip())
+    return out
+
+
+def apply_region_op(current: list[str], named: list[str], op: RegionOp | None) -> list[str]:
+    """Compute the new region list from the current one + this message's regions.
+
+    The deterministic half of the ADD-vs-REPLACE fix: the LLM says WHAT the message
+    named and WHICH intent it expressed; the set arithmetic happens here, in Python.
+    Matching is case-insensitive ("hokkaido" removes "Hokkaido") while the stored
+    spelling is preserved.
+
+    Args:
+        current: The regions gathered so far.
+        named: The regions the latest message named.
+        op: ``"replace"`` (default) / ``"add"`` / ``"remove"`` — see :data:`RegionOp`.
+
+    Returns:
+        The new region list. May be empty when the message removed every region —
+        ``missing_required`` then re-elicits for an area, which is the honest
+        outcome of "drop everything".
+    """
+    named = _dedupe(named)
+    if op == "add":
+        return _dedupe(current + named)
+    if op == "remove":
+        drop = {r.lower() for r in named}
+        return [r for r in current if r.strip().lower() not in drop]
+    # "replace" (and the None default): the message states the complete new set.
+    return named
+
+
 def merge_slots(current: TripSlots, update: SlotUpdate) -> TripSlots:
     """Merge a one-message ``SlotUpdate`` delta onto the running ``TripSlots``.
 
@@ -262,9 +334,26 @@ def merge_slots(current: TripSlots, update: SlotUpdate) -> TripSlots:
     list slots, an empty list) and is skipped, so the prior value persists. Any
     field the message DID name overwrites the current value. This is what makes
     slots accumulate across turns instead of being reset each message.
+
+    ``regions`` is the exception — it is not a blind overwrite. The message's named
+    regions are combined with the accumulated ones per ``update.regions_op``
+    (:func:`apply_region_op`), so a follow-up can REPLACE or NARROW the trip
+    ("Hokkaido only", "drop Nagano") and not only ADD to it. ``regions_op`` is a
+    routing signal for this merge, never a slot: it is consumed here and never
+    written onto ``TripSlots``.
     """
     data = current.model_dump()
-    for field, value in update.model_dump().items():
+    delta = update.model_dump()
+    named_regions = delta.pop("regions", None)
+    region_op = delta.pop("regions_op", None)
+    # A non-empty region list is the only thing that changes regions: an empty list
+    # (or None) means "this message mentioned no place", which must never wipe or
+    # re-interpret the regions gathered so far.
+    if named_regions:
+        data["regions"] = apply_region_op(
+            current.regions, named_regions, region_op or _DEFAULT_REGION_OP
+        )
+    for field, value in delta.items():
         if value is None:
             continue
         # Empty list from the delta ("nothing mentioned") must not wipe a prior list.
@@ -279,9 +368,17 @@ _INSTRUCTIONS = (
     "Japanese hot-spring (onsen) trip, to fill a slot form. You are shown the slots "
     "gathered so far. Return ONLY the slots the LATEST message mentions or changes; "
     "leave every other field null so previously-known values are preserved. Rules:\n"
-    "- regions: English prefecture name(s) only (e.g. 'Gifu', 'Nagano', 'Shizuoka'), "
-    "without the word 'Prefecture'. If the message ADDS a region to ones already "
-    "gathered, return the FULL merged list. Null if the message names no location.\n"
+    "- regions: ONLY the English prefecture name(s) THIS message names (e.g. 'Gifu', "
+    "'Nagano', 'Shizuoka'), without the word 'Prefecture'. Do NOT merge them with the "
+    "regions gathered so far — that is done for you. Map a city or area to its "
+    "prefecture (e.g. Kanazawa -> Ishikawa). Null if the message names no location.\n"
+    "- regions_op: how those regions apply to the ones gathered so far — "
+    "'replace' when the message states the complete new set ('Hokkaido only', 'just "
+    "Hokkaido', 'actually make it Gifu instead'), 'add' when it adds to them ('what "
+    "about Hokkaido too', 'also include Nagano'), 'remove' when it drops some of them "
+    "('drop Nagano', 'not Shizuoka'). A message that both narrows and names what to "
+    "drop ('Hokkaido only, drop Nagano and Kanazawa') is a 'replace' with the kept "
+    "region(s). Null when regions is null.\n"
     "- nights: an integer number of nights if stated (e.g. '5 nights' -> 5); else null.\n"
     "- dates_or_season: an ISO date range if given, otherwise a season/month label "
     "(e.g. 'autumn', 'early November'); null if no timing is mentioned.\n"
@@ -344,9 +441,11 @@ async def extract_slots(
     update: SlotUpdate = await _llm.ainvoke(messages, config=run_config)
     merged = merge_slots(current, update)
     logger.info(
-        "extract_slots | missing_required=%s | regions=%s | nights=%s",
+        "extract_slots | missing_required=%s | regions=%s (named=%s op=%s) | nights=%s",
         missing_required(merged),
         merged.regions,
+        update.regions,
+        update.regions_op,
         merged.nights,
     )
     return merged
