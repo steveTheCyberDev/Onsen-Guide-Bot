@@ -9,7 +9,8 @@ What it covers:
   * a versioned LangSmith DATASET (``onsen-flow-evals``) covering all 3 modes
     (search / recommend / ask) plus no-data edge cases and multi-turn trip threads,
   * EVALUATORS scoring grounding, structural correctness per mode, the trip
-    evaluators, cost budget, and latency,
+    evaluators, multi-round conversation state (how slots move BETWEEN turns of a
+    thread, not just the final answer), cost budget, and latency,
   * results land in LangSmith as an EXPERIMENT, so runs are comparable
     run-over-run and across models, with cost/latency captured per example.
 
@@ -92,21 +93,27 @@ COST_BUDGET_USD: dict[str, float] = {
     "recommend": 0.05,
     "ask": 0.01,
     "no-data": 0.01,  # no-data examples are search-mode; cheap.
-    # trip (V3 PR4): a multi-turn thread — one intent-parse + one slot-extraction
-    # LLM call PER TURN (both cheap intent_model), no analyze brain, free Chroma
-    # retrieval. Cost is roughly search × turns. STARTING NUMBER (flagged): tune
-    # once we have measured baselines the way search/recommend were tuned.
-    "trip": 0.02,
+    # trip (V3 PR4): PER-TURN budget, scaled by the thread's turn count at read
+    # time (see `cost_budget`) — a trip example is a multi-turn thread, so a flat
+    # per-thread constant would silently tighten as examples grow turns.
+    # Per turn: one intent-parse + one slot-extraction call (both cheap
+    # intent_model) AND — for any turn that settles into an itinerary — one
+    # `analyze_model` call, because the trip graph's `plan` node routes settled
+    # turns through `_analyze_node`. Measured (prod LangSmith trace): a settled
+    # turn ~$0.006 ($0.00616 / $0.00629 / $0.00563); an elicit-only turn ~$0.0004.
+    # 0.01/turn ≈ 1.5x headroom over the expensive (settled) case.
+    "trip": 0.01,
 }
 LATENCY_BUDGET_MS: dict[str, int] = {
     "search": 8000,
     "recommend": 20000,
     "ask": 8000,
     "no-data": 8000,
-    # trip: measured end-to-end across ALL turns of the thread (multi-turn +
-    # per-region Chroma retrieval + 2 small LLM calls/turn). STARTING NUMBER
-    # (flagged): loose enough for a 1–2 turn thread; tighten after a baseline run.
-    "trip": 20000,
+    # trip: PER-TURN budget, scaled by the thread's turn count at read time (see
+    # `latency`) — measured end-to-end across ALL turns, so the ceiling has to
+    # grow with the thread. Per turn: per-region Chroma retrieval + 2 small LLM
+    # calls, plus an `analyze_model` call on any turn that settles an itinerary.
+    "trip": 10000,
 }
 
 
@@ -463,6 +470,106 @@ _EXAMPLES: list[dict] = [
         "expect_constraint_conflict_ack": True,
         "expect_tradeoff_explanation": True,
     },
+    # --- M2: multi-ROUND conversation-state regression (2026-09-12) ------------
+    # The two threads below pin M1's production defect (LangSmith trace 2026-09-09,
+    # thread 779ace6d-37f4-4039-be4e-4cf36abaab0c) at the eval-gate level. Everything
+    # above scores the FINAL answer of a thread; these score how STATE MOVED between
+    # turns, via `expect_turn_transitions` (see _expectation() for the entry schema).
+    #
+    # Deliberately NOT carrying `conflict_factors` / the PR7 `expect_*` gates: those
+    # four evaluators scan the FINAL reply, and ⑤'s final reply is a clean
+    # Hokkaido-only itinerary that correctly contains no conflict prose — flagging it
+    # would assert the opposite of the fix. The conflict behaviour on the intermediate
+    # turn is already covered by PR7 example ①.
+    {
+        # ⑤ THE TRACE. Settle a two-region trip → ADD a distant outlier (the
+        # over-constrained rule fires and drops it) → REPLACE with "Hokkaido only".
+        # Pre-M1 this third turn returned the SECOND turn's conflict reply verbatim:
+        # merge_slots could only ADD, and the per-turn re-plan scratch
+        # (dropped_regions/infeasible/replan_count) leaked across turns so Hokkaido
+        # stayed filtered out of the plan. Mirrors the pytest regression
+        # tests/test_trip_region_narrowing.py at the dataset level.
+        # The follow-ups keep explicit trip framing ("to the trip" / "make the trip")
+        # so parse_intent stays in trip mode across the thread — the thing under test
+        # here is the STATE TRANSITION, not the router's follow-up robustness (a
+        # misroute would already red slot_filling_completeness / plan_validity).
+        "messages": [
+            "Plan a relaxed 3-night onsen trip across Nagano and Gifu this autumn, "
+            "for two.",
+            "What about adding Hokkaido to the trip?",
+            "Actually, make the trip Hokkaido only — drop Nagano and Gifu.",
+        ],
+        "expected_mode": "trip",
+        "prefecture": None,
+        "has_data": True,
+        "wants_hotels": False,
+        # The SETTLED regions after the narrowing — what the final itinerary covers.
+        "regions": ["Hokkaido"],
+        "expected_nights": 3,
+        "no_data_regions": [],
+        "expect_turn_transitions": [
+            {
+                # Turn 2 — ADD must still work ("what about Hokkaido?").
+                "turn": 1,
+                "op": "add",
+                "expected_regions": ["Nagano", "Gifu", "Hokkaido"],
+                "expect_slots_unchanged": True,
+                "expect_fresh_reply": True,
+            },
+            {
+                # Turn 3 — THE REGRESSION. REPLACE narrows to Hokkaido, the old
+                # regions are gone, every other slot survives, and the reply is a
+                # fresh itinerary rather than turn 2's conflict message replayed.
+                "turn": 2,
+                "op": "replace",
+                "expected_regions": ["Hokkaido"],
+                "expect_regions_gone": ["Nagano", "Gifu"],
+                "expect_slots_unchanged": True,
+                "expect_fresh_reply": True,
+            },
+        ],
+    },
+    {
+        # ⑥ The deliberate FLIP SIDE of ⑤: a follow-up carrying no new region
+        # information must re-derive the SAME conflict verdict, not go quiet. M1
+        # fixed the stale-scratch leak by RESETTING dropped_regions/infeasible every
+        # turn; this example guards the over-correction — resetting must mean
+        # "recompute", not "forget". Conceptual twin of
+        # test_trip_region_narrowing.py::test_unchanged_regions_re_derive_the_same_conflict_verdict.
+        "messages": [
+            "Plan a relaxed 3-night onsen trip across Gifu, Nagano and Hokkaido "
+            "this autumn, for two.",
+            "One more thing for that trip — we love sulfur springs.",
+        ],
+        "expected_mode": "trip",
+        "prefecture": None,
+        "has_data": True,
+        "wants_hotels": False,
+        "regions": ["Gifu", "Nagano", "Hokkaido"],
+        "expected_nights": 3,
+        "no_data_regions": [],
+        "expect_turn_transitions": [
+            {
+                # Turn 2 names no region at all, so the region set is untouched and
+                # the conflict verdict (dropped outlier + infeasibility) must be
+                # IDENTICAL to turn 1's. No expect_fresh_reply: an unchanged plan
+                # repeating itself is correct here, which is exactly what makes this
+                # the honest counterweight to ⑤.
+                "turn": 1,
+                "op": "none",
+                "expected_regions": ["Gifu", "Nagano", "Hokkaido"],
+                "expect_same_verdict": True,
+                "expect_slots_unchanged": True,
+                # "we love sulfur springs" is legitimately extractable into EITHER
+                # field — spring_or_scenery_prefs (soft preference) or must_haves
+                # (hard requirement) — and the boundary is fuzzy for this phrasing.
+                # Allow both so a correct extraction can't fail on a coin flip; the
+                # real invariant (nights/dates/party/budget/pace/mobility_transport
+                # stay untouched) is unaffected.
+                "expect_slots_changed": ["spring_or_scenery_prefs", "must_haves"],
+            },
+        ],
+    },
 ]
 
 
@@ -553,6 +660,34 @@ def _expectation(ex: dict) -> dict:
         "expect_feasibility_flag": ex.get("expect_feasibility_flag", False),
         "expect_tradeoff_explanation": ex.get("expect_tradeoff_explanation", False),
         "expect_dropped_regions": ex.get("expect_dropped_regions", []),
+        # Optional (trip-mode, M2 MULTI-ROUND CONVERSATION): per-turn state-transition
+        # expectations for a threaded example. A list of entries, each describing ONE
+        # turn of the thread; the five multi-round evaluators below each read only the
+        # sub-key(s) they own and ABSTAIN when no entry carries theirs, so a single
+        # list keeps the five expectations index-aligned instead of five parallel
+        # lists that can silently drift apart. Entry schema (all keys optional except
+        # ``turn``):
+        #   turn                   int   — 0-based index into outputs["_trajectory"].
+        #   op                     str   — the region intent of this turn's message:
+        #                                  "replace" | "add" | "remove" | "none".
+        #                                  Documentation + the correction_applied gate
+        #                                  (only "replace"/"remove" turns are scored).
+        #   expected_regions       [str] — the region set expected AFTER this turn
+        #                                  → state_transition_correctness.
+        #   expect_regions_gone    [str] — regions the user asked to drop, which must
+        #                                  NOT survive → correction_applied.
+        #   expect_slots_unchanged bool  — non-region slots must match the PREVIOUS
+        #                                  turn's → state_preservation.
+        #   expect_slots_changed   [str] — ADDITIONAL slot keys (beyond "regions",
+        #                                  which is always mutable) this turn is
+        #                                  allowed to change → state_preservation.
+        #   expect_fresh_reply     bool  — the reply must differ from the previous
+        #                                  turn's → latest_question_answered.
+        #   expect_same_verdict    bool  — regions unchanged ⇒ the conflict verdict
+        #                                  must re-derive identically to the previous
+        #                                  turn's → cross_turn_consistency.
+        # Empty for every non-multi-round example, so all five abstain there.
+        "expect_turn_transitions": ex.get("expect_turn_transitions", []),
     }
 
 
@@ -704,16 +839,51 @@ def make_target_with_usage():
                 cb = captured.get("cb")
                 usage_meta = getattr(cb, "usage_metadata", {}) if cb else {}
                 total_cost += summarize_usage(usage_meta)["cost_usd"]
-                # Per-turn trajectory for the slot-filling evaluator: what required
-                # slots were still missing AFTER this turn's gather, and whether the
-                # turn asked a follow-up. Both are read from the checkpointed trip
-                # state / the returned reply — what the flow itself exposes, no
-                # run-tree parsing. For non-trip examples this reads an empty
+                # Per-turn trajectory — the CONVERSATION-STATE record the multi-round
+                # evaluators read. Everything here is read from the checkpointed trip
+                # state / the returned reply (what the flow itself exposes); no
+                # run-tree parsing, no LLM. For non-trip examples this reads an empty
                 # snapshot and the trip evaluators abstain, so it is harmless.
+                #
+                # M2 (2026-09-12) widened this from the original
+                # {missing_required, asked_followup} pair — that was enough for
+                # `slot_filling_completeness` but carried NO per-turn state, so a
+                # turn that failed to narrow `regions`, silently reset another slot,
+                # or replayed the previous turn's reply verbatim (the real production
+                # defect this milestone pins) was invisible to the harness. Captured
+                # per turn now:
+                #   message      — the user turn that produced this state;
+                #   slots        — the FULL post-turn slot dict (state_preservation
+                #                  diffs consecutive turns over it);
+                #   regions      — post-turn region set (state_transition_correctness
+                #                  / correction_applied);
+                #   reply        — this turn's reply text (latest_question_answered
+                #                  compares it against the previous turn's);
+                #   dropped_regions / infeasible_regions — the deterministic conflict
+                #                  VERDICT re-derived by check_constraints this turn
+                #                  (cross_turn_consistency). Names only: the
+                #                  {region, reason} / {regions, leg_km} payloads carry
+                #                  prose + a float that make equality comparisons
+                #                  brittle without adding signal.
                 snap = trip_graph.get_state(cfg).values or {}
-                miss = missing_required(TripSlots(**(snap.get("slots") or {})))
+                slots = dict(snap.get("slots") or {})
+                miss = missing_required(TripSlots(**slots))
                 asked = result.get("reply") in _elicit_question_values()
-                trajectory.append({"missing_required": miss, "asked_followup": asked})
+                infeasible = snap.get("infeasible") or {}
+                trajectory.append(
+                    {
+                        "missing_required": miss,
+                        "asked_followup": asked,
+                        "message": message,
+                        "slots": slots,
+                        "regions": list(slots.get("regions") or []),
+                        "reply": result.get("reply") or "",
+                        "dropped_regions": [
+                            d.get("region") for d in (snap.get("dropped_regions") or [])
+                        ],
+                        "infeasible_regions": sorted(infeasible.get("regions") or []),
+                    }
+                )
         finally:
             pipeline.UsageMetadataCallbackHandler = real_cls  # type: ignore[assignment]
             trip_itinerary.query_onsen_structured = real_q  # type: ignore[assignment]
@@ -1556,27 +1726,399 @@ def dropped_region_reasoned(outputs: dict, reference_outputs: dict) -> dict:
     }
 
 
+# --- Multi-round conversation-state evaluators (M2, 2026-09-12) ---------------
+# Everything above scores the FINAL answer of a thread. These five score how STATE
+# MOVED BETWEEN TURNS, which is where the confirmed production defect lived: a
+# traveller could never narrow an in-progress trip ("Hokkaido only") because
+# merge_slots was ADD-only and the per-turn re-plan scratch leaked across turns, so
+# the bot returned the previous turn's conflict reply word-for-word. Every existing
+# evaluator passed that thread — the final answer was well-formed and grounded; only
+# the TRANSITION was wrong. See docs/onsen-guide-bot-delivery-plan.md M2 / Key
+# Decision 2 and tests/test_trip_region_narrowing.py (the pytest twin).
+#
+# All five are DETERMINISTIC (no LLM judge) and read only outputs["_trajectory"] —
+# the per-turn conversation-state record the target builds. Each is gated by its own
+# sub-key inside reference_outputs["expect_turn_transitions"] and ABSTAINS
+# (score=None) when no entry carries it, so non-trip and single-turn examples are
+# untouched. Unlike the PR7 block these do NOT scan prose for behaviour markers:
+# they compare structured state, so they say nothing about HOW the bot phrased
+# itself, only that the state moved correctly.
+
+# Slot keys a region-only turn is ALWAYS allowed to change. An entry's
+# `expect_slots_changed` is unioned with this (never replaces it) when the turn
+# legitimately supplies another slot too (e.g. a preference alongside a region change).
+_DEFAULT_MUTABLE_SLOTS: tuple[str, ...] = ("regions",)
+
+
+def _transition_entries(reference_outputs: dict) -> list[dict]:
+    """The example's per-turn transition expectations (empty for non-M2 examples)."""
+    entries = reference_outputs.get("expect_turn_transitions") or []
+    return [e for e in entries if isinstance(e, dict)]
+
+
+def _gated_entries(reference_outputs: dict, gate_key: str) -> list[dict]:
+    """Transition entries whose ``gate_key`` is present and truthy."""
+    return [e for e in _transition_entries(reference_outputs) if e.get(gate_key)]
+
+
+def _abstain(key: str, comment: str = "n/a") -> dict:
+    """The ABSTAIN verdict (score=None → skipped by _report, never a failure)."""
+    return {"key": key, "score": None, "comment": comment}
+
+
+def _norm_regions(regions) -> set[str]:
+    """Region names as a normalized SET — comparison is case- and order-insensitive.
+
+    Order is deliberately not asserted: ``apply_region_op`` preserves the traveller's
+    stated order, but which order the extraction returns on a given turn is not a
+    correctness property — the SET of regions is.
+    """
+    return {normalize(r) for r in (regions or []) if r and normalize(r)}
+
+
+def _turn(outputs: dict, index: int) -> dict | None:
+    """The trajectory entry at ``index``, or None when the thread never got there."""
+    trajectory = outputs.get("_trajectory") or []
+    if index < 0 or index >= len(trajectory):
+        return None
+    return trajectory[index]
+
+
+def _conflict_verdict(turn: dict) -> tuple[list[str], list[str]]:
+    """The deterministic conflict verdict a turn re-derived: (dropped, infeasible).
+
+    Both are normalized, sorted region-name lists, so two turns that reached the same
+    conclusion compare equal regardless of ordering or spelling.
+    """
+    dropped = sorted(_norm_regions(turn.get("dropped_regions")))
+    infeasible = sorted(_norm_regions(turn.get("infeasible_regions")))
+    return dropped, infeasible
+
+
+def state_transition_correctness(outputs: dict, reference_outputs: dict) -> dict:
+    """Score 1 iff each flagged turn moved ``regions`` to exactly the expected set.
+
+    Gated by transition entries carrying ``expected_regions``; ABSTAINS otherwise.
+    Compares the POST-TURN region set from the trajectory against the authored one,
+    per turn — so it catches both halves of a wrong transition: a narrowing turn that
+    failed to drop the old regions (the M1 defect: "Hokkaido only" yielding
+    Nagano+Gifu+Hokkaido) AND an additive turn that wrongly wiped them.
+    """
+    key = "state_transition_correctness"
+    entries = [
+        e for e in _transition_entries(reference_outputs)
+        if e.get("expected_regions") is not None
+    ]
+    if not entries:
+        return _abstain(key)
+
+    checked: list[str] = []
+    for entry in entries:
+        index = entry.get("turn", 0)
+        turn = _turn(outputs, index)
+        if turn is None:
+            return {
+                "key": key,
+                "score": 0,
+                "comment": (
+                    f"turn {index} never ran "
+                    f"({len(outputs.get('_trajectory') or [])} turn(s) in trajectory)"
+                ),
+            }
+        actual = _norm_regions(turn.get("regions"))
+        expected = _norm_regions(entry.get("expected_regions"))
+        if actual != expected:
+            return {
+                "key": key,
+                "score": 0,
+                "comment": (
+                    f"turn {index} (op={entry.get('op')}): regions "
+                    f"{sorted(actual)} != expected {sorted(expected)}"
+                ),
+            }
+        checked.append(f"{index}:{entry.get('op')}")
+    return {
+        "key": key,
+        "score": 1,
+        "comment": f"region transitions correct for turn(s) {checked}",
+    }
+
+
+def state_preservation(outputs: dict, reference_outputs: dict) -> dict:
+    """Score 1 iff a flagged turn changed ONLY the slots it was allowed to change.
+
+    Gated by transition entries flagged ``expect_slots_unchanged``; ABSTAINS
+    otherwise. Diffs the turn's full post-turn slot dict against the PREVIOUS turn's,
+    ignoring ``regions`` (always mutable) plus any keys the entry ADDS via
+    ``expect_slots_changed``. The
+    failure it guards is the sibling of the transition bug: a follow-up that
+    successfully narrows the regions but silently resets nights / dates / party /
+    pace along the way, quietly discarding what the traveller already told us.
+    """
+    key = "state_preservation"
+    entries = _gated_entries(reference_outputs, "expect_slots_unchanged")
+    if not entries:
+        return _abstain(key)
+
+    for entry in entries:
+        index = entry.get("turn", 0)
+        turn = _turn(outputs, index)
+        previous = _turn(outputs, index - 1)
+        if turn is None:
+            return {"key": key, "score": 0, "comment": f"turn {index} never ran"}
+        if previous is None:
+            return {
+                "key": key,
+                "score": 0,
+                "comment": f"turn {index} has no preceding turn to preserve state from",
+            }
+        # UNION, not `or`: `expect_slots_changed` ADDS to the always-mutable
+        # default. Overriding it would silently drop "regions" from the allowlist,
+        # so a turn that both narrows regions AND states a preference would fail
+        # unless the author remembered to re-declare "regions" by hand.
+        mutable = set(_DEFAULT_MUTABLE_SLOTS) | {
+            str(k) for k in (entry.get("expect_slots_changed") or ())
+        }
+        before = previous.get("slots") or {}
+        after = turn.get("slots") or {}
+        changed = [
+            k
+            for k in sorted(set(before) | set(after))
+            if k not in mutable and before.get(k) != after.get(k)
+        ]
+        if changed:
+            detail = ", ".join(
+                f"{k}: {before.get(k)!r} -> {after.get(k)!r}" for k in changed
+            )
+            return {
+                "key": key,
+                "score": 0,
+                "comment": f"turn {index} also changed unrelated slot(s) — {detail}",
+            }
+    return {
+        "key": key,
+        "score": 1,
+        "comment": f"non-region slots preserved across turn(s) {[e.get('turn') for e in entries]}",
+    }
+
+
+def correction_applied(outputs: dict, reference_outputs: dict) -> dict:
+    """Score 1 iff regions the traveller asked to DROP really are gone (trip only).
+
+    Gated by transition entries carrying a non-empty ``expect_regions_gone``;
+    ABSTAINS otherwise. The most direct test of the M1 defect: a REPLACE/REMOVE turn
+    must REMOVE the old regions, not merely add the new one. Checks the turn's own
+    post-turn region set, and — when the flagged turn is the LAST one — that the
+    settled slots and the assembled itinerary's legs are free of them too, so a
+    correction that lands in the slots but not in the plan still fails.
+    """
+    key = "correction_applied"
+    entries = [
+        e for e in _transition_entries(reference_outputs) if e.get("expect_regions_gone")
+    ]
+    if not entries:
+        return _abstain(key)
+
+    trajectory = outputs.get("_trajectory") or []
+    for entry in entries:
+        index = entry.get("turn", 0)
+        turn = _turn(outputs, index)
+        if turn is None:
+            return {"key": key, "score": 0, "comment": f"turn {index} never ran"}
+        gone = _norm_regions(entry.get("expect_regions_gone"))
+
+        survived = sorted(gone & _norm_regions(turn.get("regions")))
+        if survived:
+            return {
+                "key": key,
+                "score": 0,
+                "comment": (
+                    f"turn {index} ({entry.get('op')}): dropped region(s) {survived} "
+                    "still in slots — the correction was not applied"
+                ),
+            }
+
+        # A correction on the final turn must also reach the settled plan, not just
+        # the slot state (the M1 defect left a narrowed slot list planning nothing).
+        if index != len(trajectory) - 1:
+            continue
+        settled = sorted(
+            gone & _norm_regions((outputs.get("_final_slots") or {}).get("regions"))
+        )
+        if settled:
+            return {
+                "key": key,
+                "score": 0,
+                "comment": f"final slots still carry dropped region(s) {settled}",
+            }
+        itinerary = outputs.get("_itinerary") or {}
+        planned = _norm_regions(
+            [leg.get("region") for leg in (itinerary.get("regions") or [])]
+        )
+        replanned = sorted(gone & planned)
+        if replanned:
+            return {
+                "key": key,
+                "score": 0,
+                "comment": f"itinerary still plans dropped region(s) {replanned}",
+            }
+    return {
+        "key": key,
+        "score": 1,
+        "comment": "every region the traveller dropped is gone from slots and plan",
+    }
+
+
+def latest_question_answered(outputs: dict, reference_outputs: dict) -> dict:
+    """Score 1 iff a flagged turn produced a FRESH reply, not the previous one replayed.
+
+    Gated by transition entries flagged ``expect_fresh_reply``; ABSTAINS otherwise.
+    This is the evaluator that would have caught the trace's literal symptom: the
+    traveller asked twice to narrow the trip and got the byte-identical conflict
+    message back both times, because the stale re-plan scratch state re-derived the
+    previous turn's verdict. A turn that genuinely changed the request must be
+    answered on its own terms, so its reply must be non-empty AND differ from the
+    immediately-preceding turn's (compared under :func:`normalize`, so pure
+    whitespace reflow does not count as a new answer).
+    """
+    key = "latest_question_answered"
+    entries = _gated_entries(reference_outputs, "expect_fresh_reply")
+    if not entries:
+        return _abstain(key)
+
+    for entry in entries:
+        index = entry.get("turn", 0)
+        turn = _turn(outputs, index)
+        previous = _turn(outputs, index - 1)
+        if turn is None:
+            return {"key": key, "score": 0, "comment": f"turn {index} never ran"}
+        if previous is None:
+            return {
+                "key": key,
+                "score": 0,
+                "comment": f"turn {index} has no preceding reply to differ from",
+            }
+        reply = turn.get("reply") or ""
+        if not reply.strip():
+            return {"key": key, "score": 0, "comment": f"turn {index} replied with nothing"}
+        if normalize(reply) == normalize(previous.get("reply") or ""):
+            return {
+                "key": key,
+                "score": 0,
+                "comment": (
+                    f"turn {index} ({entry.get('op')}) replayed turn {index - 1}'s reply "
+                    f"verbatim — the change request was not answered: {reply[:120]!r}"
+                ),
+            }
+    return {
+        "key": key,
+        "score": 1,
+        "comment": f"fresh reply on turn(s) {[e.get('turn') for e in entries]}",
+    }
+
+
+def cross_turn_consistency(outputs: dict, reference_outputs: dict) -> dict:
+    """Score 1 iff an unchanged request re-derives the SAME conflict verdict.
+
+    Gated by transition entries flagged ``expect_same_verdict``; ABSTAINS otherwise.
+    The deliberate counterweight to :func:`latest_question_answered`: M1 fixed the
+    stale-scratch leak by RESETTING ``dropped_regions``/``infeasible``/``replan_count``
+    every turn, and this guards the over-correction — resetting must mean RECOMPUTE,
+    not FORGET. A turn that brings no new region information must therefore reach an
+    identical verdict (same dropped outlier, same infeasibility), never quietly go
+    clean. Verifies the premise too: if the regions actually changed, the example is
+    mis-authored and the invariant does not apply, which is a FAIL, not a silent pass.
+    """
+    key = "cross_turn_consistency"
+    entries = _gated_entries(reference_outputs, "expect_same_verdict")
+    if not entries:
+        return _abstain(key)
+
+    for entry in entries:
+        index = entry.get("turn", 0)
+        turn = _turn(outputs, index)
+        previous = _turn(outputs, index - 1)
+        if turn is None:
+            return {"key": key, "score": 0, "comment": f"turn {index} never ran"}
+        if previous is None:
+            return {
+                "key": key,
+                "score": 0,
+                "comment": f"turn {index} has no preceding verdict to be consistent with",
+            }
+        if _norm_regions(turn.get("regions")) != _norm_regions(previous.get("regions")):
+            return {
+                "key": key,
+                "score": 0,
+                "comment": (
+                    f"turn {index} changed the regions "
+                    f"({sorted(_norm_regions(previous.get('regions')))} -> "
+                    f"{sorted(_norm_regions(turn.get('regions')))}) — "
+                    "the 'no new information' premise does not hold"
+                ),
+            }
+        verdict, prior = _conflict_verdict(turn), _conflict_verdict(previous)
+        if verdict != prior:
+            return {
+                "key": key,
+                "score": 0,
+                "comment": (
+                    f"turn {index} re-derived a DIFFERENT verdict from unchanged "
+                    f"regions: dropped/infeasible {prior} -> {verdict}"
+                ),
+            }
+    return {
+        "key": key,
+        "score": 1,
+        "comment": f"verdict stable across turn(s) {[e.get('turn') for e in entries]}",
+    }
+
+
+def _budget_turns(mode: str | None, outputs: dict) -> int:
+    """How many turns the mode's budget should be multiplied by.
+
+    Only ``trip`` budgets are per-turn (a trip example is a multi-turn thread, and
+    both cost and latency are measured end-to-end across the whole thread). Every
+    other mode is single-turn, so this is a no-op 1x multiply for them.
+    """
+    if mode != "trip":
+        return 1
+    return max(1, len(outputs.get("_trajectory") or []))
+
+
 def cost_budget(outputs: dict, reference_outputs: dict) -> dict:
-    """Score 1 iff the run's measured cost is within the per-mode budget."""
+    """Score 1 iff the run's measured cost is within the per-mode budget.
+
+    For ``trip`` the constant is a PER-TURN budget, scaled by the thread's turn
+    count; for every other mode it is the flat per-run budget (1 turn).
+    """
     mode = reference_outputs.get("expected_mode")
-    budget = COST_BUDGET_USD.get(mode, COST_BUDGET_USD["search"])
+    turns = _budget_turns(mode, outputs)
+    budget = COST_BUDGET_USD.get(mode, COST_BUDGET_USD["search"]) * turns
     cost = float(outputs.get("_cost_usd", 0.0) or 0.0)
+    scale = f" [{turns} turns]" if turns > 1 else ""
     return {
         "key": "cost_budget",
         "score": 1 if cost <= budget else 0,
-        "comment": f"${cost:.4f} vs budget ${budget} ({mode})",
+        "comment": f"${cost:.4f} vs budget ${budget:g} ({mode}){scale}",
     }
 
 
 def latency(outputs: dict, reference_outputs: dict) -> dict:
-    """Score 1 iff the run's measured latency is within the per-mode budget."""
+    """Score 1 iff the run's measured latency is within the per-mode budget.
+
+    For ``trip`` the constant is a PER-TURN budget, scaled by the thread's turn
+    count; for every other mode it is the flat per-run budget (1 turn).
+    """
     mode = reference_outputs.get("expected_mode")
-    budget = LATENCY_BUDGET_MS.get(mode, LATENCY_BUDGET_MS["search"])
+    turns = _budget_turns(mode, outputs)
+    budget = LATENCY_BUDGET_MS.get(mode, LATENCY_BUDGET_MS["search"]) * turns
     measured = int(outputs.get("_latency_ms", 0) or 0)
+    scale = f" [{turns} turns]" if turns > 1 else ""
     return {
         "key": "latency",
         "score": 1 if measured <= budget else 0,
-        "comment": f"{measured}ms vs budget {budget}ms ({mode})",
+        "comment": f"{measured}ms vs budget {budget}ms ({mode}){scale}",
     }
 
 
@@ -1657,6 +2199,14 @@ EVALUATORS = [
     no_infeasible_plan,
     tradeoff_explained,
     dropped_region_reasoned,
+    # M2 multi-round conversation state — deterministic; ABSTAIN on every example
+    # except the threaded trip examples carrying expect_turn_transitions. These score
+    # how state MOVED between turns (the M1 production defect), not the final answer.
+    state_transition_correctness,
+    state_preservation,
+    correction_applied,
+    latest_question_answered,
+    cross_turn_consistency,
     # Security red-team (Phase 2) — deterministic; ABSTAINS on every example
     # except the adversarial ones flagged expect_no_leak.
     no_prompt_leak,
@@ -1683,6 +2233,12 @@ _COLUMN_LABELS: dict[str, tuple[str, int]] = {
     "no_infeasible_plan": ("feasible", 8),
     "tradeoff_explained": ("tradeoff", 8),
     "dropped_region_reasoned": ("drop-rgn", 8),
+    # M2 multi-round conversation-state columns.
+    "state_transition_correctness": ("st-move", 7),
+    "state_preservation": ("st-keep", 7),
+    "correction_applied": ("correct", 7),
+    "latest_question_answered": ("latest-q", 8),
+    "cross_turn_consistency": ("x-turn", 6),
     "no_prompt_leak": ("no-leak", 7),
     "cost_budget": ("cost", 6),
     "latency": ("latency", 7),

@@ -786,21 +786,606 @@ def test_multifactor_evaluators_abstain_on_search_example():
     assert eval_flow.dropped_region_reasoned(outputs=out, reference_outputs=ref)["score"] is None
 
 
+# -- multi-round conversation-state evaluators (M2) ----------------------------
+# Pure-logic tests for the five deterministic multi-round evaluators, built on
+# hand-made trajectories — NO run_workflow, NO LangSmith, NO LLM. Two trajectories
+# recur: _FIXED_TRACE (post-M1 behaviour) and _BROKEN_TRACE (the exact pre-M1
+# production failure from LangSmith thread 779ace6d — "Hokkaido only" only ever
+# ADDED, and the reply repeated the previous turn verbatim). Every evaluator is
+# asserted green on the first and red on the second, so these tests fail if M1 is
+# ever regressed AND fail if an evaluator is rigged to always pass.
+
+# The stable, non-region slots a narrowing turn must not touch.
+_BASE_SLOTS = {
+    "nights": 3,
+    "dates_or_season": "autumn",
+    "party": "couple",
+    "budget": "mid",
+    "pace": "relaxed",
+    "spring_or_scenery_prefs": "",
+    "must_haves": [],
+    "mobility_transport": "mixed",
+}
+
+
+def _turn_state(
+    regions,
+    reply,
+    *,
+    message="",
+    slots=None,
+    dropped=None,
+    infeasible=None,
+    missing=None,
+    asked=False,
+):
+    """One trajectory entry, in the exact shape make_target_with_usage() builds."""
+    return {
+        "missing_required": missing or [],
+        "asked_followup": asked,
+        "message": message,
+        "slots": {**_BASE_SLOTS, **(slots or {}), "regions": list(regions)},
+        "regions": list(regions),
+        "reply": reply,
+        "dropped_regions": list(dropped or []),
+        "infeasible_regions": sorted(infeasible or []),
+    }
+
+
+_PLAIN_REPLY = "Here's a naive 3-night onsen itinerary — Nagano (2 nights): Nozawa Onsen; Gifu (1 night): Gero Onsen."
+_CONFLICT_REPLY = (
+    "Heads-up: combining Nagano with Hokkaido isn't feasible in one land trip, so "
+    "I'd drop Hokkaido. Here's a naive 3-night onsen itinerary — Nagano (2 nights): "
+    "Nozawa Onsen; Gifu (1 night): Gero Onsen."
+)
+_HOKKAIDO_REPLY = (
+    "Here's a naive 3-night onsen itinerary — Hokkaido (3 nights): Noboribetsu Onsen."
+)
+
+# The post-M1 trace: settle Nagano+Gifu → ADD Hokkaido (conflict fires, outlier
+# dropped) → REPLACE with "Hokkaido only" (narrows, fresh plan, scratch state reset).
+_FIXED_TRACE = [
+    _turn_state(["Nagano", "Gifu"], _PLAIN_REPLY, message="3 nights in Nagano and Gifu"),
+    _turn_state(
+        ["Nagano", "Gifu", "Hokkaido"],
+        _CONFLICT_REPLY,
+        message="What about Hokkaido?",
+        dropped=["Hokkaido"],
+        infeasible=["Nagano", "Hokkaido"],
+    ),
+    _turn_state(["Hokkaido"], _HOKKAIDO_REPLY, message="Actually, Hokkaido only"),
+]
+
+# The pre-M1 trace: turn 3's REPLACE only ADDED (regions unchanged) and the reply
+# was the previous turn's stale conflict message, word for word.
+_BROKEN_TRACE = [
+    _FIXED_TRACE[0],
+    _FIXED_TRACE[1],
+    _turn_state(
+        ["Nagano", "Gifu", "Hokkaido"],
+        _CONFLICT_REPLY,
+        message="Actually, Hokkaido only",
+        dropped=["Hokkaido"],
+        infeasible=["Nagano", "Hokkaido"],
+    ),
+]
+
+# The reference block the M2 dataset example carries (mirrors _EXAMPLES entry ⑤).
+_TRACE_REF = {
+    "expected_mode": "trip",
+    "expect_turn_transitions": [
+        {
+            "turn": 1,
+            "op": "add",
+            "expected_regions": ["Nagano", "Gifu", "Hokkaido"],
+            "expect_slots_unchanged": True,
+            "expect_fresh_reply": True,
+        },
+        {
+            "turn": 2,
+            "op": "replace",
+            "expected_regions": ["Hokkaido"],
+            "expect_regions_gone": ["Nagano", "Gifu"],
+            "expect_slots_unchanged": True,
+            "expect_fresh_reply": True,
+        },
+    ],
+}
+
+
+def _trace_outputs(trajectory, final_regions=None, itinerary_regions=None):
+    """Target-shaped outputs around a trajectory (final slots + itinerary legs)."""
+    last = trajectory[-1]["regions"]
+    legs = [
+        _leg(r, 3 // max(len(itinerary_regions or last), 1), [])
+        for r in (itinerary_regions if itinerary_regions is not None else last)
+    ]
+    return {
+        "reply": trajectory[-1]["reply"],
+        "_trajectory": trajectory,
+        "_final_slots": {**_BASE_SLOTS, "regions": list(final_regions or last)},
+        "_itinerary": _itinerary(3, legs),
+    }
+
+
+# -- state_transition_correctness --
+def test_state_transition_abstains_without_transition_expectations():
+    r = eval_flow.state_transition_correctness(
+        outputs=_trace_outputs(_FIXED_TRACE), reference_outputs=_trip_ref(["Gifu"], 3)
+    )
+    assert r["score"] is None
+
+
+def test_state_transition_passes_on_the_fixed_trace():
+    r = eval_flow.state_transition_correctness(
+        outputs=_trace_outputs(_FIXED_TRACE), reference_outputs=_TRACE_REF
+    )
+    assert r["score"] == 1
+
+
+def test_state_transition_fails_when_replace_only_added():
+    """The M1 defect: 'Hokkaido only' left Nagano+Gifu in the region set."""
+    r = eval_flow.state_transition_correctness(
+        outputs=_trace_outputs(_BROKEN_TRACE), reference_outputs=_TRACE_REF
+    )
+    assert r["score"] == 0
+    assert "turn 2" in r["comment"] and "replace" in r["comment"]
+
+
+def test_state_transition_is_order_and_case_insensitive():
+    """Region ORDER is not a correctness property — only the SET is."""
+    traj = list(_FIXED_TRACE)
+    traj[1] = _turn_state(["hokkaido", "GIFU", "nagano"], _CONFLICT_REPLY)
+    r = eval_flow.state_transition_correctness(
+        outputs=_trace_outputs(traj), reference_outputs=_TRACE_REF
+    )
+    assert r["score"] == 1
+
+
+def test_state_transition_fails_when_a_flagged_turn_never_ran():
+    """A thread that ended early cannot silently pass a per-turn expectation."""
+    r = eval_flow.state_transition_correctness(
+        outputs=_trace_outputs(_FIXED_TRACE[:1]), reference_outputs=_TRACE_REF
+    )
+    assert r["score"] == 0
+    assert "never ran" in r["comment"]
+
+
+# -- state_preservation --
+def test_state_preservation_abstains_without_gate_flag():
+    ref = {"expected_mode": "trip", "expect_turn_transitions": [{"turn": 1, "op": "add"}]}
+    r = eval_flow.state_preservation(
+        outputs=_trace_outputs(_FIXED_TRACE), reference_outputs=ref
+    )
+    assert r["score"] is None
+
+
+def test_state_preservation_passes_when_only_regions_changed():
+    r = eval_flow.state_preservation(
+        outputs=_trace_outputs(_FIXED_TRACE), reference_outputs=_TRACE_REF
+    )
+    assert r["score"] == 1
+
+
+def test_state_preservation_fails_when_a_narrowing_turn_resets_another_slot():
+    """Narrowing the regions must not quietly discard nights/dates already given."""
+    traj = list(_FIXED_TRACE)
+    traj[2] = _turn_state(
+        ["Hokkaido"], _HOKKAIDO_REPLY, slots={"nights": None, "dates_or_season": None}
+    )
+    r = eval_flow.state_preservation(
+        outputs=_trace_outputs(traj), reference_outputs=_TRACE_REF
+    )
+    assert r["score"] == 0
+    assert "nights" in r["comment"] and "turn 2" in r["comment"]
+
+
+def test_state_preservation_honours_the_expect_slots_changed_allowlist():
+    """A turn that legitimately supplies another slot declares it and still passes."""
+    traj = [
+        _turn_state(["Gifu", "Nagano"], _PLAIN_REPLY),
+        _turn_state(
+            ["Gifu", "Nagano"], _PLAIN_REPLY, slots={"spring_or_scenery_prefs": "sulfur"}
+        ),
+    ]
+    allowed = {
+        "expected_mode": "trip",
+        "expect_turn_transitions": [
+            {
+                "turn": 1,
+                "op": "none",
+                "expect_slots_unchanged": True,
+                "expect_slots_changed": ["spring_or_scenery_prefs"],
+            }
+        ],
+    }
+    assert eval_flow.state_preservation(
+        outputs=_trace_outputs(traj), reference_outputs=allowed
+    )["score"] == 1
+    # Without the allowlist the same turn is (correctly) a preservation failure.
+    strict = {
+        "expected_mode": "trip",
+        "expect_turn_transitions": [
+            {"turn": 1, "op": "none", "expect_slots_unchanged": True}
+        ],
+    }
+    assert eval_flow.state_preservation(
+        outputs=_trace_outputs(traj), reference_outputs=strict
+    )["score"] == 0
+
+
+def test_state_preservation_unions_the_allowlist_with_the_default():
+    """`expect_slots_changed` ADDS to the default — it must not drop "regions".
+
+    A turn that both narrows the regions AND states a preference is the natural
+    authoring case, and the natural way to write it is to declare only the NEW
+    slot. If the allowlist overrode the default instead of extending it, the
+    (legitimate) region change would fail as an "unrelated slot changed".
+    """
+    traj = [
+        _turn_state(["Gifu", "Nagano", "Hokkaido"], _PLAIN_REPLY),
+        _turn_state(
+            ["Gifu"], _PLAIN_REPLY, slots={"spring_or_scenery_prefs": "sulfur"}
+        ),
+    ]
+    ref = {
+        "expected_mode": "trip",
+        "expect_turn_transitions": [
+            {
+                "turn": 1,
+                "op": "replace",
+                "expect_slots_unchanged": True,
+                # Note: "regions" deliberately NOT re-declared here.
+                "expect_slots_changed": ["spring_or_scenery_prefs"],
+            }
+        ],
+    }
+    r = eval_flow.state_preservation(outputs=_trace_outputs(traj), reference_outputs=ref)
+    assert r["score"] == 1, r["comment"]
+    # ...and the guard is still live: a slot outside the union still fails.
+    traj[1]["slots"]["nights"] = None
+    assert eval_flow.state_preservation(
+        outputs=_trace_outputs(traj), reference_outputs=ref
+    )["score"] == 0
+
+
+def test_state_preservation_fails_on_turn_zero_with_no_predecessor():
+    ref = {
+        "expected_mode": "trip",
+        "expect_turn_transitions": [
+            {"turn": 0, "op": "replace", "expect_slots_unchanged": True}
+        ],
+    }
+    r = eval_flow.state_preservation(
+        outputs=_trace_outputs(_FIXED_TRACE), reference_outputs=ref
+    )
+    assert r["score"] == 0
+    assert "no preceding turn" in r["comment"]
+
+
+# -- correction_applied --
+def test_correction_applied_abstains_without_a_gone_list():
+    ref = {
+        "expected_mode": "trip",
+        "expect_turn_transitions": [
+            {"turn": 2, "op": "replace", "expected_regions": ["Hokkaido"]}
+        ],
+    }
+    r = eval_flow.correction_applied(
+        outputs=_trace_outputs(_FIXED_TRACE), reference_outputs=ref
+    )
+    assert r["score"] is None
+
+
+def test_correction_applied_passes_when_the_old_regions_are_gone():
+    r = eval_flow.correction_applied(
+        outputs=_trace_outputs(_FIXED_TRACE), reference_outputs=_TRACE_REF
+    )
+    assert r["score"] == 1
+
+
+def test_correction_applied_fails_when_a_dropped_region_survives():
+    """The most direct test of the M1 bug — REPLACE that only added."""
+    r = eval_flow.correction_applied(
+        outputs=_trace_outputs(_BROKEN_TRACE), reference_outputs=_TRACE_REF
+    )
+    assert r["score"] == 0
+    assert "still in slots" in r["comment"]
+
+
+def test_correction_applied_fails_when_the_itinerary_still_plans_a_dropped_region():
+    """Slots narrowed but the plan didn't — the correction never reached the output."""
+    outputs = _trace_outputs(_FIXED_TRACE, itinerary_regions=["Nagano", "Hokkaido"])
+    r = eval_flow.correction_applied(outputs=outputs, reference_outputs=_TRACE_REF)
+    assert r["score"] == 0
+    assert "itinerary still plans" in r["comment"]
+
+
+def test_correction_applied_fails_when_final_slots_still_carry_a_dropped_region():
+    outputs = _trace_outputs(_FIXED_TRACE, final_regions=["Hokkaido", "Gifu"])
+    r = eval_flow.correction_applied(outputs=outputs, reference_outputs=_TRACE_REF)
+    assert r["score"] == 0
+    assert "final slots" in r["comment"]
+
+
+# -- latest_question_answered --
+def test_latest_question_answered_abstains_without_gate_flag():
+    ref = {
+        "expected_mode": "trip",
+        "expect_turn_transitions": [{"turn": 2, "op": "replace"}],
+    }
+    r = eval_flow.latest_question_answered(
+        outputs=_trace_outputs(_FIXED_TRACE), reference_outputs=ref
+    )
+    assert r["score"] is None
+
+
+def test_latest_question_answered_passes_on_a_fresh_reply():
+    r = eval_flow.latest_question_answered(
+        outputs=_trace_outputs(_FIXED_TRACE), reference_outputs=_TRACE_REF
+    )
+    assert r["score"] == 1
+
+
+def test_latest_question_answered_fails_on_a_verbatim_repeat():
+    """The literal trace symptom: the same conflict message returned twice."""
+    r = eval_flow.latest_question_answered(
+        outputs=_trace_outputs(_BROKEN_TRACE), reference_outputs=_TRACE_REF
+    )
+    assert r["score"] == 0
+    assert "replayed turn 1's reply verbatim" in r["comment"]
+
+
+def test_latest_question_answered_treats_whitespace_reflow_as_a_repeat():
+    """Re-wrapping the same text is not answering the new question."""
+    traj = list(_FIXED_TRACE)
+    traj[2] = _turn_state(["Hokkaido"], "  " + _CONFLICT_REPLY.replace(" ", "  ") + "\n")
+    r = eval_flow.latest_question_answered(
+        outputs=_trace_outputs(traj), reference_outputs=_TRACE_REF
+    )
+    assert r["score"] == 0
+
+
+def test_latest_question_answered_fails_on_an_empty_reply():
+    traj = list(_FIXED_TRACE)
+    traj[2] = _turn_state(["Hokkaido"], "   ")
+    r = eval_flow.latest_question_answered(
+        outputs=_trace_outputs(traj), reference_outputs=_TRACE_REF
+    )
+    assert r["score"] == 0
+    assert "replied with nothing" in r["comment"]
+
+
+# -- cross_turn_consistency --
+# The flip side of latest_question_answered: M1 reset the per-turn re-plan scratch,
+# and "reset" must mean RECOMPUTE, not FORGET.
+_STABLE_REF = {
+    "expected_mode": "trip",
+    "expect_turn_transitions": [
+        {
+            "turn": 1,
+            "op": "none",
+            "expected_regions": ["Gifu", "Nagano", "Hokkaido"],
+            "expect_same_verdict": True,
+            "expect_slots_unchanged": True,
+            "expect_slots_changed": ["spring_or_scenery_prefs"],
+        }
+    ],
+}
+_STABLE_TRACE = [
+    _turn_state(
+        ["Gifu", "Nagano", "Hokkaido"],
+        _CONFLICT_REPLY,
+        dropped=["Hokkaido"],
+        infeasible=["Nagano", "Hokkaido"],
+    ),
+    _turn_state(
+        ["Gifu", "Nagano", "Hokkaido"],
+        _CONFLICT_REPLY,
+        slots={"spring_or_scenery_prefs": "sulfur springs"},
+        dropped=["Hokkaido"],
+        infeasible=["Nagano", "Hokkaido"],
+    ),
+]
+
+
+def test_cross_turn_consistency_abstains_without_gate_flag():
+    r = eval_flow.cross_turn_consistency(
+        outputs=_trace_outputs(_FIXED_TRACE), reference_outputs=_TRACE_REF
+    )
+    assert r["score"] is None
+
+
+def test_cross_turn_consistency_passes_when_the_verdict_is_re_derived():
+    r = eval_flow.cross_turn_consistency(
+        outputs=_trace_outputs(_STABLE_TRACE), reference_outputs=_STABLE_REF
+    )
+    assert r["score"] == 1
+
+
+def test_cross_turn_consistency_fails_when_an_unresolved_conflict_goes_quiet():
+    """The over-correction guard: resetting the scratch state must not FORGET."""
+    traj = list(_STABLE_TRACE)
+    traj[1] = _turn_state(
+        ["Gifu", "Nagano", "Hokkaido"],
+        _PLAIN_REPLY,
+        slots={"spring_or_scenery_prefs": "sulfur springs"},
+    )
+    r = eval_flow.cross_turn_consistency(
+        outputs=_trace_outputs(traj), reference_outputs=_STABLE_REF
+    )
+    assert r["score"] == 0
+    assert "DIFFERENT verdict" in r["comment"]
+
+
+def test_cross_turn_consistency_fails_when_the_regions_actually_changed():
+    """A mis-authored example (regions moved) is a FAIL, not a silent pass."""
+    traj = list(_STABLE_TRACE)
+    traj[1] = _turn_state(["Gifu"], _PLAIN_REPLY)
+    r = eval_flow.cross_turn_consistency(
+        outputs=_trace_outputs(traj), reference_outputs=_STABLE_REF
+    )
+    assert r["score"] == 0
+    assert "premise does not hold" in r["comment"]
+
+
+# -- the pre-M1 trace reds the whole multi-round block in one shot --
+def test_pre_m1_trace_fails_every_multiround_evaluator():
+    """One assertion that the real production failure is caught by the new gate."""
+    out = _trace_outputs(_BROKEN_TRACE)
+    assert eval_flow.state_transition_correctness(outputs=out, reference_outputs=_TRACE_REF)["score"] == 0
+    assert eval_flow.correction_applied(outputs=out, reference_outputs=_TRACE_REF)["score"] == 0
+    assert eval_flow.latest_question_answered(outputs=out, reference_outputs=_TRACE_REF)["score"] == 0
+    # state_preservation still passes — the pre-M1 bug lost the CHANGE, not the
+    # other slots. Asserted so the block documents what each evaluator does and
+    # does NOT claim (no evaluator is a catch-all).
+    assert eval_flow.state_preservation(outputs=out, reference_outputs=_TRACE_REF)["score"] == 1
+
+
+def test_fixed_trace_greens_every_multiround_evaluator():
+    """The mirror: post-M1 behaviour passes all four applicable evaluators."""
+    out = _trace_outputs(_FIXED_TRACE)
+    for evaluator in (
+        eval_flow.state_transition_correctness,
+        eval_flow.state_preservation,
+        eval_flow.correction_applied,
+        eval_flow.latest_question_answered,
+    ):
+        assert evaluator(outputs=out, reference_outputs=_TRACE_REF)["score"] == 1
+
+
+# -- the five abstain everywhere they don't apply --
+def test_multiround_evaluators_abstain_on_a_search_example():
+    out = {"reply": "Found 2 onsen in Okinawa.", "onsens": []}
+    ref = {"expected_mode": "search"}  # no expect_turn_transitions at all
+    for evaluator in (
+        eval_flow.state_transition_correctness,
+        eval_flow.state_preservation,
+        eval_flow.correction_applied,
+        eval_flow.latest_question_answered,
+        eval_flow.cross_turn_consistency,
+    ):
+        assert evaluator(outputs=out, reference_outputs=ref)["score"] is None
+
+
+def test_pre_m2_examples_carry_no_turn_transitions():
+    """Only the new M2 threads gate the multi-round evaluators; everything else abstains."""
+    with_transitions = [
+        ex for ex in eval_flow._EXAMPLES if ex.get("expect_turn_transitions")
+    ]
+    assert len(with_transitions) == 2
+    for ex in eval_flow._EXAMPLES:
+        exp = eval_flow._expectation(ex)
+        assert "expect_turn_transitions" in exp  # key always present (default [])
+        if ex not in with_transitions:
+            assert exp["expect_turn_transitions"] == []
+            out = {"reply": "x", "_trajectory": []}
+            for evaluator in (
+                eval_flow.state_transition_correctness,
+                eval_flow.state_preservation,
+                eval_flow.correction_applied,
+                eval_flow.latest_question_answered,
+                eval_flow.cross_turn_consistency,
+            ):
+                assert evaluator(outputs=out, reference_outputs=exp)["score"] is None
+
+
+def test_m2_examples_are_wellformed_threads():
+    """The two M2 dataset examples are complete trip threads with valid turn indices."""
+    m2 = [ex for ex in eval_flow._EXAMPLES if ex.get("expect_turn_transitions")]
+    assert len(m2) == 2
+    valid_ops = {"replace", "add", "remove", "none"}
+    gates = set()
+    for ex in m2:
+        assert ex["expected_mode"] == "trip"
+        assert len(ex["messages"]) >= 2  # multi-ROUND by definition
+        assert ex["expected_nights"] and ex["regions"]
+        # No PR7 gate flags: those scan the FINAL reply, which for the narrowing
+        # thread is a clean itinerary with no conflict prose (see the example note).
+        assert not ex.get("conflict_factors")
+        for entry in eval_flow._expectation(ex)["expect_turn_transitions"]:
+            # A per-turn expectation must address a turn the thread actually has,
+            # and can never target turn 0 (every check is relative to a predecessor
+            # or to a change the opener cannot have made).
+            assert 0 < entry["turn"] < len(ex["messages"])
+            assert entry["op"] in valid_ops
+            gates |= {k for k in entry if k.startswith("expect_")}
+    # Between them the two examples gate all five multi-round evaluators.
+    assert gates == {
+        "expect_regions_gone",
+        "expect_slots_unchanged",
+        "expect_slots_changed",
+        "expect_fresh_reply",
+        "expect_same_verdict",
+    }
+
+
+def test_every_evaluator_has_a_report_column_label():
+    """_report derives its table from EVALUATORS + _COLUMN_LABELS — keep them in sync."""
+    for evaluator in eval_flow.EVALUATORS:
+        assert evaluator.__name__ in eval_flow._COLUMN_LABELS
+
+
 # -- trip cost/latency budget bucket --
-def test_cost_budget_trip_bucket():
-    within = {"_cost_usd": 0.015}
-    over = {"_cost_usd": 0.03}
+# The trip constants are PER TURN and scaled by len(_trajectory): a trip example is
+# a multi-turn thread and every settled turn pays for an analyze_model call, so a
+# flat per-thread ceiling would silently tighten as an example grows turns.
+def test_cost_budget_trip_bucket_is_per_turn():
+    """Same $0.018 thread: over budget at 1 turn, within it at 3 turns."""
     ref = {"expected_mode": "trip"}
-    assert eval_flow.cost_budget(outputs=within, reference_outputs=ref)["score"] == 1
-    assert eval_flow.cost_budget(outputs=over, reference_outputs=ref)["score"] == 0
+    three_turns = [{}, {}, {}]
+    # ~3 settled turns at the measured ~$0.006 each.
+    assert eval_flow.cost_budget(
+        outputs={"_cost_usd": 0.018, "_trajectory": three_turns}, reference_outputs=ref
+    )["score"] == 1
+    # The same spend in a single turn is a real regression.
+    assert eval_flow.cost_budget(
+        outputs={"_cost_usd": 0.018, "_trajectory": [{}]}, reference_outputs=ref
+    )["score"] == 0
+    # Still catches a blow-out that scales past the per-turn ceiling.
+    assert eval_flow.cost_budget(
+        outputs={"_cost_usd": 0.05, "_trajectory": three_turns}, reference_outputs=ref
+    )["score"] == 0
 
 
-def test_latency_trip_bucket():
-    within = {"_latency_ms": 15000}
-    over = {"_latency_ms": 25000}
+def test_latency_trip_bucket_is_per_turn():
     ref = {"expected_mode": "trip"}
-    assert eval_flow.latency(outputs=within, reference_outputs=ref)["score"] == 1
-    assert eval_flow.latency(outputs=over, reference_outputs=ref)["score"] == 0
+    three_turns = [{}, {}, {}]
+    assert eval_flow.latency(
+        outputs={"_latency_ms": 25000, "_trajectory": three_turns}, reference_outputs=ref
+    )["score"] == 1
+    assert eval_flow.latency(
+        outputs={"_latency_ms": 25000, "_trajectory": [{}]}, reference_outputs=ref
+    )["score"] == 0
+    assert eval_flow.latency(
+        outputs={"_latency_ms": 45000, "_trajectory": three_turns}, reference_outputs=ref
+    )["score"] == 0
+
+
+def test_trip_budgets_fall_back_to_one_turn_without_a_trajectory():
+    """max(1, ...) — a missing/empty trajectory must not collapse the budget to zero."""
+    ref = {"expected_mode": "trip"}
+    assert eval_flow.cost_budget(
+        outputs={"_cost_usd": 0.006, "_trajectory": []}, reference_outputs=ref
+    )["score"] == 1
+    assert eval_flow.latency(outputs={"_latency_ms": 9000}, reference_outputs=ref)["score"] == 1
+
+
+def test_non_trip_budgets_ignore_trajectory_length():
+    """search/recommend/ask/no-data keep their flat per-run budgets, unscaled."""
+    long_trace = [{}, {}, {}, {}, {}]
+    for mode in ("search", "recommend", "ask", "no-data"):
+        ref = {"expected_mode": mode}
+        flat_cost = eval_flow.COST_BUDGET_USD[mode]
+        flat_ms = eval_flow.LATENCY_BUDGET_MS[mode]
+        assert eval_flow.cost_budget(
+            outputs={"_cost_usd": flat_cost * 1.5, "_trajectory": long_trace},
+            reference_outputs=ref,
+        )["score"] == 0
+        assert eval_flow.latency(
+            outputs={"_latency_ms": int(flat_ms * 1.5), "_trajectory": long_trace},
+            reference_outputs=ref,
+        )["score"] == 0
 
 
 # --- target thread-runner (plumbing, no paid calls) ---------------------------
@@ -852,6 +1437,104 @@ def test_target_runs_thread_and_captures_trip_signals():
     # Last turn's AgentResponse fields passthrough.
     assert out["onsens"][0]["name"] == "Gero Onsen"
     assert "_cost_usd" in out and "_latency_ms" in out
+
+
+def test_target_trajectory_captures_per_turn_conversation_state():
+    """M2: each trajectory entry records the turn's regions, slots, reply + verdict.
+
+    Replays the production narrowing trace through the target with every seam
+    mocked (no paid calls) and asserts the captured trajectory is rich enough for
+    the five multi-round evaluators to score it — then runs two of them on it
+    end-to-end, which is what ties the capture change to the evaluators.
+    """
+    from agent.trip import graph as trip_graph_mod
+    from agent.workflow import pipeline
+
+    replies = [
+        "Here's a naive 3-night onsen itinerary — Nagano (2 nights): Nozawa Onsen.",
+        "Heads-up: combining Nagano with Hokkaido isn't feasible. Here's a naive "
+        "3-night onsen itinerary — Nagano (2 nights): Nozawa Onsen.",
+        "Here's a naive 3-night onsen itinerary — Hokkaido (3 nights): Noboribetsu Onsen.",
+    ]
+
+    async def _fake_run_workflow(message, session_id):
+        return {"reply": replies.pop(0), "onsens": [], "hotels": [], "recommendation": None}
+
+    def _values(regions, dropped=None, infeasible=None, itinerary=None):
+        return SimpleNamespace(
+            values={
+                "slots": {"regions": regions, "nights": 3, "dates_or_season": "autumn"},
+                "dropped_regions": [{"region": r, "reason": "far"} for r in (dropped or [])],
+                "infeasible": infeasible,
+                "itinerary": itinerary,
+            }
+        )
+
+    final_itinerary = {
+        "nights": 3,
+        "regions": [_leg("Hokkaido", 3, ["Noboribetsu Onsen"])],
+        "selected_onsens": [_onsen("Noboribetsu Onsen")],
+    }
+    # One get_state per turn (3) + one for the final snapshot.
+    snapshots = [
+        _values(["Nagano", "Gifu"]),
+        _values(
+            ["Nagano", "Gifu", "Hokkaido"],
+            dropped=["Hokkaido"],
+            infeasible={"regions": ["Nagano", "Hokkaido"], "leg_km": 812.0},
+        ),
+        _values(["Hokkaido"], itinerary=final_itinerary),
+        _values(["Hokkaido"], itinerary=final_itinerary),
+    ]
+
+    with patch.object(pipeline, "run_workflow", _fake_run_workflow), patch.object(
+        trip_graph_mod.trip_graph, "get_state", side_effect=snapshots
+    ):
+        target = eval_flow.make_target_with_usage()
+        out = target(
+            {
+                "messages": [
+                    "Plan a relaxed 3-night onsen trip across Nagano and Gifu this autumn.",
+                    "What about adding Hokkaido to the trip?",
+                    "Actually, make the trip Hokkaido only — drop Nagano and Gifu.",
+                ]
+            }
+        )
+
+    traj = out["_trajectory"]
+    assert len(traj) == 3
+    # Per-turn regions — the state_transition_correctness / correction_applied input.
+    assert [t["regions"] for t in traj] == [
+        ["Nagano", "Gifu"], ["Nagano", "Gifu", "Hokkaido"], ["Hokkaido"],
+    ]
+    # Full slot snapshot per turn — the state_preservation input.
+    assert all(t["slots"]["nights"] == 3 for t in traj)
+    assert traj[2]["slots"]["dates_or_season"] == "autumn"
+    # Per-turn reply — the latest_question_answered input.
+    assert traj[2]["reply"].startswith("Here's a naive") and traj[2]["reply"] != traj[1]["reply"]
+    # The turn's message is recorded alongside the state it produced.
+    assert traj[1]["message"] == "What about adding Hokkaido to the trip?"
+    # Per-turn conflict verdict (names only) — the cross_turn_consistency input.
+    assert traj[1]["dropped_regions"] == ["Hokkaido"]
+    assert traj[1]["infeasible_regions"] == ["Hokkaido", "Nagano"]  # sorted
+    assert traj[2]["dropped_regions"] == [] and traj[2]["infeasible_regions"] == []
+    # The original slot-filling signals are unchanged (no regression for PR4).
+    assert all(t["missing_required"] == [] and t["asked_followup"] is False for t in traj)
+
+    # End-to-end: the captured trajectory scores green against the dataset example's
+    # own reference block.
+    ref = eval_flow._expectation(
+        next(
+            ex
+            for ex in eval_flow._EXAMPLES
+            if ex.get("expect_turn_transitions")
+            and any(e.get("expect_regions_gone") for e in ex["expect_turn_transitions"])
+        )
+    )
+    assert eval_flow.state_transition_correctness(outputs=out, reference_outputs=ref)["score"] == 1
+    assert eval_flow.correction_applied(outputs=out, reference_outputs=ref)["score"] == 1
+    assert eval_flow.latest_question_answered(outputs=out, reference_outputs=ref)["score"] == 1
+    assert eval_flow.state_preservation(outputs=out, reference_outputs=ref)["score"] == 1
 
 
 # --- cost_budget evaluator ----------------------------------------------------
