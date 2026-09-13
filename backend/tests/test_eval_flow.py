@@ -1014,6 +1014,41 @@ def test_state_preservation_honours_the_expect_slots_changed_allowlist():
     )["score"] == 0
 
 
+def test_state_preservation_unions_the_allowlist_with_the_default():
+    """`expect_slots_changed` ADDS to the default — it must not drop "regions".
+
+    A turn that both narrows the regions AND states a preference is the natural
+    authoring case, and the natural way to write it is to declare only the NEW
+    slot. If the allowlist overrode the default instead of extending it, the
+    (legitimate) region change would fail as an "unrelated slot changed".
+    """
+    traj = [
+        _turn_state(["Gifu", "Nagano", "Hokkaido"], _PLAIN_REPLY),
+        _turn_state(
+            ["Gifu"], _PLAIN_REPLY, slots={"spring_or_scenery_prefs": "sulfur"}
+        ),
+    ]
+    ref = {
+        "expected_mode": "trip",
+        "expect_turn_transitions": [
+            {
+                "turn": 1,
+                "op": "replace",
+                "expect_slots_unchanged": True,
+                # Note: "regions" deliberately NOT re-declared here.
+                "expect_slots_changed": ["spring_or_scenery_prefs"],
+            }
+        ],
+    }
+    r = eval_flow.state_preservation(outputs=_trace_outputs(traj), reference_outputs=ref)
+    assert r["score"] == 1, r["comment"]
+    # ...and the guard is still live: a slot outside the union still fails.
+    traj[1]["slots"]["nights"] = None
+    assert eval_flow.state_preservation(
+        outputs=_trace_outputs(traj), reference_outputs=ref
+    )["score"] == 0
+
+
 def test_state_preservation_fails_on_turn_zero_with_no_predecessor():
     ref = {
         "expected_mode": "trip",
@@ -1292,20 +1327,65 @@ def test_every_evaluator_has_a_report_column_label():
 
 
 # -- trip cost/latency budget bucket --
-def test_cost_budget_trip_bucket():
-    within = {"_cost_usd": 0.015}
-    over = {"_cost_usd": 0.03}
+# The trip constants are PER TURN and scaled by len(_trajectory): a trip example is
+# a multi-turn thread and every settled turn pays for an analyze_model call, so a
+# flat per-thread ceiling would silently tighten as an example grows turns.
+def test_cost_budget_trip_bucket_is_per_turn():
+    """Same $0.018 thread: over budget at 1 turn, within it at 3 turns."""
     ref = {"expected_mode": "trip"}
-    assert eval_flow.cost_budget(outputs=within, reference_outputs=ref)["score"] == 1
-    assert eval_flow.cost_budget(outputs=over, reference_outputs=ref)["score"] == 0
+    three_turns = [{}, {}, {}]
+    # ~3 settled turns at the measured ~$0.006 each.
+    assert eval_flow.cost_budget(
+        outputs={"_cost_usd": 0.018, "_trajectory": three_turns}, reference_outputs=ref
+    )["score"] == 1
+    # The same spend in a single turn is a real regression.
+    assert eval_flow.cost_budget(
+        outputs={"_cost_usd": 0.018, "_trajectory": [{}]}, reference_outputs=ref
+    )["score"] == 0
+    # Still catches a blow-out that scales past the per-turn ceiling.
+    assert eval_flow.cost_budget(
+        outputs={"_cost_usd": 0.05, "_trajectory": three_turns}, reference_outputs=ref
+    )["score"] == 0
 
 
-def test_latency_trip_bucket():
-    within = {"_latency_ms": 15000}
-    over = {"_latency_ms": 25000}
+def test_latency_trip_bucket_is_per_turn():
     ref = {"expected_mode": "trip"}
-    assert eval_flow.latency(outputs=within, reference_outputs=ref)["score"] == 1
-    assert eval_flow.latency(outputs=over, reference_outputs=ref)["score"] == 0
+    three_turns = [{}, {}, {}]
+    assert eval_flow.latency(
+        outputs={"_latency_ms": 25000, "_trajectory": three_turns}, reference_outputs=ref
+    )["score"] == 1
+    assert eval_flow.latency(
+        outputs={"_latency_ms": 25000, "_trajectory": [{}]}, reference_outputs=ref
+    )["score"] == 0
+    assert eval_flow.latency(
+        outputs={"_latency_ms": 45000, "_trajectory": three_turns}, reference_outputs=ref
+    )["score"] == 0
+
+
+def test_trip_budgets_fall_back_to_one_turn_without_a_trajectory():
+    """max(1, ...) — a missing/empty trajectory must not collapse the budget to zero."""
+    ref = {"expected_mode": "trip"}
+    assert eval_flow.cost_budget(
+        outputs={"_cost_usd": 0.006, "_trajectory": []}, reference_outputs=ref
+    )["score"] == 1
+    assert eval_flow.latency(outputs={"_latency_ms": 9000}, reference_outputs=ref)["score"] == 1
+
+
+def test_non_trip_budgets_ignore_trajectory_length():
+    """search/recommend/ask/no-data keep their flat per-run budgets, unscaled."""
+    long_trace = [{}, {}, {}, {}, {}]
+    for mode in ("search", "recommend", "ask", "no-data"):
+        ref = {"expected_mode": mode}
+        flat_cost = eval_flow.COST_BUDGET_USD[mode]
+        flat_ms = eval_flow.LATENCY_BUDGET_MS[mode]
+        assert eval_flow.cost_budget(
+            outputs={"_cost_usd": flat_cost * 1.5, "_trajectory": long_trace},
+            reference_outputs=ref,
+        )["score"] == 0
+        assert eval_flow.latency(
+            outputs={"_latency_ms": int(flat_ms * 1.5), "_trajectory": long_trace},
+            reference_outputs=ref,
+        )["score"] == 0
 
 
 # --- target thread-runner (plumbing, no paid calls) ---------------------------

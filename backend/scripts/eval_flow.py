@@ -93,21 +93,27 @@ COST_BUDGET_USD: dict[str, float] = {
     "recommend": 0.05,
     "ask": 0.01,
     "no-data": 0.01,  # no-data examples are search-mode; cheap.
-    # trip (V3 PR4): a multi-turn thread — one intent-parse + one slot-extraction
-    # LLM call PER TURN (both cheap intent_model), no analyze brain, free Chroma
-    # retrieval. Cost is roughly search × turns. STARTING NUMBER (flagged): tune
-    # once we have measured baselines the way search/recommend were tuned.
-    "trip": 0.02,
+    # trip (V3 PR4): PER-TURN budget, scaled by the thread's turn count at read
+    # time (see `cost_budget`) — a trip example is a multi-turn thread, so a flat
+    # per-thread constant would silently tighten as examples grow turns.
+    # Per turn: one intent-parse + one slot-extraction call (both cheap
+    # intent_model) AND — for any turn that settles into an itinerary — one
+    # `analyze_model` call, because the trip graph's `plan` node routes settled
+    # turns through `_analyze_node`. Measured (prod LangSmith trace): a settled
+    # turn ~$0.006 ($0.00616 / $0.00629 / $0.00563); an elicit-only turn ~$0.0004.
+    # 0.01/turn ≈ 1.5x headroom over the expensive (settled) case.
+    "trip": 0.01,
 }
 LATENCY_BUDGET_MS: dict[str, int] = {
     "search": 8000,
     "recommend": 20000,
     "ask": 8000,
     "no-data": 8000,
-    # trip: measured end-to-end across ALL turns of the thread (multi-turn +
-    # per-region Chroma retrieval + 2 small LLM calls/turn). STARTING NUMBER
-    # (flagged): loose enough for a 1–2 turn thread; tighten after a baseline run.
-    "trip": 20000,
+    # trip: PER-TURN budget, scaled by the thread's turn count at read time (see
+    # `latency`) — measured end-to-end across ALL turns, so the ceiling has to
+    # grow with the thread. Per turn: per-region Chroma retrieval + 2 small LLM
+    # calls, plus an `analyze_model` call on any turn that settles an itinerary.
+    "trip": 10000,
 }
 
 
@@ -554,7 +560,13 @@ _EXAMPLES: list[dict] = [
                 "expected_regions": ["Gifu", "Nagano", "Hokkaido"],
                 "expect_same_verdict": True,
                 "expect_slots_unchanged": True,
-                "expect_slots_changed": ["spring_or_scenery_prefs"],
+                # "we love sulfur springs" is legitimately extractable into EITHER
+                # field — spring_or_scenery_prefs (soft preference) or must_haves
+                # (hard requirement) — and the boundary is fuzzy for this phrasing.
+                # Allow both so a correct extraction can't fail on a coin flip; the
+                # real invariant (nights/dates/party/budget/pace/mobility_transport
+                # stay untouched) is unaffected.
+                "expect_slots_changed": ["spring_or_scenery_prefs", "must_haves"],
             },
         ],
     },
@@ -666,8 +678,9 @@ def _expectation(ex: dict) -> dict:
         #                                  NOT survive → correction_applied.
         #   expect_slots_unchanged bool  — non-region slots must match the PREVIOUS
         #                                  turn's → state_preservation.
-        #   expect_slots_changed   [str] — slot keys this turn IS allowed to change
-        #                                  (default ["regions"]) → state_preservation.
+        #   expect_slots_changed   [str] — ADDITIONAL slot keys (beyond "regions",
+        #                                  which is always mutable) this turn is
+        #                                  allowed to change → state_preservation.
         #   expect_fresh_reply     bool  — the reply must differ from the previous
         #                                  turn's → latest_question_answered.
         #   expect_same_verdict    bool  — regions unchanged ⇒ the conflict verdict
@@ -1731,9 +1744,9 @@ def dropped_region_reasoned(outputs: dict, reference_outputs: dict) -> dict:
 # they compare structured state, so they say nothing about HOW the bot phrased
 # itself, only that the state moved correctly.
 
-# Slot keys a region-only turn is allowed to change. Used as the default for
-# `expect_slots_changed`; an entry may override it when the turn legitimately
-# supplies another slot too (e.g. a preference alongside the region change).
+# Slot keys a region-only turn is ALWAYS allowed to change. An entry's
+# `expect_slots_changed` is unioned with this (never replaces it) when the turn
+# legitimately supplies another slot too (e.g. a preference alongside a region change).
 _DEFAULT_MUTABLE_SLOTS: tuple[str, ...] = ("regions",)
 
 
@@ -1836,7 +1849,8 @@ def state_preservation(outputs: dict, reference_outputs: dict) -> dict:
 
     Gated by transition entries flagged ``expect_slots_unchanged``; ABSTAINS
     otherwise. Diffs the turn's full post-turn slot dict against the PREVIOUS turn's,
-    ignoring the keys in ``expect_slots_changed`` (default ``["regions"]``). The
+    ignoring ``regions`` (always mutable) plus any keys the entry ADDS via
+    ``expect_slots_changed``. The
     failure it guards is the sibling of the transition bug: a follow-up that
     successfully narrows the regions but silently resets nights / dates / party /
     pace along the way, quietly discarding what the traveller already told us.
@@ -1858,8 +1872,12 @@ def state_preservation(outputs: dict, reference_outputs: dict) -> dict:
                 "score": 0,
                 "comment": f"turn {index} has no preceding turn to preserve state from",
             }
-        mutable = {
-            str(k) for k in (entry.get("expect_slots_changed") or _DEFAULT_MUTABLE_SLOTS)
+        # UNION, not `or`: `expect_slots_changed` ADDS to the always-mutable
+        # default. Overriding it would silently drop "regions" from the allowlist,
+        # so a turn that both narrows regions AND states a preference would fail
+        # unless the author remembered to re-declare "regions" by hand.
+        mutable = set(_DEFAULT_MUTABLE_SLOTS) | {
+            str(k) for k in (entry.get("expect_slots_changed") or ())
         }
         before = previous.get("slots") or {}
         after = turn.get("slots") or {}
@@ -2056,27 +2074,51 @@ def cross_turn_consistency(outputs: dict, reference_outputs: dict) -> dict:
     }
 
 
+def _budget_turns(mode: str | None, outputs: dict) -> int:
+    """How many turns the mode's budget should be multiplied by.
+
+    Only ``trip`` budgets are per-turn (a trip example is a multi-turn thread, and
+    both cost and latency are measured end-to-end across the whole thread). Every
+    other mode is single-turn, so this is a no-op 1x multiply for them.
+    """
+    if mode != "trip":
+        return 1
+    return max(1, len(outputs.get("_trajectory") or []))
+
+
 def cost_budget(outputs: dict, reference_outputs: dict) -> dict:
-    """Score 1 iff the run's measured cost is within the per-mode budget."""
+    """Score 1 iff the run's measured cost is within the per-mode budget.
+
+    For ``trip`` the constant is a PER-TURN budget, scaled by the thread's turn
+    count; for every other mode it is the flat per-run budget (1 turn).
+    """
     mode = reference_outputs.get("expected_mode")
-    budget = COST_BUDGET_USD.get(mode, COST_BUDGET_USD["search"])
+    turns = _budget_turns(mode, outputs)
+    budget = COST_BUDGET_USD.get(mode, COST_BUDGET_USD["search"]) * turns
     cost = float(outputs.get("_cost_usd", 0.0) or 0.0)
+    scale = f" [{turns} turns]" if turns > 1 else ""
     return {
         "key": "cost_budget",
         "score": 1 if cost <= budget else 0,
-        "comment": f"${cost:.4f} vs budget ${budget} ({mode})",
+        "comment": f"${cost:.4f} vs budget ${budget:g} ({mode}){scale}",
     }
 
 
 def latency(outputs: dict, reference_outputs: dict) -> dict:
-    """Score 1 iff the run's measured latency is within the per-mode budget."""
+    """Score 1 iff the run's measured latency is within the per-mode budget.
+
+    For ``trip`` the constant is a PER-TURN budget, scaled by the thread's turn
+    count; for every other mode it is the flat per-run budget (1 turn).
+    """
     mode = reference_outputs.get("expected_mode")
-    budget = LATENCY_BUDGET_MS.get(mode, LATENCY_BUDGET_MS["search"])
+    turns = _budget_turns(mode, outputs)
+    budget = LATENCY_BUDGET_MS.get(mode, LATENCY_BUDGET_MS["search"]) * turns
     measured = int(outputs.get("_latency_ms", 0) or 0)
+    scale = f" [{turns} turns]" if turns > 1 else ""
     return {
         "key": "latency",
         "score": 1 if measured <= budget else 0,
-        "comment": f"{measured}ms vs budget {budget}ms ({mode})",
+        "comment": f"{measured}ms vs budget {budget}ms ({mode}){scale}",
     }
 
 
