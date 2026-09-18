@@ -103,11 +103,9 @@ def test_merge_preserves_prior_and_updates_only_mentioned():
     assert merged.party == "family"
 
 
-def test_merge_empty_list_delta_does_not_wipe_prior_regions():
-    current = TripSlots(regions=["Gifu", "Nagano"])
-    # An all-None / empty-list delta ("message mentioned nothing") leaves regions.
-    merged = merge_slots(current, SlotUpdate())
-    assert merged.regions == ["Gifu", "Nagano"]
+# The empty/absent regions-delta case is covered — as a strict superset, including
+# the newer empty-list-WITH-regions_op variant — by
+# ``test_trip_region_narrowing.py::test_empty_or_absent_regions_delta_never_touches_prior_regions``.
 
 
 def test_trip_slots_defaults_match_plan_section_2():

@@ -43,46 +43,14 @@ def _mock_llm() -> MagicMock:
 
 
 # --- the core Done condition: two-turn state persistence --------------------
-
-
-@pytest.mark.asyncio
-async def test_state_persists_and_accumulates_across_two_turns_same_session():
-    # Fresh graph → empty MemorySaver, so turn_count is deterministic.
-    graph = build_trip_graph()
-    session_id = "trip-session-A"
-
-    with patch.object(slots_module, "_llm", _mock_llm()):
-        # Turn 1: no prior checkpoint → gather sees turn_count absent, returns 1.
-        r1 = await graph.ainvoke(
-            {"message": "5 nights in Gifu"}, config=_cfg(session_id)
-        )
-        assert r1["turn_count"] == 1
-
-        # Turn 2, SAME thread_id: gather must OBSERVE the accumulated state left by
-        # turn 1 (turn_count==1) and increment to 2. This is the checkpointer proof.
-        r2 = await graph.ainvoke(
-            {"message": "make it mountain views"}, config=_cfg(session_id)
-        )
-        assert r2["turn_count"] == 2
-
-    # And the checkpointer actually holds it, keyed by thread_id.
-    snapshot = graph.get_state(_cfg(session_id))
-    assert snapshot.values["turn_count"] == 2
-
-
-@pytest.mark.asyncio
-async def test_state_is_isolated_per_session_id():
-    # Different thread_ids must NOT share accumulated state.
-    graph = build_trip_graph()
-
-    with patch.object(slots_module, "_llm", _mock_llm()):
-        await graph.ainvoke({"message": "trip A"}, config=_cfg("sess-A"))
-        await graph.ainvoke({"message": "trip A2"}, config=_cfg("sess-A"))
-        rb = await graph.ainvoke({"message": "trip B"}, config=_cfg("sess-B"))
-
-    # sess-B is on its first turn regardless of sess-A's two turns.
-    assert rb["turn_count"] == 1
-    assert graph.get_state(_cfg("sess-A")).values["turn_count"] == 2
+#
+# The raw turn_count persistence/isolation proofs that used to live here are now
+# covered — as strict supersets — by ``test_trip_slots_elicit_loop.py``:
+#   * ``test_partial_then_complete_across_two_turns_same_session`` asserts the same
+#     ``turn_count == 2`` PLUS that the slots themselves persisted and merged;
+#   * ``test_slots_isolated_per_session_id`` asserts the same A=2 / B=1 split PLUS
+#     per-session slot isolation.
+# The checkpointer-SHAPE properties below are unique to this file and stay put.
 
 
 # --- re-planning-readiness properties (§0) ----------------------------------

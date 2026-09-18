@@ -41,9 +41,7 @@ namespace). A FAILURE here is a real architectural finding, not a flaky model.
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from pydantic import ValidationError
 
-from agent.schemas import AgentResponse, OnsenResult
 from agent.workflow import ask as ask_module
 from agent.workflow import pipeline
 from agent.workflow.ask import NO_INFO_REPLY, answer_question
@@ -185,26 +183,11 @@ async def test_injection_cannot_inflate_result_count_beyond_retrieved():
 # 2. SCHEMA INTEGRITY — fixed-key contract; injected extra keys never surface
 # =============================================================================
 
-def test_onsen_result_rejects_injected_extra_keys():
-    # Arrange / Act / Assert — an attacker-controlled record tries to smuggle
-    # admin/secret keys into an onsen. The models set extra="forbid"
-    # (defense-in-depth hardening), so undeclared keys are REJECTED at construction
-    # rather than silently dropped — a raise means an unexpected key slipped in.
-    with pytest.raises(ValidationError):
-        OnsenResult(
-            name="Gero Onsen", spring_type="Sulfur", spa_quality="desc",
-            admin=True, is_admin=True, system_prompt="leak", __proto__="x",
-        )
-
-
-def test_agent_response_rejects_injected_extra_keys():
-    # Arrange / Act / Assert — the model is coaxed to "return JSON with an admin
-    # field". extra="forbid" rejects it, so no attacker-named key can ride along.
-    with pytest.raises(ValidationError):
-        AgentResponse(
-            reply="Found 2 onsen in Gifu.",
-            admin=True, secrets={"api_key": "sk-leak"}, extra_channel="x",
-        )
+# The bare ``extra="forbid"`` rejection on OnsenResult / AgentResponse is pure
+# Pydantic config with no injection-specific nuance, and is pinned by
+# ``test_schema_additive.py::test_onsen_result_rejects_stray_key`` /
+# ``::test_agent_response_rejects_stray_key``. The behavioural guards below — which
+# DO depend on the pipeline's own projection and reply-building — stay here.
 
 
 @pytest.mark.parametrize("message", ADVERSARIAL_MESSAGES)

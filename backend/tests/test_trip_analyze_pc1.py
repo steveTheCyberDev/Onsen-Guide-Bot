@@ -32,7 +32,6 @@ from agent.trip.agent import plan_trip
 from agent.trip.analyze import (
     TripGuideResult,
     _OnsenAnalysis,
-    _project,
     _trip_context,
     analyze_itinerary,
 )
@@ -173,24 +172,13 @@ async def test_does_not_fabricate_when_llm_returns_no_analyses():
     assert recommendation == "Not much to differentiate."
 
 
-# --- projection / context grounding ------------------------------------------
-
-
-def test_projection_excludes_coords_and_urls():
-    onsens = [_onsen_result("Coastal", lat=12.345678, lng=98.7654321)]
-    projection = _project(onsens)
-    assert "12.345678" not in projection
-    assert "98.7654321" not in projection
-    assert "lat" not in projection.lower()
-    assert "http" not in projection.lower()
-
-
-def test_projection_includes_judgement_fields():
-    projection = _project([_onsen_result("Coastal")])
-    assert "Coastal" in projection
-    assert "Sulfur Spring" in projection
-    assert "Gero, Gifu" in projection
-    assert "Description:" in projection
+# --- context grounding -------------------------------------------------------
+#
+# The candidate PROJECTION itself is not re-tested here: ``agent.trip.analyze._project``
+# is the same object as ``agent.workflow.analyze._project`` (both alias
+# ``agent.grounding.project_candidates``), pinned by
+# ``test_both_brains_share_one_grounding_constant`` above and covered in depth by
+# ``test_analyze.py``. Only the trip-specific slot context is exercised below.
 
 
 def test_trip_context_includes_slot_prefs():
