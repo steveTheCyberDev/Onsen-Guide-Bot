@@ -17,7 +17,7 @@ MemorySaver starts empty (the module-level ``trip_graph`` singleton is long-live
 would carry state between tests).
 """
 
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 
@@ -31,43 +31,7 @@ from agent.trip.slots import (
     missing_required,
     next_question,
 )
-
-
-def _cfg(session_id: str) -> dict:
-    return {"configurable": {"thread_id": session_id}}
-
-
-def _onsen(name: str) -> dict:
-    """A minimal query_onsen_structured-shaped record for plan-node tests."""
-    return {
-        "name": name,
-        "location": "Somewhere, Japan",
-        "spring_type": "Sulfur Spring",
-        "spa_quality": "A relaxing sulfur spring.",
-        "detail_url": f"https://example.com/{name}",
-        "lat": 36.0,
-        "lng": 137.0,
-    }
-
-
-def _mock_retrieval(*records: dict):
-    """Patch target for the plan node's per-region retrieval.
-
-    Returns the same records for every region so plan-reaching PR3b tests stay
-    deterministic and make no real Chroma call.
-    """
-    return MagicMock(return_value=list(records))
-
-
-def _mock_llm(*updates: SlotUpdate) -> MagicMock:
-    """Stand-in for the module-level structured-output ``_llm``.
-
-    ``extract_slots`` awaits ``_llm.ainvoke`` once per turn; ``side_effect`` feeds a
-    distinct ``SlotUpdate`` per call so a multi-turn conversation is fully scripted.
-    """
-    llm = MagicMock()
-    llm.ainvoke = AsyncMock(side_effect=list(updates))
-    return llm
+from tests.conftest import trip_cfg, trip_onsen, trip_retrieval, trip_slots_llm
 
 
 # --- pure slot logic (no graph, no LLM) -------------------------------------
@@ -132,13 +96,13 @@ async def test_partial_then_complete_across_two_turns_same_session():
     # Turn 2 (same session): user supplies the season → now complete.
     turn2 = SlotUpdate(dates_or_season="autumn")
 
-    with patch.object(slots_module, "_llm", _mock_llm(turn1, turn2)), patch.object(
-        itinerary_module, "query_onsen_structured", _mock_retrieval(_onsen("Gero Onsen"))
+    with patch.object(slots_module, "_llm", trip_slots_llm(turn1, turn2)), patch.object(
+        itinerary_module, "query_onsen_structured", trip_retrieval(trip_onsen("Gero Onsen"))
     ):
         r1 = await graph.ainvoke(
-            {"message": "5 nights in Gifu and Nagano"}, config=_cfg(session_id)
+            {"message": "5 nights in Gifu and Nagano"}, config=trip_cfg(session_id)
         )
-        r2 = await graph.ainvoke({"message": "in autumn"}, config=_cfg(session_id))
+        r2 = await graph.ainvoke({"message": "in autumn"}, config=trip_cfg(session_id))
 
     # Turn 1 → elicit for the missing required slot (dates), NOT an itinerary.
     assert "when" in r1["reply"].lower() or "season" in r1["reply"].lower()
@@ -147,7 +111,7 @@ async def test_partial_then_complete_across_two_turns_same_session():
     # Turn 2 → prior slots persisted (regions/nights), the season merged in, and the
     # flow proceeded PAST elicitation to the real plan node (an itinerary).
     assert "itinerary" in r2["reply"].lower()
-    snap = graph.get_state(_cfg(session_id)).values
+    snap = graph.get_state(trip_cfg(session_id)).values
     assert snap["slots"]["regions"] == ["Gifu", "Nagano"]
     assert snap["slots"]["nights"] == 5
     assert snap["slots"]["dates_or_season"] == "autumn"
@@ -161,11 +125,11 @@ async def test_complete_in_one_message_asks_no_question():
     session_id = "trip-one-shot"
     full = SlotUpdate(regions=["Oita"], nights=3, dates_or_season="early November")
 
-    with patch.object(slots_module, "_llm", _mock_llm(full)), patch.object(
-        itinerary_module, "query_onsen_structured", _mock_retrieval(_onsen("Beppu Onsen"))
+    with patch.object(slots_module, "_llm", trip_slots_llm(full)), patch.object(
+        itinerary_module, "query_onsen_structured", trip_retrieval(trip_onsen("Beppu Onsen"))
     ):
         r = await graph.ainvoke(
-            {"message": "3 nights in Oita in early November"}, config=_cfg(session_id)
+            {"message": "3 nights in Oita in early November"}, config=trip_cfg(session_id)
         )
 
     # All required present on the first message → straight to the real plan node
@@ -179,8 +143,8 @@ async def test_only_one_question_asked_per_turn():
     graph = build_trip_graph()
     session_id = "trip-one-question"
     # Nothing extracted → all three required missing, but only ONE follow-up allowed.
-    with patch.object(slots_module, "_llm", _mock_llm(SlotUpdate())):
-        r = await graph.ainvoke({"message": "I want an onsen trip"}, config=_cfg(session_id))
+    with patch.object(slots_module, "_llm", trip_slots_llm(SlotUpdate())):
+        r = await graph.ainvoke({"message": "I want an onsen trip"}, config=trip_cfg(session_id))
 
     reply = r["reply"]
     # Exactly one question mark → a single focused ask, not a barrage.
@@ -194,9 +158,9 @@ async def test_elicit_makes_no_llm_call_beyond_the_single_extraction():
     # The elicit branch must be cheap: gather runs the ONE extraction, elicit adds no
     # further LLM calls.
     graph = build_trip_graph()
-    mock = _mock_llm(SlotUpdate(regions=["Gifu"]))  # missing nights + dates → elicit
+    mock = trip_slots_llm(SlotUpdate(regions=["Gifu"]))  # missing nights + dates → elicit
     with patch.object(slots_module, "_llm", mock):
-        await graph.ainvoke({"message": "onsen in Gifu"}, config=_cfg("trip-cheap"))
+        await graph.ainvoke({"message": "onsen in Gifu"}, config=trip_cfg("trip-cheap"))
     mock.ainvoke.assert_awaited_once()
 
 
@@ -209,13 +173,13 @@ async def test_slots_isolated_per_session_id():
         SlotUpdate(nights=4),  # A turn 2
         SlotUpdate(regions=["Kyoto"]),  # B turn 1
     ]
-    with patch.object(slots_module, "_llm", _mock_llm(*updates)):
-        await graph.ainvoke({"message": "Gifu"}, config=_cfg("A"))
-        await graph.ainvoke({"message": "4 nights"}, config=_cfg("A"))
-        await graph.ainvoke({"message": "Kyoto"}, config=_cfg("B"))
+    with patch.object(slots_module, "_llm", trip_slots_llm(*updates)):
+        await graph.ainvoke({"message": "Gifu"}, config=trip_cfg("A"))
+        await graph.ainvoke({"message": "4 nights"}, config=trip_cfg("A"))
+        await graph.ainvoke({"message": "Kyoto"}, config=trip_cfg("B"))
 
-    a = graph.get_state(_cfg("A")).values
-    b = graph.get_state(_cfg("B")).values
+    a = graph.get_state(trip_cfg("A")).values
+    b = graph.get_state(trip_cfg("B")).values
     assert a["slots"]["regions"] == ["Gifu"] and a["slots"]["nights"] == 4
     assert a["turn_count"] == 2
     # B is independent: its own region, no leakage of A's nights, first turn only.
@@ -230,7 +194,7 @@ async def test_slots_isolated_per_session_id():
 @pytest.mark.asyncio
 async def test_extract_slots_merges_onto_current():
     current = TripSlots(regions=["Gifu"], nights=5)
-    with patch.object(slots_module, "_llm", _mock_llm(SlotUpdate(dates_or_season="autumn"))):
+    with patch.object(slots_module, "_llm", trip_slots_llm(SlotUpdate(dates_or_season="autumn"))):
         merged = await slots_module.extract_slots("in autumn", current)
     assert merged.regions == ["Gifu"]
     assert merged.nights == 5

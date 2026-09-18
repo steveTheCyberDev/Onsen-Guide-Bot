@@ -37,6 +37,7 @@ from agent.trip.analyze import (
 )
 from agent.trip.graph import build_trip_graph
 from agent.trip.slots import SlotUpdate
+from tests.conftest import trip_cfg, trip_onsen, trip_retrieval_by_region, trip_slots_llm
 
 
 # --- fixtures / helpers ------------------------------------------------------
@@ -55,39 +56,10 @@ def _onsen_result(name, **overrides):
     return OnsenResult(**base)
 
 
-def _mock_llm(result: TripGuideResult) -> MagicMock:
+def _mock_analyze_llm(result: TripGuideResult) -> MagicMock:
     llm = MagicMock()
     llm.ainvoke = AsyncMock(return_value=result)
     return llm
-
-
-def _cfg(session_id: str) -> dict:
-    return {"configurable": {"thread_id": session_id}}
-
-
-def _onsen_record(name: str, lat: float = 35.8, lng: float = 137.0, prefecture: str = "Gifu") -> dict:
-    return {
-        "name": name,
-        "location": f"City, {prefecture}",
-        "spring_type": "Sulfur Spring",
-        "spa_quality": f"{name} is a sulfur spring.",
-        "detail_url": f"https://example.com/{name.replace(' ', '-')}",
-        "lat": lat,
-        "lng": lng,
-    }
-
-
-def _mock_slots_llm(update: SlotUpdate) -> MagicMock:
-    llm = MagicMock()
-    llm.ainvoke = AsyncMock(return_value=update)
-    return llm
-
-
-def _retrieval_by_region(mapping: dict[str, list[dict]]) -> MagicMock:
-    def _fn(query, prefecture=None, n_results=20):
-        return list(mapping.get(prefecture, []))
-
-    return MagicMock(side_effect=_fn)
 
 
 # --- single-source grounding contract (anti-drift guard) ---------------------
@@ -128,7 +100,7 @@ async def test_pros_cons_merge_back_by_index():
         ],
         recommendation="This itinerary balances two sulfur springs at a relaxed pace.",
     )
-    with patch.object(analyze_module, "_llm", _mock_llm(guide)):
+    with patch.object(analyze_module, "_llm", _mock_analyze_llm(guide)):
         result, recommendation = await analyze_itinerary(
             {"regions": ["Gifu"], "nights": 2, "pace": "relaxed"}, onsens
         )
@@ -146,7 +118,7 @@ async def test_out_of_range_index_dropped_without_inventing_stop():
         analyses=[_OnsenAnalysis(index=7, pros=["ghost"], cons=[])],
         recommendation="A single relaxing stop.",
     )
-    with patch.object(analyze_module, "_llm", _mock_llm(guide)):
+    with patch.object(analyze_module, "_llm", _mock_analyze_llm(guide)):
         result, _ = await analyze_itinerary({"regions": ["Gifu"], "nights": 1}, onsens)
     assert len(result) == 1  # no stop invented
     assert result[0].pros == [] and result[0].cons == []
@@ -154,7 +126,7 @@ async def test_out_of_range_index_dropped_without_inventing_stop():
 
 @pytest.mark.asyncio
 async def test_no_stops_skips_llm_and_returns_none():
-    llm = _mock_llm(TripGuideResult(analyses=[], recommendation="unused"))
+    llm = _mock_analyze_llm(TripGuideResult(analyses=[], recommendation="unused"))
     with patch.object(analyze_module, "_llm", llm):
         result, recommendation = await analyze_itinerary({"regions": ["Gifu"]}, [])
     assert result == []
@@ -166,7 +138,7 @@ async def test_no_stops_skips_llm_and_returns_none():
 async def test_does_not_fabricate_when_llm_returns_no_analyses():
     onsens = [_onsen_result("Quiet Onsen")]
     guide = TripGuideResult(analyses=[], recommendation="Not much to differentiate.")
-    with patch.object(analyze_module, "_llm", _mock_llm(guide)):
+    with patch.object(analyze_module, "_llm", _mock_analyze_llm(guide)):
         result, recommendation = await analyze_itinerary({"regions": ["Gifu"]}, onsens)
     assert result[0].pros == [] and result[0].cons == []
     assert recommendation == "Not much to differentiate."
@@ -211,11 +183,11 @@ async def test_gate_off_is_clean_noop(monkeypatch):
     # pros/cons, and the analyze LLM is never called.
     monkeypatch.setattr(analyze_module.settings, "analyze_enabled", False)
     full = SlotUpdate(regions=["Gifu"], nights=2, dates_or_season="autumn")
-    retrieval = _retrieval_by_region({"Gifu": [_onsen_record("Gero Onsen")]})
-    analyze_llm = _mock_llm(
+    retrieval = trip_retrieval_by_region({"Gifu": [trip_onsen("Gero Onsen")]})
+    analyze_llm = _mock_analyze_llm(
         TripGuideResult(analyses=[], recommendation="should not be used")
     )
-    with patch.object(slots_module, "_llm", _mock_slots_llm(full)), patch.object(
+    with patch.object(slots_module, "_llm", trip_slots_llm(full)), patch.object(
         itinerary_module, "query_onsen_structured", retrieval
     ), patch.object(analyze_module, "_llm", analyze_llm):
         resp = await plan_trip("2 nights in Gifu this autumn", session_id="pc1-off")
@@ -229,8 +201,8 @@ async def test_gate_off_is_clean_noop(monkeypatch):
 async def test_gate_on_populates_recommendation_and_proscons(monkeypatch):
     monkeypatch.setattr(analyze_module.settings, "analyze_enabled", True)
     full = SlotUpdate(regions=["Gifu"], nights=2, dates_or_season="autumn", pace="relaxed")
-    retrieval = _retrieval_by_region(
-        {"Gifu": [_onsen_record("Gero Onsen"), _onsen_record("Hirayu Onsen", lat=35.85, lng=137.1)]}
+    retrieval = trip_retrieval_by_region(
+        {"Gifu": [trip_onsen("Gero Onsen"), trip_onsen("Hirayu Onsen", lat=35.85, lng=137.1)]}
     )
     guide = TripGuideResult(
         analyses=[
@@ -239,9 +211,9 @@ async def test_gate_on_populates_recommendation_and_proscons(monkeypatch):
         ],
         recommendation="Two relaxed sulfur-spring stops in Gifu suit your autumn trip.",
     )
-    with patch.object(slots_module, "_llm", _mock_slots_llm(full)), patch.object(
+    with patch.object(slots_module, "_llm", trip_slots_llm(full)), patch.object(
         itinerary_module, "query_onsen_structured", retrieval
-    ), patch.object(analyze_module, "_llm", _mock_llm(guide)):
+    ), patch.object(analyze_module, "_llm", _mock_analyze_llm(guide)):
         resp = await plan_trip("relaxed 2 nights in Gifu this autumn", session_id="pc1-on")
 
     assert resp.recommendation == "Two relaxed sulfur-spring stops in Gifu suit your autumn trip."
@@ -263,13 +235,13 @@ async def test_recommendation_stored_in_itinerary_state(monkeypatch):
         analyses=[_OnsenAnalysis(index=0, pros=["sulfur"], cons=[])],
         recommendation="A single relaxed sulfur-spring night in Gifu.",
     )
-    with patch.object(slots_module, "_llm", _mock_slots_llm(full)), patch.object(
+    with patch.object(slots_module, "_llm", trip_slots_llm(full)), patch.object(
         itinerary_module, "query_onsen_structured",
-        _retrieval_by_region({"Gifu": [_onsen_record("Gero Onsen")]}),
-    ), patch.object(analyze_module, "_llm", _mock_llm(guide)):
-        await graph.ainvoke({"message": "1 night in Gifu this autumn"}, config=_cfg(session_id))
+        trip_retrieval_by_region({"Gifu": [trip_onsen("Gero Onsen")]}),
+    ), patch.object(analyze_module, "_llm", _mock_analyze_llm(guide)):
+        await graph.ainvoke({"message": "1 night in Gifu this autumn"}, config=trip_cfg(session_id))
 
-    snap = graph.get_state(_cfg(session_id)).values
+    snap = graph.get_state(trip_cfg(session_id)).values
     assert snap.get("recommendation") == "A single relaxed sulfur-spring night in Gifu."
     # pros/cons attached onto the checkpointer-safe selected_onsens dict.
     stop = snap["itinerary"]["regions"][0]["onsens"][0]
@@ -284,7 +256,7 @@ async def test_gate_off_clears_prior_checkpointed_recommendation(monkeypatch):
     graph = build_trip_graph()
     session_id = "pc1-clear"
     full = SlotUpdate(regions=["Gifu"], nights=1, dates_or_season="autumn")
-    retrieval = _retrieval_by_region({"Gifu": [_onsen_record("Gero Onsen")]})
+    retrieval = trip_retrieval_by_region({"Gifu": [trip_onsen("Gero Onsen")]})
     guide = TripGuideResult(
         analyses=[_OnsenAnalysis(index=0, pros=["sulfur"], cons=[])],
         recommendation="A relaxed night in Gifu.",
@@ -292,29 +264,29 @@ async def test_gate_off_clears_prior_checkpointed_recommendation(monkeypatch):
 
     # Turn 1 — analyze enabled → recommendation set + checkpointed.
     monkeypatch.setattr(analyze_module.settings, "analyze_enabled", True)
-    with patch.object(slots_module, "_llm", _mock_slots_llm(full)), patch.object(
+    with patch.object(slots_module, "_llm", trip_slots_llm(full)), patch.object(
         itinerary_module, "query_onsen_structured", retrieval
-    ), patch.object(analyze_module, "_llm", _mock_llm(guide)):
-        await graph.ainvoke({"message": "1 night in Gifu this autumn"}, config=_cfg(session_id))
-    assert graph.get_state(_cfg(session_id)).values.get("recommendation") == "A relaxed night in Gifu."
+    ), patch.object(analyze_module, "_llm", _mock_analyze_llm(guide)):
+        await graph.ainvoke({"message": "1 night in Gifu this autumn"}, config=trip_cfg(session_id))
+    assert graph.get_state(trip_cfg(session_id)).values.get("recommendation") == "A relaxed night in Gifu."
 
     # Turn 2 — same session, analyze DISABLED → recommendation cleared to None.
     monkeypatch.setattr(analyze_module.settings, "analyze_enabled", False)
-    with patch.object(slots_module, "_llm", _mock_slots_llm(SlotUpdate())), patch.object(
+    with patch.object(slots_module, "_llm", trip_slots_llm(SlotUpdate())), patch.object(
         itinerary_module, "query_onsen_structured", retrieval
     ):
-        r2 = await graph.ainvoke({"message": "anything else?"}, config=_cfg(session_id))
+        r2 = await graph.ainvoke({"message": "anything else?"}, config=trip_cfg(session_id))
     assert r2.get("recommendation") is None
-    assert graph.get_state(_cfg(session_id)).values.get("recommendation") is None
+    assert graph.get_state(trip_cfg(session_id)).values.get("recommendation") is None
 
 
 @pytest.mark.asyncio
 async def test_elicit_turn_does_not_run_analyze(monkeypatch):
     # A missing required slot short-circuits at elicit — analyze is never reached.
     monkeypatch.setattr(analyze_module.settings, "analyze_enabled", True)
-    analyze_llm = _mock_llm(TripGuideResult(analyses=[], recommendation="unused"))
+    analyze_llm = _mock_analyze_llm(TripGuideResult(analyses=[], recommendation="unused"))
     with patch.object(
-        slots_module, "_llm", _mock_slots_llm(SlotUpdate(regions=["Gifu"]))
+        slots_module, "_llm", trip_slots_llm(SlotUpdate(regions=["Gifu"]))
     ), patch.object(analyze_module, "_llm", analyze_llm):
         resp = await plan_trip("onsen trip in Gifu", session_id="pc1-elicit")
 
@@ -335,23 +307,23 @@ async def test_conflict_prose_survives_and_composes_with_recommendation(monkeypa
         regions=["Gifu", "Nagano", "Shizuoka"], nights=3, dates_or_season="autumn", pace="relaxed"
     )
     records = {
-        "Gifu": [_onsen_record("Gero Onsen", 35.8, 137.0, "Gifu")],
-        "Nagano": [_onsen_record("Nozawa Onsen", 36.6, 138.2, "Nagano")],
-        "Shizuoka": [_onsen_record("Atami Onsen", 34.9, 138.4, "Shizuoka")],
+        "Gifu": [trip_onsen("Gero Onsen", "Gifu", 35.8, 137.0)],
+        "Nagano": [trip_onsen("Nozawa Onsen", "Nagano", 36.6, 138.2)],
+        "Shizuoka": [trip_onsen("Atami Onsen", "Shizuoka", 34.9, 138.4)],
     }
     guide = TripGuideResult(
         analyses=[_OnsenAnalysis(index=0, pros=["sulfur"], cons=[])],
         recommendation="Focusing on Gifu and Nagano keeps the relaxed pace realistic.",
     )
-    with patch.object(slots_module, "_llm", _mock_slots_llm(full)), patch.object(
-        itinerary_module, "query_onsen_structured", _retrieval_by_region(records)
-    ), patch.object(analyze_module, "_llm", _mock_llm(guide)):
+    with patch.object(slots_module, "_llm", trip_slots_llm(full)), patch.object(
+        itinerary_module, "query_onsen_structured", trip_retrieval_by_region(records)
+    ), patch.object(analyze_module, "_llm", _mock_analyze_llm(guide)):
         r = await graph.ainvoke(
             {"message": "relaxed 3-night trip across Gifu, Nagano and Shizuoka"},
-            config=_cfg(session_id),
+            config=trip_cfg(session_id),
         )
 
-    snap = graph.get_state(_cfg(session_id)).values
+    snap = graph.get_state(trip_cfg(session_id)).values
     # Re-plan still dropped the outlier (PR7 behaviour intact).
     dropped = {d["region"] for d in snap.get("dropped_regions", [])}
     assert dropped == {"Shizuoka"}

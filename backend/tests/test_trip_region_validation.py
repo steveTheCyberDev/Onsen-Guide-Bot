@@ -17,7 +17,7 @@ realistic set; tests here re-patch it explicitly so the valid/invalid split is
 visible at the call site and independent of that default.
 """
 
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 
@@ -33,36 +33,11 @@ from agent.trip.slots import (
     region_invalid_message,
     should_elicit,
 )
+from tests.conftest import trip_cfg, trip_onsen, trip_retrieval, trip_slots_llm
 
 # A fixed known set for these tests: Japanese prefectures we "ingested"; Texas /
 # California are deliberately absent so they read as invalid.
 KNOWN = frozenset({"Gifu", "Nagano", "Shizuoka", "Oita"})
-
-
-def _cfg(session_id: str) -> dict:
-    return {"configurable": {"thread_id": session_id}}
-
-
-def _mock_llm(*updates: SlotUpdate) -> MagicMock:
-    llm = MagicMock()
-    llm.ainvoke = AsyncMock(side_effect=list(updates))
-    return llm
-
-
-def _onsen(name: str) -> dict:
-    return {
-        "name": name,
-        "location": "Some City, Gifu",
-        "spring_type": "Sulfur Spring",
-        "spa_quality": f"{name} description.",
-        "detail_url": f"https://example.com/{name}",
-        "lat": 36.0,
-        "lng": 137.0,
-    }
-
-
-def _mock_retrieval(*records: dict) -> MagicMock:
-    return MagicMock(return_value=list(records))
 
 
 # --- pure helpers ------------------------------------------------------------
@@ -122,17 +97,17 @@ async def test_single_invalid_region_rejected_before_plan():
     # Everything filled but the region is California (invalid).
     update = SlotUpdate(regions=["California"], nights=3, dates_or_season="autumn")
 
-    with patch.object(slots_module, "_llm", _mock_llm(update)), patch.object(
+    with patch.object(slots_module, "_llm", trip_slots_llm(update)), patch.object(
         graph_module, "known_prefectures", return_value=KNOWN
     ):
         r = await graph.ainvoke(
             {"message": "3 night onsen trip in California this autumn"},
-            config=_cfg(session_id),
+            config=trip_cfg(session_id),
         )
 
     assert "California isn't somewhere I cover" in r["reply"]
     # Plan node NOT reached: no itinerary/candidates written.
-    snap = graph.get_state(_cfg(session_id)).values
+    snap = graph.get_state(trip_cfg(session_id)).values
     assert snap.get("itinerary") is None
     assert not snap.get("candidates")
 
@@ -142,18 +117,18 @@ async def test_mixed_valid_and_invalid_does_not_build_partial_itinerary():
     graph = build_trip_graph()
     session_id = "region-mixed"
     update = SlotUpdate(regions=["Gifu", "Texas"], nights=4, dates_or_season="autumn")
-    retrieval = _mock_retrieval(_onsen("Gero Onsen"))
+    retrieval = trip_retrieval(trip_onsen("Gero Onsen"))
 
-    with patch.object(slots_module, "_llm", _mock_llm(update)), patch.object(
+    with patch.object(slots_module, "_llm", trip_slots_llm(update)), patch.object(
         graph_module, "known_prefectures", return_value=KNOWN
     ), patch.object(itinerary_module, "query_onsen_structured", retrieval):
         r = await graph.ainvoke(
-            {"message": "4 nights across Gifu and Texas"}, config=_cfg(session_id)
+            {"message": "4 nights across Gifu and Texas"}, config=trip_cfg(session_id)
         )
 
     # Names the invalid region; does NOT build the Gifu part.
     assert "Texas isn't somewhere I cover" in r["reply"]
-    snap = graph.get_state(_cfg(session_id)).values
+    snap = graph.get_state(trip_cfg(session_id)).values
     assert snap.get("itinerary") is None
     assert not snap.get("candidates")
     # Critically: retrieval was never invoked — no partial (Gifu-only) itinerary.
@@ -165,17 +140,17 @@ async def test_all_valid_single_region_reaches_plan():
     graph = build_trip_graph()
     session_id = "region-valid-single"
     update = SlotUpdate(regions=["Gifu"], nights=3, dates_or_season="autumn")
-    retrieval = _mock_retrieval(_onsen("Gero Onsen"))
+    retrieval = trip_retrieval(trip_onsen("Gero Onsen"))
 
-    with patch.object(slots_module, "_llm", _mock_llm(update)), patch.object(
+    with patch.object(slots_module, "_llm", trip_slots_llm(update)), patch.object(
         graph_module, "known_prefectures", return_value=KNOWN
     ), patch.object(itinerary_module, "query_onsen_structured", retrieval):
         r = await graph.ainvoke(
-            {"message": "3 nights in Gifu this autumn"}, config=_cfg(session_id)
+            {"message": "3 nights in Gifu this autumn"}, config=trip_cfg(session_id)
         )
 
     assert "itinerary" in r["reply"].lower()
-    snap = graph.get_state(_cfg(session_id)).values
+    snap = graph.get_state(trip_cfg(session_id)).values
     assert snap.get("itinerary") is not None
     retrieval.assert_called_once()
 
@@ -185,18 +160,18 @@ async def test_all_valid_multi_region_reaches_plan_no_regression():
     graph = build_trip_graph()
     session_id = "region-valid-multi"
     update = SlotUpdate(regions=["Gifu", "Nagano"], nights=4, dates_or_season="autumn")
-    retrieval = _mock_retrieval(_onsen("Gero Onsen"))
+    retrieval = trip_retrieval(trip_onsen("Gero Onsen"))
 
-    with patch.object(slots_module, "_llm", _mock_llm(update)), patch.object(
+    with patch.object(slots_module, "_llm", trip_slots_llm(update)), patch.object(
         graph_module, "known_prefectures", return_value=KNOWN
     ), patch.object(itinerary_module, "query_onsen_structured", retrieval):
         r = await graph.ainvoke(
             {"message": "4 nights across Gifu and Nagano this autumn"},
-            config=_cfg(session_id),
+            config=trip_cfg(session_id),
         )
 
     assert "itinerary" in r["reply"].lower()
-    assert graph.get_state(_cfg(session_id)).values.get("itinerary") is not None
+    assert graph.get_state(trip_cfg(session_id)).values.get("itinerary") is not None
 
 
 @pytest.mark.asyncio
@@ -204,10 +179,10 @@ async def test_missing_regions_entirely_gives_original_area_ask():
     graph = build_trip_graph()
     session_id = "region-missing"
     # Nothing extracted → regions missing entirely (not invalid).
-    with patch.object(slots_module, "_llm", _mock_llm(SlotUpdate())), patch.object(
+    with patch.object(slots_module, "_llm", trip_slots_llm(SlotUpdate())), patch.object(
         graph_module, "known_prefectures", return_value=KNOWN
     ):
-        r = await graph.ainvoke({"message": "I want an onsen trip"}, config=_cfg(session_id))
+        r = await graph.ainvoke({"message": "I want an onsen trip"}, config=trip_cfg(session_id))
 
     assert "area" in r["reply"].lower()
     assert "somewhere I cover" not in r["reply"]  # NOT the invalid-region message
@@ -224,21 +199,21 @@ async def test_correction_terminates_invalid_then_valid_reaches_plan():
     # Turn 2: user corrects to Gifu — the extraction returns the FULL intended list
     # (["Gifu"]), which merge_slots REPLACES over ["Texas"], dropping the stale one.
     turn2 = SlotUpdate(regions=["Gifu"])
-    retrieval = _mock_retrieval(_onsen("Gero Onsen"))
+    retrieval = trip_retrieval(trip_onsen("Gero Onsen"))
 
-    with patch.object(slots_module, "_llm", _mock_llm(turn1, turn2)), patch.object(
+    with patch.object(slots_module, "_llm", trip_slots_llm(turn1, turn2)), patch.object(
         graph_module, "known_prefectures", return_value=KNOWN
     ), patch.object(itinerary_module, "query_onsen_structured", retrieval):
         r1 = await graph.ainvoke(
-            {"message": "4 nights in Texas this autumn"}, config=_cfg(session_id)
+            {"message": "4 nights in Texas this autumn"}, config=trip_cfg(session_id)
         )
-        r2 = await graph.ainvoke({"message": "make it Gifu instead"}, config=_cfg(session_id))
+        r2 = await graph.ainvoke({"message": "make it Gifu instead"}, config=trip_cfg(session_id))
 
     # Turn 1 rejected; no itinerary.
     assert "Texas isn't somewhere I cover" in r1["reply"]
     # Turn 2 proceeds to plan; nights/dates persisted, Texas replaced by Gifu.
     assert "itinerary" in r2["reply"].lower()
-    snap = graph.get_state(_cfg(session_id)).values
+    snap = graph.get_state(trip_cfg(session_id)).values
     assert snap["slots"]["regions"] == ["Gifu"]  # stale Texas gone
     assert snap["slots"]["nights"] == 4 and snap["slots"]["dates_or_season"] == "autumn"
     assert snap.get("itinerary") is not None

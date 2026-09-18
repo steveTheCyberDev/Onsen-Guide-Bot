@@ -21,7 +21,7 @@ so a green here means the plan node genuinely emitted the honest explanatory pro
 not that a keyword was stuffed.
 """
 
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -30,6 +30,7 @@ from agent.trip import slots as slots_module
 from agent.trip.graph import build_trip_graph
 from agent.trip.slots import SlotUpdate
 from scripts import eval_flow
+from tests.conftest import trip_onsen, trip_slots_llm
 
 # Region coord fixtures (rough prefecture centroids) — the deterministic haversine
 # rules run on these, so the drop/infeasible verdicts are reproducible.
@@ -42,17 +43,15 @@ _COORDS = {
 }
 
 
-def _onsen(name: str, prefecture: str) -> dict:
+def _at_centroid(name: str, prefecture: str) -> dict:
+    """``trip_onsen`` pinned to the region's REAL centroid.
+
+    Required here: these examples exist to exercise the haversine spread /
+    infeasibility rules, so the shared helper's generic default coordinates would
+    collapse every region onto one point and silently stop the rules from firing.
+    """
     lat, lng = _COORDS[prefecture]
-    return {
-        "name": name,
-        "location": f"City, {prefecture}",
-        "spring_type": "Sulfur Spring",
-        "spa_quality": f"{name} is a sulfur spring.",
-        "detail_url": f"https://example.com/{name.replace(' ', '-')}",
-        "lat": lat,
-        "lng": lng,
-    }
+    return trip_onsen(name, prefecture, lat, lng)
 
 
 def _retrieval() -> MagicMock:
@@ -61,25 +60,19 @@ def _retrieval() -> MagicMock:
     def _fn(query, prefecture=None, n_results=20):
         if prefecture in _COORDS:
             return [
-                _onsen(f"{prefecture} Onsen A", prefecture),
-                _onsen(f"{prefecture} Onsen B", prefecture),
+                _at_centroid(f"{prefecture} Onsen A", prefecture),
+                _at_centroid(f"{prefecture} Onsen B", prefecture),
             ]
         return []
 
     return MagicMock(side_effect=_fn)
 
 
-def _mock_llm(update: SlotUpdate) -> MagicMock:
-    llm = MagicMock()
-    llm.ainvoke = AsyncMock(return_value=update)
-    return llm
-
-
 async def _run(update: SlotUpdate, message: str) -> dict:
     """Drive a fresh graph for one complete-in-one-message trip; return AgentResponse-ish."""
     graph = build_trip_graph()
     retrieval = _retrieval()
-    with patch.object(slots_module, "_llm", _mock_llm(update)), patch.object(
+    with patch.object(slots_module, "_llm", trip_slots_llm(update)), patch.object(
         itinerary_module, "query_onsen_structured", retrieval
     ), patch.object(itinerary_module, "search_hotels", return_value=[]):
         r = await graph.ainvoke({"message": message}, config={"configurable": {"thread_id": message}})

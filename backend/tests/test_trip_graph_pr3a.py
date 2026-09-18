@@ -20,26 +20,14 @@ would carry state between tests).
 """
 
 import uuid
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 
 from agent.trip import slots as slots_module
 from agent.trip.agent import plan_trip
 from agent.trip.graph import _build_checkpointer, build_trip_graph
-from agent.trip.slots import SlotUpdate
-
-
-def _cfg(session_id: str) -> dict:
-    return {"configurable": {"thread_id": session_id}}
-
-
-def _mock_llm() -> MagicMock:
-    # Every turn extracts an EMPTY delta — these tests care about turn_count
-    # accumulation, not slot content, so any number of turns is covered.
-    llm = MagicMock()
-    llm.ainvoke = AsyncMock(return_value=SlotUpdate())
-    return llm
+from tests.conftest import trip_cfg, trip_slots_llm
 
 
 # --- the core Done condition: two-turn state persistence --------------------
@@ -93,7 +81,7 @@ def test_postgres_backend_is_guarded_not_implemented(monkeypatch):
 async def test_plan_trip_returns_additive_only_agentresponse_contract():
     # The reply is now the elicit/plan output (not a canned stub), but the additive
     # contract holds: empty onsens/hotels, recommendation None.
-    with patch.object(slots_module, "_llm", _mock_llm()):
+    with patch.object(slots_module, "_llm", trip_slots_llm()):
         resp = await plan_trip("plan a 5-night onsen trip", session_id=str(uuid.uuid4()))
     assert isinstance(resp.reply, str) and resp.reply
     assert resp.onsens == []
@@ -106,11 +94,11 @@ async def test_plan_trip_flows_through_checkpointed_graph_across_turns():
     # End-to-end via plan_trip (not the raw graph): two turns on one session_id must
     # accumulate in the module-level singleton's MemorySaver.
     session_id = str(uuid.uuid4())
-    with patch.object(slots_module, "_llm", _mock_llm()):
+    with patch.object(slots_module, "_llm", trip_slots_llm()):
         await plan_trip("turn one", session_id)
         await plan_trip("turn two", session_id)
 
     from agent.trip.graph import trip_graph
 
-    snapshot = trip_graph.get_state(_cfg(session_id))
+    snapshot = trip_graph.get_state(trip_cfg(session_id))
     assert snapshot.values["turn_count"] == 2
