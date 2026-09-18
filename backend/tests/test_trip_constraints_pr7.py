@@ -6,7 +6,7 @@ no LLM / Chroma / Google) plus the end-to-end graph re-plan behaviour driven by 
 centroids from ``test_routing_service`` so the numbers are consistent.
 """
 
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 
@@ -19,6 +19,7 @@ from agent.trip.constraints import (
 )
 from agent.trip.graph import build_trip_graph
 from agent.trip.slots import SlotUpdate
+from tests.conftest import trip_cfg, trip_onsen, trip_retrieval_by_region, trip_slots_llm
 
 GIFU = [35.8, 137.0]
 NAGANO = [36.6, 138.2]
@@ -160,42 +161,13 @@ def test_infeasibility_prose_flags_flight_and_reshape():
 # --- end-to-end graph re-plan ------------------------------------------------
 
 
-def _cfg(session_id: str) -> dict:
-    return {"configurable": {"thread_id": session_id}}
-
-
-def _onsen(name: str, lat: float, lng: float, prefecture: str) -> dict:
-    return {
-        "name": name,
-        "location": f"City, {prefecture}",
-        "spring_type": "Sulfur Spring",
-        "spa_quality": f"{name} is a sulfur spring.",
-        "detail_url": f"https://example.com/{name.replace(' ', '-')}",
-        "lat": lat,
-        "lng": lng,
-    }
-
-
 def _region_records() -> dict[str, list[dict]]:
     """Region → a couple of coord-bearing onsen at that region's centroid."""
     return {
-        "Gifu": [_onsen("Gero Onsen", 35.8, 137.0, "Gifu"), _onsen("Hirayu Onsen", 35.85, 137.1, "Gifu")],
-        "Nagano": [_onsen("Nozawa Onsen", 36.6, 138.2, "Nagano")],
-        "Shizuoka": [_onsen("Atami Onsen", 34.9, 138.4, "Shizuoka")],
+        "Gifu": [trip_onsen("Gero Onsen", "Gifu", 35.8, 137.0), trip_onsen("Hirayu Onsen", "Gifu", 35.85, 137.1)],
+        "Nagano": [trip_onsen("Nozawa Onsen", "Nagano", 36.6, 138.2)],
+        "Shizuoka": [trip_onsen("Atami Onsen", "Shizuoka", 34.9, 138.4)],
     }
-
-
-def _retrieval_by_region(mapping: dict[str, list[dict]]) -> MagicMock:
-    def _fn(query, prefecture=None, n_results=20):
-        return list(mapping.get(prefecture, []))
-
-    return MagicMock(side_effect=_fn)
-
-
-def _mock_llm(update: SlotUpdate) -> MagicMock:
-    llm = MagicMock()
-    llm.ainvoke = AsyncMock(return_value=update)
-    return llm
 
 
 @pytest.mark.asyncio
@@ -205,17 +177,17 @@ async def test_graph_replans_and_drops_outlier_for_over_constrained_trip():
     full = SlotUpdate(
         regions=["Gifu", "Nagano", "Shizuoka"], nights=3, dates_or_season="autumn", pace="relaxed"
     )
-    retrieval = _retrieval_by_region(_region_records())
+    retrieval = trip_retrieval_by_region(_region_records())
 
-    with patch.object(slots_module, "_llm", _mock_llm(full)), patch.object(
+    with patch.object(slots_module, "_llm", trip_slots_llm(full)), patch.object(
         itinerary_module, "query_onsen_structured", retrieval
     ), patch.object(itinerary_module, "search_hotels", return_value=[]):
         r = await graph.ainvoke(
             {"message": "relaxed 3-night trip across Gifu, Nagano and Shizuoka"},
-            config=_cfg(session_id),
+            config=trip_cfg(session_id),
         )
 
-    snap = graph.get_state(_cfg(session_id)).values
+    snap = graph.get_state(trip_cfg(session_id)).values
     # The outlier (Shizuoka) was dropped and recorded with a reason.
     dropped = {d["region"] for d in snap.get("dropped_regions", [])}
     assert dropped == {"Shizuoka"}
@@ -241,20 +213,20 @@ async def test_graph_flags_infeasible_trip_without_replanning():
         regions=["Okinawa", "Gifu"], nights=4, dates_or_season="spring", pace="packed"
     )
     records = {
-        "Okinawa": [_onsen("Yamada Onsen", 26.2, 127.7, "Okinawa")],
-        "Gifu": [_onsen("Gero Onsen", 35.8, 137.0, "Gifu")],
+        "Okinawa": [trip_onsen("Yamada Onsen", "Okinawa", 26.2, 127.7)],
+        "Gifu": [trip_onsen("Gero Onsen", "Gifu", 35.8, 137.0)],
     }
-    retrieval = _retrieval_by_region(records)
+    retrieval = trip_retrieval_by_region(records)
 
-    with patch.object(slots_module, "_llm", _mock_llm(full)), patch.object(
+    with patch.object(slots_module, "_llm", trip_slots_llm(full)), patch.object(
         itinerary_module, "query_onsen_structured", retrieval
     ), patch.object(itinerary_module, "search_hotels", return_value=[]):
         r = await graph.ainvoke(
             {"message": "packed 4-night trip: 2 nights Okinawa, 2 nights Gifu"},
-            config=_cfg(session_id),
+            config=trip_cfg(session_id),
         )
 
-    snap = graph.get_state(_cfg(session_id)).values
+    snap = graph.get_state(trip_cfg(session_id)).values
     # No region dropped (infeasibility isn't fixed by dropping); flag recorded.
     assert not snap.get("dropped_regions")
     assert snap.get("replan_count", 0) == 0
@@ -275,17 +247,17 @@ async def test_graph_two_region_trip_is_unchanged_no_conflict_prose():
     full = SlotUpdate(
         regions=["Gifu", "Nagano"], nights=4, dates_or_season="autumn", pace="relaxed"
     )
-    retrieval = _retrieval_by_region(_region_records())
+    retrieval = trip_retrieval_by_region(_region_records())
 
-    with patch.object(slots_module, "_llm", _mock_llm(full)), patch.object(
+    with patch.object(slots_module, "_llm", trip_slots_llm(full)), patch.object(
         itinerary_module, "query_onsen_structured", retrieval
     ), patch.object(itinerary_module, "search_hotels", return_value=[]):
         r = await graph.ainvoke(
             {"message": "relaxed 4-night trip across Gifu and Nagano"},
-            config=_cfg(session_id),
+            config=trip_cfg(session_id),
         )
 
-    snap = graph.get_state(_cfg(session_id)).values
+    snap = graph.get_state(trip_cfg(session_id)).values
     assert not snap.get("dropped_regions")
     assert snap.get("infeasible") is None
     # Plain itinerary reply — no conflict prefix.

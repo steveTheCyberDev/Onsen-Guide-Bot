@@ -1,11 +1,18 @@
-"""Shared pytest fixtures for the Onsen Guide Bot backend test suite.
+"""Shared pytest fixtures + helpers for the Onsen Guide Bot backend test suite.
 
 pytest is configured (see pytest.ini) to run from the `backend/` directory, so
 all imports are relative to that root, e.g. `from services.chat...`.
+
+Besides the autouse fixtures, this module exports the shared TRIP-PLANNER test
+helpers (`trip_cfg`, `trip_onsen`, `trip_slots_llm`, `trip_retrieval`,
+`trip_retrieval_by_region`). They are plain functions, not fixtures, because
+several trip tests need them at module import time; import them explicitly:
+
+    from tests.conftest import trip_cfg, trip_onsen, trip_slots_llm
 """
 
 import os
-from unittest.mock import patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -111,3 +118,85 @@ def unauth_client():
 
     with TestClient(app) as test_client:
         yield test_client
+
+
+# ---------------------------------------------------------------------------
+# Shared trip-planner test helpers
+#
+# Previously hand-rolled in each of the nine tests/test_trip_*.py files, with the
+# `_onsen` signature drifting four different ways. Consolidated here so a change
+# to the record shape is one edit, not nine.
+# ---------------------------------------------------------------------------
+
+
+def trip_cfg(session_id: str) -> dict:
+    """LangGraph config addressing one checkpointed conversation thread."""
+    return {"configurable": {"thread_id": session_id}}
+
+
+def trip_onsen(
+    name: str,
+    prefecture: str = "Gifu",
+    lat: float = 36.0,
+    lng: float = 137.0,
+) -> dict:
+    """A ``query_onsen_structured``-shaped record, as the plan node consumes it.
+
+    `lat`/`lng` default to a generic in-Japan point; tests whose assertions depend
+    on real geometry (the haversine spread / infeasibility rules) MUST pass the
+    region's actual centroid explicitly rather than relying on the default.
+
+    Note `location` is carried through the pipeline as an opaque string — nothing
+    parses it — so its exact format is not load-bearing.
+    """
+    return {
+        "name": name,
+        "location": f"City, {prefecture}",
+        "spring_type": "Sulfur Spring",
+        "spa_quality": f"{name} is a relaxing sulfur spring.",
+        "detail_url": f"https://example.com/{name.replace(' ', '-')}",
+        "lat": lat,
+        "lng": lng,
+    }
+
+
+def trip_slots_llm(*updates) -> MagicMock:
+    """Stand-in for the module-level ``agent.trip.slots._llm`` extraction LLM.
+
+    ``extract_slots`` awaits ``_llm.ainvoke`` exactly once per turn. Pass one
+    ``SlotUpdate`` per turn to script a multi-turn conversation; the LAST update
+    repeats if the graph runs more turns than were scripted, which is what
+    single-update callers ("this same delta every turn") rely on. With no
+    arguments every turn yields an empty delta — for tests that only care about
+    turn_count accumulation, not slot content.
+    """
+    from agent.trip.slots import SlotUpdate
+
+    script = list(updates) or [SlotUpdate()]
+
+    def _next(*_args, **_kwargs):
+        return script.pop(0) if len(script) > 1 else script[0]
+
+    llm = MagicMock()
+    llm.ainvoke = AsyncMock(side_effect=_next)
+    return llm
+
+
+def trip_retrieval(*records: dict) -> MagicMock:
+    """Mock ``query_onsen_structured`` returning the SAME records for every region."""
+    return MagicMock(return_value=list(records))
+
+
+def trip_retrieval_by_region(mapping: dict[str, list[dict]]) -> MagicMock:
+    """Mock ``query_onsen_structured`` keyed by the ``prefecture`` kwarg.
+
+    The plan node calls the service once per region with ``prefecture=region``;
+    this returns that region's records, or ``[]`` for a region absent from
+    ``mapping`` (the no-data case). Records are copied per call so a test that
+    mutates a returned record cannot leak into a later call.
+    """
+
+    def _fn(query, prefecture=None, n_results=20):
+        return [dict(r) for r in mapping.get(prefecture, [])]
+
+    return MagicMock(side_effect=_fn)

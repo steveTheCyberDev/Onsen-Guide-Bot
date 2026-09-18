@@ -1,15 +1,21 @@
-"""Unit tests for the V2.5 router mode classification (agent.workflow.intent).
+"""Unit tests for agent.workflow.intent — the router (V2.5 modes + message shape).
 
 `parse_intent` returns an `Intent` whose `mode` field routes the request
-(search | recommend | ask). The structured-output LLM is mocked at the module
+(search | recommend | ask | trip). The structured-output LLM is mocked at the module
 namespace so no real OpenAI call happens; we assert that the mode the LLM
-produces (and the other routing fields) flow through unchanged, and that the
-schema defaults are correct.
+produces (and the other routing fields) flow through unchanged, that the
+schema defaults are correct, and that the message list handed to the LLM has the
+right shape/order — not the system-prompt wording.
+
+(Absorbed the former ``test_intent.py``: its pass-through and model-default tests
+were supersets-of/superseded-by the ones here, so only the message-ordering test
+survived the merge.)
 """
 
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
 from agent.workflow import intent as intent_module
 from agent.workflow.intent import Intent, parse_intent
@@ -95,3 +101,33 @@ def test_intent_accepts_trip_mode():
     intent = Intent(mode="trip", query="3-day onsen trip in Gifu and Nagano")
     # Assert
     assert intent.mode == "trip"
+
+
+# --- message list handed to the LLM (shape + order) --------------------------
+
+
+@pytest.mark.asyncio
+async def test_parse_intent_passes_history_and_human_message_in_order():
+    # Arrange — non-empty history must be threaded through, framed by a leading
+    # SystemMessage and a trailing HumanMessage carrying the new user message.
+    history = [
+        HumanMessage(content="any onsen in Hakone?"),
+        AIMessage(content="Here are a few options in Hakone."),
+    ]
+    canned = Intent(prefecture="Kanagawa", query="quiet onsen", wants_hotels=False)
+    mock_llm = _mock_llm(canned)
+    with patch.object(intent_module, "_llm", mock_llm):
+        # Act
+        await parse_intent("somewhere quieter", history)
+    # Assert — inspect the message list handed to the LLM.
+    mock_llm.ainvoke.assert_awaited_once()
+    sent_messages = mock_llm.ainvoke.await_args.args[0]
+
+    # A SystemMessage is present, first.
+    assert isinstance(sent_messages[0], SystemMessage)
+    # Ordering: system, then history (verbatim), then the new human message.
+    assert sent_messages[1:3] == history
+    assert isinstance(sent_messages[-1], HumanMessage)
+    assert sent_messages[-1].content == "somewhere quieter"
+    # Exactly: 1 system + len(history) + 1 human.
+    assert len(sent_messages) == 1 + len(history) + 1

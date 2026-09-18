@@ -24,7 +24,7 @@ haversine verdicts are real but no Chroma/Rakuten/OpenAI call is made. A FRESH g
 is built per test so its MemorySaver starts empty.
 """
 
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 
@@ -32,47 +32,17 @@ from agent.trip import itinerary as itinerary_module
 from agent.trip import slots as slots_module
 from agent.trip.graph import build_trip_graph
 from agent.trip.slots import SlotUpdate, TripSlots, apply_region_op, merge_slots
-
-
-def _cfg(session_id: str) -> dict:
-    return {"configurable": {"thread_id": session_id}}
-
-
-def _onsen(name: str, lat: float, lng: float, region: str) -> dict:
-    """A coord-bearing query_onsen_structured-shaped record for the plan node."""
-    return {
-        "name": name,
-        "location": f"{region}, Japan",
-        "spring_type": "Sulfur Spring",
-        "spa_quality": "A relaxing sulfur spring.",
-        "detail_url": f"https://example.com/{name}",
-        "lat": lat,
-        "lng": lng,
-    }
+from tests.conftest import trip_cfg, trip_onsen, trip_retrieval_by_region, trip_slots_llm
 
 
 # Real-ish centroids so the haversine rules fire exactly as they did in prod:
 # Nagano↔Hokkaido is ~800 km (over trip_infeasible_leg_km=500), Nagano↔Gifu is not.
 _REGION_RECORDS: dict[str, list[dict]] = {
-    "Nagano": [_onsen("Nozawa Onsen", 36.6, 138.2, "Nagano")],
-    "Gifu": [_onsen("Gero Onsen", 35.8, 137.0, "Gifu")],
-    "Shizuoka": [_onsen("Atami Onsen", 34.9, 138.4, "Shizuoka")],
-    "Hokkaido": [_onsen("Noboribetsu Onsen", 42.5, 141.1, "Hokkaido")],
+    "Nagano": [trip_onsen("Nozawa Onsen", "Nagano", 36.6, 138.2)],
+    "Gifu": [trip_onsen("Gero Onsen", "Gifu", 35.8, 137.0)],
+    "Shizuoka": [trip_onsen("Atami Onsen", "Shizuoka", 34.9, 138.4)],
+    "Hokkaido": [trip_onsen("Noboribetsu Onsen", "Hokkaido", 42.5, 141.1)],
 }
-
-
-def _retrieval_by_region() -> MagicMock:
-    def _fn(query, prefecture=None, n_results=20):
-        return [dict(r) for r in _REGION_RECORDS.get(prefecture, [])]
-
-    return MagicMock(side_effect=_fn)
-
-
-def _mock_llm(*updates: SlotUpdate) -> MagicMock:
-    """One scripted ``SlotUpdate`` per turn — ``extract_slots`` awaits ainvoke once."""
-    llm = MagicMock()
-    llm.ainvoke = AsyncMock(side_effect=list(updates))
-    return llm
 
 
 def _planned_regions(snapshot: dict) -> set[str]:
@@ -153,19 +123,19 @@ async def test_narrowing_follow_up_replans_to_a_clean_single_region_itinerary():
         # 3. "I mean Hokkaido only, drop Nagano and Gifu" → REPLACE.
         SlotUpdate(regions=["Hokkaido"], regions_op="replace"),
     ]
-    retrieval = _retrieval_by_region()
+    retrieval = trip_retrieval_by_region(_REGION_RECORDS)
 
-    with patch.object(slots_module, "_llm", _mock_llm(*turns)), patch.object(
+    with patch.object(slots_module, "_llm", trip_slots_llm(*turns)), patch.object(
         itinerary_module, "query_onsen_structured", retrieval
     ), patch.object(itinerary_module, "search_hotels", return_value=[]):
         r1 = await graph.ainvoke(
-            {"message": "3 nights in Nagano and Gifu this autumn"}, config=_cfg(session_id)
+            {"message": "3 nights in Nagano and Gifu this autumn"}, config=trip_cfg(session_id)
         )
-        r2 = await graph.ainvoke({"message": "what about Hokkaido?"}, config=_cfg(session_id))
-        snap2 = graph.get_state(_cfg(session_id)).values
+        r2 = await graph.ainvoke({"message": "what about Hokkaido?"}, config=trip_cfg(session_id))
+        snap2 = graph.get_state(trip_cfg(session_id)).values
         r3 = await graph.ainvoke(
             {"message": "I mean search Hokkaido only, drop Nagano and Gifu"},
-            config=_cfg(session_id),
+            config=trip_cfg(session_id),
         )
 
     # Turn 1 — a plain two-region itinerary, no conflict prose.
@@ -179,7 +149,7 @@ async def test_narrowing_follow_up_replans_to_a_clean_single_region_itinerary():
     assert "isn't feasible" in r2["reply"].lower()
 
     # Turn 3 — THE REGRESSION. The region list actually narrows...
-    snap3 = graph.get_state(_cfg(session_id)).values
+    snap3 = graph.get_state(trip_cfg(session_id)).values
     assert snap3["slots"]["regions"] == ["Hokkaido"]
     # ...the stale re-plan scratch state is cleared, so Hokkaido is no longer
     # filtered out of the plan and the re-plan budget is fresh...
@@ -216,17 +186,17 @@ async def test_remove_follow_up_drops_only_the_named_region():
         ),
         SlotUpdate(regions=["Shizuoka"], regions_op="remove"),
     ]
-    retrieval = _retrieval_by_region()
+    retrieval = trip_retrieval_by_region(_REGION_RECORDS)
 
-    with patch.object(slots_module, "_llm", _mock_llm(*turns)), patch.object(
+    with patch.object(slots_module, "_llm", trip_slots_llm(*turns)), patch.object(
         itinerary_module, "query_onsen_structured", retrieval
     ), patch.object(itinerary_module, "search_hotels", return_value=[]):
         await graph.ainvoke(
-            {"message": "3 nights across Gifu, Nagano and Shizuoka"}, config=_cfg(session_id)
+            {"message": "3 nights across Gifu, Nagano and Shizuoka"}, config=trip_cfg(session_id)
         )
-        r2 = await graph.ainvoke({"message": "drop Shizuoka"}, config=_cfg(session_id))
+        r2 = await graph.ainvoke({"message": "drop Shizuoka"}, config=trip_cfg(session_id))
 
-    snap = graph.get_state(_cfg(session_id)).values
+    snap = graph.get_state(trip_cfg(session_id)).values
     assert snap["slots"]["regions"] == ["Gifu", "Nagano"]
     # Two close regions over 3 nights is no longer over-constrained → clean plan.
     assert snap["dropped_regions"] == []
@@ -243,15 +213,15 @@ async def test_narrowing_to_nothing_re_elicits_for_an_area():
         SlotUpdate(regions=["Gifu"], nights=2, dates_or_season="autumn"),
         SlotUpdate(regions=["Gifu"], regions_op="remove"),
     ]
-    retrieval = _retrieval_by_region()
+    retrieval = trip_retrieval_by_region(_REGION_RECORDS)
 
-    with patch.object(slots_module, "_llm", _mock_llm(*turns)), patch.object(
+    with patch.object(slots_module, "_llm", trip_slots_llm(*turns)), patch.object(
         itinerary_module, "query_onsen_structured", retrieval
     ), patch.object(itinerary_module, "search_hotels", return_value=[]):
-        await graph.ainvoke({"message": "2 nights in Gifu in autumn"}, config=_cfg(session_id))
-        r2 = await graph.ainvoke({"message": "actually not Gifu"}, config=_cfg(session_id))
+        await graph.ainvoke({"message": "2 nights in Gifu in autumn"}, config=trip_cfg(session_id))
+        r2 = await graph.ainvoke({"message": "actually not Gifu"}, config=trip_cfg(session_id))
 
-    snap = graph.get_state(_cfg(session_id)).values
+    snap = graph.get_state(trip_cfg(session_id)).values
     assert snap["slots"]["regions"] == []
     # Back to the elicit branch, asking the highest-priority missing slot (regions).
     assert "area" in r2["reply"].lower() and r2["reply"].count("?") == 1
@@ -270,17 +240,17 @@ async def test_unchanged_regions_re_derive_the_same_conflict_verdict():
         # A follow-up that changes nothing about the regions.
         SlotUpdate(spring_or_scenery_prefs="sulfur springs"),
     ]
-    retrieval = _retrieval_by_region()
+    retrieval = trip_retrieval_by_region(_REGION_RECORDS)
 
-    with patch.object(slots_module, "_llm", _mock_llm(*turns)), patch.object(
+    with patch.object(slots_module, "_llm", trip_slots_llm(*turns)), patch.object(
         itinerary_module, "query_onsen_structured", retrieval
     ), patch.object(itinerary_module, "search_hotels", return_value=[]):
         r1 = await graph.ainvoke(
-            {"message": "3 nights across Gifu, Nagano and Hokkaido"}, config=_cfg(session_id)
+            {"message": "3 nights across Gifu, Nagano and Hokkaido"}, config=trip_cfg(session_id)
         )
-        r2 = await graph.ainvoke({"message": "I like sulfur springs"}, config=_cfg(session_id))
+        r2 = await graph.ainvoke({"message": "I like sulfur springs"}, config=trip_cfg(session_id))
 
-    snap = graph.get_state(_cfg(session_id)).values
+    snap = graph.get_state(trip_cfg(session_id)).values
     # Turn 2 re-derived the identical verdict from the unchanged regions — the drop
     # is recomputed, not remembered.
     assert {d["region"] for d in snap["dropped_regions"]} == {"Hokkaido"}

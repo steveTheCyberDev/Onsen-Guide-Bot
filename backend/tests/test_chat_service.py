@@ -36,63 +36,12 @@ def test_get_history_unknown_session_returns_empty_list():
     assert history == []
 
 
-def test_save_message_appends_human_then_ai():
-    # Arrange / Act
-    chat_service.save_message("s1", human="Where is Naha?", ai="In Okinawa.")
-    history = chat_service.get_history("s1")
-    # Assert
-    assert len(history) == 2
-
-
-def test_save_message_stores_human_message_first():
-    # Arrange / Act
-    chat_service.save_message("s1", human="Where is Naha?", ai="In Okinawa.")
-    first = chat_service.get_history("s1")[0]
-    # Assert
-    assert isinstance(first, HumanMessage)
-
-
-def test_save_message_stores_ai_message_second():
-    # Arrange / Act
-    chat_service.save_message("s1", human="Where is Naha?", ai="In Okinawa.")
-    second = chat_service.get_history("s1")[1]
-    # Assert
-    assert isinstance(second, AIMessage)
-
-
-def test_save_message_preserves_human_content():
-    # Arrange / Act
-    chat_service.save_message("s1", human="Where is Naha?", ai="In Okinawa.")
-    first = chat_service.get_history("s1")[0]
-    # Assert
-    assert first.content == "Where is Naha?"
-
-
-def test_save_message_preserves_ai_content():
-    # Arrange / Act
-    chat_service.save_message("s1", human="Where is Naha?", ai="In Okinawa.")
-    second = chat_service.get_history("s1")[1]
-    # Assert
-    assert second.content == "In Okinawa."
-
-
-def test_multiple_saves_accumulate_in_order():
-    # Arrange / Act
-    chat_service.save_message("s1", human="first", ai="reply-1")
-    chat_service.save_message("s1", human="second", ai="reply-2")
-    history = chat_service.get_history("s1")
-    # Assert
-    assert [m.content for m in history] == ["first", "reply-1", "second", "reply-2"]
-
-
-def test_sessions_are_isolated():
-    # Arrange
-    chat_service.save_message("session-a", human="hi a", ai="bye a")
-    chat_service.save_message("session-b", human="hi b", ai="bye b")
-    # Act
-    history_a = chat_service.get_history("session-a")
-    # Assert
-    assert [m.content for m in history_a] == ["hi a", "bye a"]
+# The single-turn happy-path assertions that used to sit here (message count,
+# human-first/ai-second ordering, per-role content fidelity, two-turn accumulation,
+# and two-session isolation) are each covered as a strict SUPERSET by the
+# edge-case block below: test_ordering_preserved_across_many_turns,
+# test_message_types_alternate_across_many_turns, test_content_stored_and_returned_verbatim
+# and test_isolation_holds_under_interleaved_multi_session_writes.
 
 
 def test_get_history_does_not_create_session():
@@ -113,20 +62,9 @@ def test_get_history_does_not_create_session():
     assert message_count == 0
 
 
-def test_history_survives_engine_restart():
-    """History is durable: a fresh engine (simulated restart) reads back rows.
-
-    Saves a turn, disposes/rebuilds the engine pointing at the SAME SQLite file,
-    then asserts the messages replay — proving persistence, not in-memory state.
-    """
-    # Arrange
-    chat_service.save_message("persist", human="still here?", ai="yes, on disk")
-    # Act — simulate a process restart: drop the engine, next call rebuilds it
-    # against the same session_db_url file.
-    chat_service._reset_engine_for_tests()
-    history = chat_service.get_history("persist")
-    # Assert
-    assert [m.content for m in history] == ["still here?", "yes, on disk"]
+# Single-session restart durability is covered as a strict superset by
+# test_multi_session_history_survives_engine_restart below (same _reset_engine_for_tests
+# round-trip, but across several sessions at once).
 
 
 # ---------------------------------------------------------------------------

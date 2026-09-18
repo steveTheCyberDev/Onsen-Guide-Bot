@@ -12,7 +12,7 @@ All external calls are ALWAYS mocked so the suite is deterministic and free:
     fixture stubs it to [] by default; these tests override it explicitly).
 """
 
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -29,22 +29,7 @@ from agent.trip.itinerary import (
     hotel_results_from_itinerary,
 )
 from agent.trip.slots import SlotUpdate
-
-
-def _cfg(session_id: str) -> dict:
-    return {"configurable": {"thread_id": session_id}}
-
-
-def _onsen(name: str, lat: float = 36.0, lng: float = 137.0) -> dict:
-    return {
-        "name": name,
-        "location": "Some City, Gifu",
-        "spring_type": "Sulfur Spring",
-        "spa_quality": f"{name} description.",
-        "detail_url": f"https://example.com/{name}",
-        "lat": lat,
-        "lng": lng,
-    }
+from tests.conftest import trip_cfg, trip_onsen, trip_retrieval, trip_slots_llm
 
 
 def _hotel(name: str) -> dict:
@@ -59,16 +44,6 @@ def _hotel(name: str) -> dict:
         "lat": 36.0,
         "lng": 137.0,
     }
-
-
-def _mock_llm(*updates: SlotUpdate) -> MagicMock:
-    llm = MagicMock()
-    llm.ainvoke = AsyncMock(side_effect=list(updates))
-    return llm
-
-
-def _mock_retrieval(*records: dict) -> MagicMock:
-    return MagicMock(return_value=list(records))
 
 
 # --- pure helpers ------------------------------------------------------------
@@ -86,7 +61,7 @@ def test_to_hotel_maps_rakuten_fields():
 def test_attach_hotels_populates_each_stop_failsoft():
     itin = build_itinerary(
         {"regions": ["Gifu"], "nights": 2, "pace": "relaxed"},
-        {"Gifu": [_onsen("Gero Onsen"), _onsen("Hirayu Onsen")]},
+        {"Gifu": [trip_onsen("Gero Onsen"), trip_onsen("Hirayu Onsen")]},
     )
     with patch.object(itinerary_module, "search_hotels", return_value=[_hotel("Ryokan A")]):
         attach_hotels(itin)
@@ -97,7 +72,7 @@ def test_attach_hotels_populates_each_stop_failsoft():
 def test_attach_hotels_is_failsoft_when_search_raises():
     itin = build_itinerary(
         {"regions": ["Gifu"], "nights": 1, "pace": "relaxed"},
-        {"Gifu": [_onsen("Gero Onsen")]},
+        {"Gifu": [trip_onsen("Gero Onsen")]},
     )
     with patch.object(itinerary_module, "search_hotels", side_effect=RuntimeError("rakuten down")):
         attach_hotels(itin)  # must NOT raise
@@ -107,7 +82,7 @@ def test_attach_hotels_is_failsoft_when_search_raises():
 def test_attach_hotels_skips_stops_without_coords():
     itin = build_itinerary(
         {"regions": ["Gifu"], "nights": 1, "pace": "relaxed"},
-        {"Gifu": [_onsen("No Coords", lat=None, lng=None)]},
+        {"Gifu": [trip_onsen("No Coords", lat=None, lng=None)]},
     )
     search = MagicMock(return_value=[_hotel("Ryokan A")])
     with patch.object(itinerary_module, "search_hotels", search):
@@ -122,7 +97,7 @@ def test_hotel_results_dedupes_across_stops():
     # must de-dupe by (name, url).
     itin = build_itinerary(
         {"regions": ["Gifu"], "nights": 2, "pace": "relaxed"},
-        {"Gifu": [_onsen("Gero Onsen"), _onsen("Hirayu Onsen")]},
+        {"Gifu": [trip_onsen("Gero Onsen"), trip_onsen("Hirayu Onsen")]},
     )
     itin["regions"][0]["onsens"][0]["hotels"] = [_hotel("Shared"), _hotel("A")]
     itin["regions"][0]["onsens"][1]["hotels"] = [_hotel("Shared"), _hotel("B")]
@@ -134,7 +109,7 @@ def test_hotel_results_dedupes_across_stops():
 def test_build_reply_names_hotels_and_flags_none_found():
     itin = build_itinerary(
         {"regions": ["Gifu"], "nights": 2, "pace": "relaxed"},
-        {"Gifu": [_onsen("Gero Onsen"), _onsen("Hirayu Onsen")]},
+        {"Gifu": [trip_onsen("Gero Onsen"), trip_onsen("Hirayu Onsen")]},
     )
     itin["regions"][0]["onsens"][0]["hotels"] = [_hotel("Ryokan A"), _hotel("Ryokan B")]
     itin["regions"][0]["onsens"][1]["hotels"] = []  # looked, found none
@@ -148,7 +123,7 @@ def test_build_reply_onsen_only_when_no_hotels_key():
     # backward-compatible with the PR3c reply.
     itin = build_itinerary(
         {"regions": ["Gifu"], "nights": 1, "pace": "relaxed"},
-        {"Gifu": [_onsen("Gero Onsen")]},
+        {"Gifu": [trip_onsen("Gero Onsen")]},
     )
     reply = build_reply(itin)
     assert "Gero Onsen" in reply
@@ -161,8 +136,8 @@ def test_build_reply_onsen_only_when_no_hotels_key():
 @pytest.mark.asyncio
 async def test_plan_trip_populates_hotels_per_stop():
     full = SlotUpdate(regions=["Gifu"], nights=2, dates_or_season="autumn")
-    retrieval = _mock_retrieval(_onsen("Gero Onsen"), _onsen("Hirayu Onsen"))
-    with patch.object(slots_module, "_llm", _mock_llm(full)), patch.object(
+    retrieval = trip_retrieval(trip_onsen("Gero Onsen"), trip_onsen("Hirayu Onsen"))
+    with patch.object(slots_module, "_llm", trip_slots_llm(full)), patch.object(
         itinerary_module, "query_onsen_structured", retrieval
     ), patch.object(itinerary_module, "search_hotels", return_value=[_hotel("Ryokan A")]):
         resp = await plan_trip("2 nights in Gifu this autumn", session_id="pr5-hotels")
@@ -177,8 +152,8 @@ async def test_plan_trip_populates_hotels_per_stop():
 @pytest.mark.asyncio
 async def test_plan_trip_failsoft_when_rakuten_raises():
     full = SlotUpdate(regions=["Gifu"], nights=1, dates_or_season="autumn")
-    retrieval = _mock_retrieval(_onsen("Gero Onsen"))
-    with patch.object(slots_module, "_llm", _mock_llm(full)), patch.object(
+    retrieval = trip_retrieval(trip_onsen("Gero Onsen"))
+    with patch.object(slots_module, "_llm", trip_slots_llm(full)), patch.object(
         itinerary_module, "query_onsen_structured", retrieval
     ), patch.object(itinerary_module, "search_hotels", side_effect=RuntimeError("rakuten 503")):
         resp = await plan_trip("1 night in Gifu this autumn", session_id="pr5-failsoft")
@@ -193,8 +168,8 @@ async def test_plan_trip_failsoft_when_rakuten_raises():
 @pytest.mark.asyncio
 async def test_plan_trip_no_hotels_says_none_found_no_fabrication():
     full = SlotUpdate(regions=["Gifu"], nights=1, dates_or_season="autumn")
-    retrieval = _mock_retrieval(_onsen("Gero Onsen"))
-    with patch.object(slots_module, "_llm", _mock_llm(full)), patch.object(
+    retrieval = trip_retrieval(trip_onsen("Gero Onsen"))
+    with patch.object(slots_module, "_llm", trip_slots_llm(full)), patch.object(
         itinerary_module, "query_onsen_structured", retrieval
     ), patch.object(itinerary_module, "search_hotels", return_value=[]):
         resp = await plan_trip("1 night in Gifu this autumn", session_id="pr5-nohotels")
@@ -208,7 +183,7 @@ async def test_elicit_turn_does_not_look_up_hotels():
     # A missing required slot short-circuits at elicit — the plan node (and its
     # hotel lookup) is never reached.
     search = MagicMock(return_value=[_hotel("Ryokan A")])
-    with patch.object(slots_module, "_llm", _mock_llm(SlotUpdate(regions=["Gifu"]))), patch.object(
+    with patch.object(slots_module, "_llm", trip_slots_llm(SlotUpdate(regions=["Gifu"]))), patch.object(
         itinerary_module, "search_hotels", search
     ):
         resp = await plan_trip("onsen trip in Gifu", session_id="pr5-elicit")
@@ -223,11 +198,11 @@ async def test_hotels_stored_in_itinerary_state():
     graph = build_trip_graph()
     session_id = "pr5-state"
     full = SlotUpdate(regions=["Gifu"], nights=1, dates_or_season="autumn")
-    with patch.object(slots_module, "_llm", _mock_llm(full)), patch.object(
-        itinerary_module, "query_onsen_structured", _mock_retrieval(_onsen("Gero Onsen"))
+    with patch.object(slots_module, "_llm", trip_slots_llm(full)), patch.object(
+        itinerary_module, "query_onsen_structured", trip_retrieval(trip_onsen("Gero Onsen"))
     ), patch.object(itinerary_module, "search_hotels", return_value=[_hotel("Ryokan A")]):
-        await graph.ainvoke({"message": "1 night in Gifu this autumn"}, config=_cfg(session_id))
+        await graph.ainvoke({"message": "1 night in Gifu this autumn"}, config=trip_cfg(session_id))
 
-    snap = graph.get_state(_cfg(session_id)).values
+    snap = graph.get_state(trip_cfg(session_id)).values
     stop = snap["itinerary"]["regions"][0]["onsens"][0]
     assert stop["hotels"] == [_hotel("Ryokan A")]  # JSON-serialisable raw dicts

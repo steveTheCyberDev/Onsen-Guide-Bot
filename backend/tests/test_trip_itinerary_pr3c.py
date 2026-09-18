@@ -23,7 +23,7 @@ in-process MemorySaver starts empty; the ``plan_trip`` tests drive the module-le
 singleton and use unique session ids to stay isolated.
 """
 
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 
@@ -39,44 +39,7 @@ from agent.trip.itinerary import (
     onsen_results_from_itinerary,
 )
 from agent.trip.slots import SlotUpdate
-
-
-def _cfg(session_id: str) -> dict:
-    return {"configurable": {"thread_id": session_id}}
-
-
-def _onsen(name: str, prefecture: str = "Gifu") -> dict:
-    """A query_onsen_structured-shaped record for the given region."""
-    return {
-        "name": name,
-        "location": f"Some City, {prefecture}",
-        "spring_type": "Sulfur Spring",
-        "spa_quality": f"{name} is a relaxing sulfur spring.",
-        "detail_url": f"https://example.com/{name.replace(' ', '-')}",
-        "lat": 36.0,
-        "lng": 137.0,
-    }
-
-
-def _mock_llm(*updates: SlotUpdate) -> MagicMock:
-    """Stand-in for the module-level structured-output extraction ``_llm``."""
-    llm = MagicMock()
-    llm.ainvoke = AsyncMock(side_effect=list(updates))
-    return llm
-
-
-def _retrieval_by_region(mapping: dict[str, list[dict]]) -> MagicMock:
-    """Mock ``query_onsen_structured`` keyed by the ``prefecture`` kwarg.
-
-    ``retrieve_candidates`` calls the service once per region with
-    ``prefecture=region``; this returns that region's records (or [] for a region
-    absent from ``mapping`` — the no-data case).
-    """
-
-    def _fn(query, prefecture=None, n_results=20):
-        return list(mapping.get(prefecture, []))
-
-    return MagicMock(side_effect=_fn)
+from tests.conftest import trip_cfg, trip_onsen, trip_retrieval_by_region, trip_slots_llm
 
 
 # --- pure allocation logic ---------------------------------------------------
@@ -104,8 +67,8 @@ def test_allocate_nights_zero_regions_is_empty():
 
 def test_build_itinerary_distributes_and_picks_by_pace():
     candidates = {
-        "Gifu": [_onsen(f"Gifu {i}", "Gifu") for i in range(5)],
-        "Nagano": [_onsen(f"Nagano {i}", "Nagano") for i in range(5)],
+        "Gifu": [trip_onsen(f"Gifu {i}", "Gifu") for i in range(5)],
+        "Nagano": [trip_onsen(f"Nagano {i}", "Nagano") for i in range(5)],
     }
     slots = {"regions": ["Gifu", "Nagano"], "nights": 5, "pace": "relaxed"}
     itin = build_itinerary(slots, candidates)
@@ -121,7 +84,7 @@ def test_build_itinerary_distributes_and_picks_by_pace():
 
 
 def test_build_itinerary_packed_pace_picks_two_per_night():
-    candidates = {"Gifu": [_onsen(f"Gifu {i}", "Gifu") for i in range(10)]}
+    candidates = {"Gifu": [trip_onsen(f"Gifu {i}", "Gifu") for i in range(10)]}
     slots = {"regions": ["Gifu"], "nights": 3, "pace": "packed"}
     itin = build_itinerary(slots, candidates)
     # packed = 2 stops/night, 3 nights → up to 6 stops.
@@ -130,7 +93,7 @@ def test_build_itinerary_packed_pace_picks_two_per_night():
 
 def test_build_itinerary_caps_picks_at_available_candidates():
     # Wants 3 stops but only 1 candidate exists → picks 1, never pads.
-    candidates = {"Gifu": [_onsen("Gero Onsen", "Gifu")]}
+    candidates = {"Gifu": [trip_onsen("Gero Onsen", "Gifu")]}
     slots = {"regions": ["Gifu"], "nights": 3, "pace": "relaxed"}
     itin = build_itinerary(slots, candidates)
     assert len(itin["regions"][0]["onsens"]) == 1
@@ -139,9 +102,9 @@ def test_build_itinerary_caps_picks_at_available_candidates():
 def test_build_itinerary_prefers_higher_rated_onsen_within_region():
     # Retrieval order deliberately puts the lower-rated onsen first — the
     # rating-based rank must still surface the higher-rated one as the stop.
-    low = _onsen("Low Rated", "Gifu")
+    low = trip_onsen("Low Rated", "Gifu")
     low["rating"] = 3.2
-    high = _onsen("High Rated", "Gifu")
+    high = trip_onsen("High Rated", "Gifu")
     high["rating"] = 4.8
     candidates = {"Gifu": [low, high]}
     slots = {"regions": ["Gifu"], "nights": 1, "pace": "relaxed"}
@@ -150,9 +113,9 @@ def test_build_itinerary_prefers_higher_rated_onsen_within_region():
 
 
 def test_build_itinerary_missing_rating_sorts_last_but_is_not_excluded():
-    rated = _onsen("Rated", "Gifu")
+    rated = trip_onsen("Rated", "Gifu")
     rated["rating"] = 4.0
-    unrated = _onsen("Unrated", "Gifu")  # no "rating" key at all
+    unrated = trip_onsen("Unrated", "Gifu")  # no "rating" key at all
     candidates = {"Gifu": [unrated, rated]}
     slots = {"regions": ["Gifu"], "nights": 2, "pace": "relaxed"}
     itin = build_itinerary(slots, candidates)
@@ -163,14 +126,14 @@ def test_build_itinerary_missing_rating_sorts_last_but_is_not_excluded():
 def test_build_itinerary_equal_or_missing_ratings_keep_relevance_order():
     # No rating field at all on any candidate (today's common case pre-backfill)
     # — the pre-existing relevance/retrieval order must be preserved exactly.
-    candidates = {"Gifu": [_onsen(f"Gifu {i}", "Gifu") for i in range(3)]}
+    candidates = {"Gifu": [trip_onsen(f"Gifu {i}", "Gifu") for i in range(3)]}
     slots = {"regions": ["Gifu"], "nights": 3, "pace": "relaxed"}
     itin = build_itinerary(slots, candidates)
     assert [o["name"] for o in itin["regions"][0]["onsens"]] == ["Gifu 0", "Gifu 1", "Gifu 2"]
 
 
 def test_build_itinerary_flags_no_data_region_and_omits_its_onsen():
-    candidates = {"Gifu": [_onsen("Gero Onsen", "Gifu")]}  # Hokkaido absent → no data
+    candidates = {"Gifu": [trip_onsen("Gero Onsen", "Gifu")]}  # Hokkaido absent → no data
     slots = {"regions": ["Gifu", "Hokkaido"], "nights": 4, "pace": "relaxed"}
     itin = build_itinerary(slots, candidates)
 
@@ -187,7 +150,7 @@ def test_build_itinerary_flags_no_data_region_and_omits_its_onsen():
 
 
 def test_build_reply_names_real_onsen_and_flags_no_data():
-    candidates = {"Gifu": [_onsen("Gero Onsen", "Gifu")]}
+    candidates = {"Gifu": [trip_onsen("Gero Onsen", "Gifu")]}
     slots = {"regions": ["Gifu", "Hokkaido"], "nights": 2, "pace": "relaxed"}
     reply = build_reply(build_itinerary(slots, candidates))
     assert "itinerary" in reply.lower()
@@ -206,7 +169,7 @@ def test_build_reply_all_regions_no_data_plans_nothing():
 
 
 def test_onsen_results_projection_drops_detail_url_and_keeps_fields():
-    itin = {"selected_onsens": [_onsen("Gero Onsen", "Gifu")]}
+    itin = {"selected_onsens": [trip_onsen("Gero Onsen", "Gifu")]}
     results = onsen_results_from_itinerary(itin)
     assert len(results) == 1
     r = results[0]
@@ -226,18 +189,18 @@ async def test_complete_request_builds_itinerary_with_real_in_region_onsen():
     graph = build_trip_graph()
     session_id = "trip-3c-complete"
     full = SlotUpdate(regions=["Gifu", "Nagano"], nights=4, dates_or_season="autumn")
-    retrieval = _retrieval_by_region(
+    retrieval = trip_retrieval_by_region(
         {
-            "Gifu": [_onsen("Gero Onsen", "Gifu"), _onsen("Hirayu Onsen", "Gifu")],
-            "Nagano": [_onsen("Nozawa Onsen", "Nagano")],
+            "Gifu": [trip_onsen("Gero Onsen", "Gifu"), trip_onsen("Hirayu Onsen", "Gifu")],
+            "Nagano": [trip_onsen("Nozawa Onsen", "Nagano")],
         }
     )
 
-    with patch.object(slots_module, "_llm", _mock_llm(full)), patch.object(
+    with patch.object(slots_module, "_llm", trip_slots_llm(full)), patch.object(
         itinerary_module, "query_onsen_structured", retrieval
     ):
         r = await graph.ainvoke(
-            {"message": "4 nights in Gifu and Nagano this autumn"}, config=_cfg(session_id)
+            {"message": "4 nights in Gifu and Nagano this autumn"}, config=trip_cfg(session_id)
         )
 
     # Reached the plan node (an itinerary), not an elicit question.
@@ -248,7 +211,7 @@ async def test_complete_request_builds_itinerary_with_real_in_region_onsen():
     assert called_prefectures == {"Gifu", "Nagano"}
 
     # State accumulated real candidates + a structured itinerary.
-    snap = graph.get_state(_cfg(session_id)).values
+    snap = graph.get_state(trip_cfg(session_id)).values
     assert len(snap["candidates"]) == 3
     itin = snap["itinerary"]
     selected_names = {o["name"] for o in itin["selected_onsens"]}
@@ -263,17 +226,17 @@ async def test_region_with_no_data_says_none_found_and_fabricates_nothing():
     session_id = "trip-3c-nodata"
     full = SlotUpdate(regions=["Gifu", "Hokkaido"], nights=3, dates_or_season="winter")
     # Only Gifu has ingested data; Hokkaido returns nothing.
-    retrieval = _retrieval_by_region({"Gifu": [_onsen("Gero Onsen", "Gifu")]})
+    retrieval = trip_retrieval_by_region({"Gifu": [trip_onsen("Gero Onsen", "Gifu")]})
 
-    with patch.object(slots_module, "_llm", _mock_llm(full)), patch.object(
+    with patch.object(slots_module, "_llm", trip_slots_llm(full)), patch.object(
         itinerary_module, "query_onsen_structured", retrieval
     ):
         r = await graph.ainvoke(
-            {"message": "3 nights in Gifu and Hokkaido in winter"}, config=_cfg(session_id)
+            {"message": "3 nights in Gifu and Hokkaido in winter"}, config=trip_cfg(session_id)
         )
 
     assert "No onsen found for Hokkaido" in r["reply"]
-    snap = graph.get_state(_cfg(session_id)).values
+    snap = graph.get_state(trip_cfg(session_id)).values
     legs = {leg["region"]: leg for leg in snap["itinerary"]["regions"]}
     assert legs["Hokkaido"]["no_data"] is True and legs["Hokkaido"]["onsens"] == []
     # No fabrication: every selected onsen is the real Gifu one.
@@ -288,19 +251,19 @@ async def test_missing_required_slot_short_circuits_before_retrieval():
     graph = build_trip_graph()
     session_id = "trip-3c-elicit"
     # regions only → nights + dates still missing → elicit, never plan.
-    retrieval = _retrieval_by_region({"Gifu": [_onsen("Gero Onsen", "Gifu")]})
+    retrieval = trip_retrieval_by_region({"Gifu": [trip_onsen("Gero Onsen", "Gifu")]})
 
-    with patch.object(slots_module, "_llm", _mock_llm(SlotUpdate(regions=["Gifu"]))), patch.object(
+    with patch.object(slots_module, "_llm", trip_slots_llm(SlotUpdate(regions=["Gifu"]))), patch.object(
         itinerary_module, "query_onsen_structured", retrieval
     ):
-        r = await graph.ainvoke({"message": "onsen in Gifu"}, config=_cfg(session_id))
+        r = await graph.ainvoke({"message": "onsen in Gifu"}, config=trip_cfg(session_id))
 
     # An elicit follow-up, not an itinerary; retrieval was never called.
     assert "itinerary" not in r["reply"].lower()
     assert r["reply"].count("?") == 1
     retrieval.assert_not_called()
     # No itinerary written to state on an elicit turn.
-    assert graph.get_state(_cfg(session_id)).values.get("itinerary") is None
+    assert graph.get_state(trip_cfg(session_id)).values.get("itinerary") is None
 
 
 # --- end-to-end via plan_trip: AgentResponse.onsens populated ----------------
@@ -309,11 +272,11 @@ async def test_missing_required_slot_short_circuits_before_retrieval():
 @pytest.mark.asyncio
 async def test_plan_trip_populates_agentresponse_onsens_on_a_plan_turn():
     full = SlotUpdate(regions=["Gifu"], nights=2, dates_or_season="autumn")
-    retrieval = _retrieval_by_region(
-        {"Gifu": [_onsen("Gero Onsen", "Gifu"), _onsen("Hirayu Onsen", "Gifu")]}
+    retrieval = trip_retrieval_by_region(
+        {"Gifu": [trip_onsen("Gero Onsen", "Gifu"), trip_onsen("Hirayu Onsen", "Gifu")]}
     )
 
-    with patch.object(slots_module, "_llm", _mock_llm(full)), patch.object(
+    with patch.object(slots_module, "_llm", trip_slots_llm(full)), patch.object(
         itinerary_module, "query_onsen_structured", retrieval
     ):
         resp = await plan_trip("2 nights in Gifu this autumn", session_id="trip-3c-plan-turn")
@@ -328,8 +291,8 @@ async def test_plan_trip_populates_agentresponse_onsens_on_a_plan_turn():
 
 @pytest.mark.asyncio
 async def test_plan_trip_leaves_onsens_empty_on_an_elicit_turn():
-    retrieval = _retrieval_by_region({"Gifu": [_onsen("Gero Onsen", "Gifu")]})
-    with patch.object(slots_module, "_llm", _mock_llm(SlotUpdate(regions=["Gifu"]))), patch.object(
+    retrieval = trip_retrieval_by_region({"Gifu": [trip_onsen("Gero Onsen", "Gifu")]})
+    with patch.object(slots_module, "_llm", trip_slots_llm(SlotUpdate(regions=["Gifu"]))), patch.object(
         itinerary_module, "query_onsen_structured", retrieval
     ):
         resp = await plan_trip("onsen in Gifu", session_id="trip-3c-plan-elicit")
