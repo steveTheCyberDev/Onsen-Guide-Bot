@@ -10,15 +10,21 @@ and which genuinely stay red because the signal (weather / ratings) does not exi
     constraint_conflict_acknowledged, tradeoff_explained, dropped_region_reasoned.
   * ② geographic infeasibility (Okinawa+Gifu) → GREEN:
     constraint_conflict_acknowledged, no_infeasible_plan.
-  * ③ weather×outdoor×season (Nagano/Gifu, January) → RED (no weather signal):
-    constraint_conflict_acknowledged, tradeoff_explained. # PR7-later: weather.
-  * ④ budget×ratings×party (Gifu/Aichi, family) → RED (no ratings signal):
-    constraint_conflict_acknowledged, tradeoff_explained. # PR7-later: ratings.
+  * ③ weather×outdoor×season (Nagano/Gifu, January) → ABSTAIN (no weather signal).
+  * ④ budget×ratings×party (Gifu/Aichi, family) → ABSTAIN (no ratings signal).
 
 The evaluators are the SAME functions the LangSmith gate runs (imported from
 ``scripts.eval_flow``), scoring 1 / 0 by scanning the reply for behaviour markers —
 so a green here means the plan node genuinely emitted the honest explanatory prose,
 not that a keyword was stuffed.
+
+③ and ④ ABSTAIN rather than fail. Their ``conflict_factor`` is not in
+``eval_flow._IMPLEMENTED_CONFLICT_FACTORS`` (no weather service; the ratings gate is
+a separate product decision), so the four PR7 evaluators return score=None — an
+honest "not ready" rather than failing the release gate on a capability that was
+never built. ``_REF`` below therefore carries ``conflict_factors`` verbatim from the
+dataset: WITHOUT it ``_factors_ready()`` passes vacuously and these tests would
+assert an outcome the live gate never produces.
 """
 
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -87,9 +93,13 @@ async def _run(update: SlotUpdate, message: str) -> dict:
 
 
 # Reference-output expectation flags, mirroring the four PR7 examples in eval_flow.
+# ``conflict_factors`` is copied VERBATIM from each dataset example because the four
+# PR7 evaluators gate on it via ``_factors_ready()``: a ref that omits the key passes
+# that gate vacuously, so the outcome asserted here would diverge from the live gate.
 _REF = {
     "over": {
         "expected_mode": "trip",
+        "conflict_factors": ["pace_x_nights_x_spread"],
         "expect_constraint_conflict_ack": True,
         "expect_feasibility_flag": False,
         "expect_tradeoff_explanation": True,
@@ -97,6 +107,7 @@ _REF = {
     },
     "infeasible": {
         "expected_mode": "trip",
+        "conflict_factors": ["geographic_infeasibility"],
         "expect_constraint_conflict_ack": True,
         "expect_feasibility_flag": True,
         "expect_tradeoff_explanation": False,
@@ -104,6 +115,7 @@ _REF = {
     },
     "weather": {
         "expected_mode": "trip",
+        "conflict_factors": ["weather_x_outdoor_x_season"],
         "expect_constraint_conflict_ack": True,
         "expect_feasibility_flag": False,
         "expect_tradeoff_explanation": True,
@@ -111,6 +123,7 @@ _REF = {
     },
     "budget": {
         "expected_mode": "trip",
+        "conflict_factors": ["budget_x_ratings_x_party"],
         "expect_constraint_conflict_ack": True,
         "expect_feasibility_flag": False,
         "expect_tradeoff_explanation": True,
@@ -157,9 +170,15 @@ async def test_example2_geographic_infeasibility_turns_two_evaluators_green():
 
 
 @pytest.mark.asyncio
-async def test_example3_weather_stays_red_no_signal():
-    # HONEST boundary: no weather signal in coordinates → the naive plan reply for a
-    # compact 2-region winter trip carries no conflict prose → these stay RED (0).
+async def test_example3_weather_abstains_until_a_weather_signal_exists():
+    # HONEST boundary, two halves:
+    #  (a) the LIVE gate outcome — weather_x_outdoor_x_season is not in
+    #      _IMPLEMENTED_CONFLICT_FACTORS, so the evaluators ABSTAIN (None) rather
+    #      than red-failing the release gate on a capability nobody built; and
+    #  (b) the reason the abstain is honest — with the readiness gate lifted, the
+    #      reply genuinely scores 0, i.e. the deterministic slice really does emit
+    #      no conflict prose for a compact 2-region winter trip. Without (b) this
+    #      test would still pass if the plan node started fabricating weather prose.
     outputs = await _run(
         SlotUpdate(
             regions=["Nagano", "Gifu"], nights=3, dates_or_season="January",
@@ -168,13 +187,30 @@ async def test_example3_weather_stays_red_no_signal():
         "Plan a 3-night onsen trip in January across Nagano and Gifu — we love outdoor rotenburo.",
     )
     ref = _REF["weather"]
-    assert _score(eval_flow.constraint_conflict_acknowledged, outputs, ref) == 0
-    assert _score(eval_flow.tradeoff_explained, outputs, ref) == 0
+    assert _score(eval_flow.constraint_conflict_acknowledged, outputs, ref) is None
+    assert _score(eval_flow.tradeoff_explained, outputs, ref) is None
+
+    ready = {k: v for k, v in ref.items() if k != "conflict_factors"}
+    assert _score(eval_flow.constraint_conflict_acknowledged, outputs, ready) == 0
+    assert _score(eval_flow.tradeoff_explained, outputs, ready) == 0
 
 
 @pytest.mark.asyncio
-async def test_example4_budget_ratings_stays_red_no_signal():
-    # HONEST boundary: no ratings signal → compact 2-region trip → RED (0).
+async def test_example4_budget_ratings_abstains_until_the_factor_is_allowlisted():
+    # Half (a) — the live-gate ABSTAIN — is the same as ③ and is what this test
+    # is for. NOTE: unlike weather, the ratings SIGNAL now exists (Places ratings
+    # ship in the projection); budget_x_ratings_x_party is still outside
+    # _IMPLEMENTED_CONFLICT_FACTORS as a separate product decision. When that
+    # factor is allowlisted this test fails on the `is None` half — the intended
+    # prompt to re-baseline example ④, not a false alarm.
+    #
+    # KNOWN GAP (pre-existing, tracked separately — do not read half (b) as proof
+    # of plan-node behaviour here): "Aichi" is absent from conftest's
+    # TEST_KNOWN_PREFECTURES, so this turn is rejected by region validation and
+    # never reaches the plan node. The reply is a region-elicit question, so the
+    # `== 0` half below is true because nothing was planned at all — NOT because a
+    # planned 2-region itinerary honestly lacks ratings prose (which is what ③
+    # does demonstrate). Fixing it means widening the fixture's known set.
     outputs = await _run(
         SlotUpdate(
             regions=["Gifu", "Aichi"], nights=3, dates_or_season="autumn",
@@ -183,5 +219,9 @@ async def test_example4_budget_ratings_stays_red_no_signal():
         "Plan a 3-night onsen trip this autumn in Gifu and Aichi for a family of four, mid budget, highly-rated.",
     )
     ref = _REF["budget"]
-    assert _score(eval_flow.constraint_conflict_acknowledged, outputs, ref) == 0
-    assert _score(eval_flow.tradeoff_explained, outputs, ref) == 0
+    assert _score(eval_flow.constraint_conflict_acknowledged, outputs, ref) is None
+    assert _score(eval_flow.tradeoff_explained, outputs, ref) is None
+
+    ready = {k: v for k, v in ref.items() if k != "conflict_factors"}
+    assert _score(eval_flow.constraint_conflict_acknowledged, outputs, ready) == 0
+    assert _score(eval_flow.tradeoff_explained, outputs, ready) == 0
