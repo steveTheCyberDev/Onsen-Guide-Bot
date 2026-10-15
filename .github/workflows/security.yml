@@ -48,7 +48,7 @@ jobs:
           fetch-depth: 0
 
       - name: Run gitleaks
-        uses: gitleaks/gitleaks-action@v2
+        uses: gitleaks/gitleaks-action@v3
         env:
           # No GITHUB_TOKEN permissions beyond default read are required for
           # scanning; only needed if we later enable gitleaks' PR-comment
